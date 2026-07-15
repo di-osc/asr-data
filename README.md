@@ -19,30 +19,23 @@
 
 ### Python
 
-从项目根目录构建并安装 Python 扩展：
-
 ```bash
-maturin develop
-```
-
-运行测试：
-
-```bash
-pytest tests/test_bindings.py
+pip install asr-data
 ```
 
 ### Rust
 
-运行 Rust 测试：
+作为依赖添加到项目：
 
 ```bash
-cargo test --workspace
+cargo add asr-data
 ```
 
-查看命令行工具：
+安装命令行工具：
 
 ```bash
-cargo run --bin asr-data -- --help
+cargo install asr-data
+asr-data --help
 ```
 
 ## Python 使用示例
