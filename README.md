@@ -4,79 +4,175 @@
 
 <h1 align="center">asr-data</h1>
 
-`asr-data` provides a Rust audio/transcript data model, a SQLite-backed
-`AudioDb`, audio loading utilities, and Python bindings powered by PyO3. All
-Rust code, including the binding implementation, lives in `src`; the Python
-package lives in the root-level `asr_data` directory.
+`asr-data` 是一个面向 ASR（Automatic Speech Recognition，自动语音识别）
+数据管理的 Rust / Python 库。它把音频、转写、说话人、语言、模型预测等信息组织成统一的数据模型，并使用 SQLite `.sqlite` 文件持久化，方便构建语音数据集、标注流水线和模型评测工具。
 
-## Rust
+## 特点
+
+- **统一的数据模型**：用 `Audio` 表示一段音频，用 `Timeline` 管理语音段、转写、说话人、语言、热词、诊断信息等时间轴标注。
+- **SQLite 本地存储**：`AudioDB` 将数据保存为 `.sqlite` 文件，支持按 ID 查询、分页遍历、元数据过滤和时长过滤。
+- **音频加载与处理**：支持从文件、URL、字节流和 PCM 构造音频；可解码为 `Waveform`，并进行声道拆分、转单声道、重采样等操作。
+- **Rust 核心，Python 易用**：核心能力由 Rust 实现，同时提供 PyO3 Python 绑定，适合在脚本、Notebook 和数据处理流水线中使用。
+- **面向 ASR 流程**：可区分人工标注、模型输出、系统阶段产物等来源，便于保存参考文本、模型预测和后处理结果。
+
+## 安装
+
+### Python
+
+从项目根目录构建并安装 Python 扩展：
+
+```bash
+maturin develop
+```
+
+运行测试：
+
+```bash
+pytest tests/test_bindings.py
+```
+
+### Rust
+
+运行 Rust 测试：
 
 ```bash
 cargo test --workspace
 ```
 
-The command-line utility is available as `asr-data`:
+查看命令行工具：
 
 ```bash
 cargo run --bin asr-data -- --help
 ```
 
-## Python
+## Python 使用示例
 
-Build and install the Python extension from the project root:
+### 创建音频对象
 
-```bash
-maturin develop
-pytest tests/test_bindings.py
+```python
+from asr_data import Audio
+
+# 从本地文件创建
+audio = Audio.from_file("audio.wav", id="call-001")
+
+# 添加元数据
+audio.metadata["split"] = "train"
+audio.metadata["speaker"] = "alice"
 ```
 
-The public Python package is imported as `asr_data`.
+也可以从 URL、原始字节或 PCM 数据创建：
 
-`AudioDB` exposes four explicit data operations; Python container protocols
-provide lookup, membership, length, and iteration:
+```python
+audio_from_url = Audio.from_url("https://example.com/audio.wav", id="remote-001")
+audio_from_bytes = Audio.from_bytes(open("audio.wav", "rb").read(), id="bytes-001")
+audio_from_pcm = Audio.from_pcm(b"\0\0" * 16000, sample_rate=16000, id="pcm-001")
+```
+
+### 添加时间轴标注
+
+```python
+# 语音段
+audio.timeline.add_speech(0, 1200, confidence=0.98)
+
+# 转写文本
+audio.timeline.add_transcription(
+    0,
+    1200,
+    "hello world",
+    source="whisper-large",
+    source_kind="model",
+    language="en",
+    confidence=0.91,
+)
+
+# 说话人
+audio.timeline.add_speaker(0, 1200, "speaker-1")
+
+print(audio.timeline.transcript_by_source("whisper-large").text)
+```
+
+### 加载和处理波形
+
+```python
+waveform = audio.load()
+
+print(waveform.sample_rate)
+print(waveform.channels)
+
+mono = waveform.to_mono()
+resampled = mono.resample(16000)
+left = waveform.channel(0)
+```
+
+异步加载：
+
+```python
+waveform = await audio.aload()
+```
+
+### 使用 AudioDB 持久化
 
 ```python
 from asr_data import AudioDB
 
-db = AudioDB("data.vasr")
+db = AudioDB("dataset.sqlite")
+
+# 写入
 db.insert(audio)
-batch = db.query(limit=100, metadata={"split": "train"})
-audio = db["audio-id"]
-changed = db.update(audio)
-deleted = db.delete("audio-id")
+
+# 按 ID 读取
+loaded = db["call-001"]
+
+# 更新
+loaded.metadata["checked"] = True
+db.update(loaded)
+
+# 删除
+db.delete("call-001")
 ```
 
-Queries are ordered by `audio_id`. Pass the last ID from one batch as the
-exclusive cursor for the next batch:
+### 查询和分页
+
+`query` 按 `audio_id` 排序。分页时，把上一页最后一条 ID 作为下一页的 `after`：
 
 ```python
-next_batch = db.query(limit=100, after=batch[-1].id)
+first_page = db.query(limit=100, metadata={"split": "train"})
+
+if first_page:
+    second_page = db.query(
+        limit=100,
+        after=first_page[-1].id,
+        metadata={"split": "train"},
+    )
 ```
 
-`query` also accepts inclusive `min_duration_ms` and `max_duration_ms` filters.
-Iteration uses the same cursor internally, so `for audio in db` reads the
-database lazily in bounded batches.
+也可以按时长过滤：
 
-Existing `.vasr` SQLite databases remain supported. The file extension and
-SQLite application ID are retained as a stable on-disk format identifier.
+```python
+items = db.query(
+    limit=50,
+    min_duration_ms=1_000,
+    max_duration_ms=30_000,
+)
+```
 
-## Release
+直接迭代数据库会按内部游标懒加载：
 
-Publishing is driven by GitHub Releases. After bumping `version` in both
-`Cargo.toml` and `pyproject.toml`, create a release with the GitHub CLI:
+```python
+for audio in db:
+    print(audio.id)
+```
+
+## 数据格式
+
+`asr-data` 使用标准 SQLite 数据库文件保存数据，推荐使用 `.sqlite` 后缀。库会写入 SQLite application ID，用于识别和校验数据库格式。
+
+## 发布
+
+发布由 GitHub Releases 驱动。更新 `Cargo.toml` 和 `pyproject.toml` 中的版本号后运行：
 
 ```bash
 ./scripts/release.sh 0.1.0
 ```
 
-That creates tag `v0.1.0`, runs `gh release create`, and the
-`.github/workflows/release.yml` workflow then:
-
-1. Builds Python wheels / sdist and uploads them to the release
-2. Publishes the package to PyPI
-3. Publishes the crate to crates.io
-
-Repository setup required once:
-
-- Environment `pypi` + secret `PYPI_API_TOKEN`
-- Repository secret `CARGO_REGISTRY_TOKEN`（Settings → Secrets and variables → Actions）
+该脚本会创建 `v0.1.0` 标签并触发 release workflow，构建 Python wheels / sdist、发布 PyPI 包，并发布 Rust crate。
