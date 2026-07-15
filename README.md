@@ -1,4 +1,8 @@
-# asr-data
+<p align="center">
+  <img src="assets/logo.png" alt="asr-data logo" width="160" />
+</p>
+
+<h1 align="center">asr-data</h1>
 
 `asr-data` provides a Rust audio/transcript data model, a SQLite-backed
 `AudioDb`, audio loading utilities, and Python bindings powered by PyO3. All
