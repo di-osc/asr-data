@@ -114,6 +114,10 @@ impl Timeline {
         self.annotations.push(annotation);
     }
 
+    pub fn extend(&mut self, annotations: impl IntoIterator<Item = Annotation>) {
+        self.annotations.extend(annotations);
+    }
+
     pub fn by_status(&self, status: AnnotationStatus) -> Vec<&Annotation> {
         self.annotations
             .iter()

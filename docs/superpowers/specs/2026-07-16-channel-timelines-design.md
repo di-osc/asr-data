@@ -116,21 +116,21 @@ not implicitly merge left and right transcripts.
 
 ## Python API
 
-Keep `audio.timeline` as the compatibility view of the mono timeline. Add
-explicit channel access without changing how `Timeline` and `Annotation` are
-used:
+Expose one uniform timeline accessor. Backward compatibility with the old
+`audio.timeline` property is intentionally not retained:
 
 ```python
-audio.timeline                         # Mono timeline
-audio.channel_timeline("left")         # Left timeline, created on demand
-audio.channel_timeline("right")        # Right timeline, created on demand
-audio.channel_timeline(2)              # Channel(2), created on demand
+audio.timeline("mono")                 # Mono timeline, created on demand
+audio.timeline("left")                 # Left timeline, created on demand
+audio.timeline("right")                # Right timeline, created on demand
+audio.timeline(2)                      # Channel(2), created on demand
 audio.timelines                        # Read-only view keyed by channel
 ```
 
 `PyTimeline` stores the selected `AudioChannel` alongside its shared `Audio`
 handle. Its methods resolve that key before reading or mutating annotations.
-The Python annotator-facing code still receives only a `Waveform`.
+There is no separate `channel_timeline` alias. The Python annotator-facing code
+still receives only a `Waveform`.
 
 Python integer channels are normalized so that `0` selects `Left`, `1` selects
 `Right`, and `n >= 2` selects `Channel(n)`. Invalid channel names and negative
@@ -175,16 +175,16 @@ the audio source and metadata blobs.
 
 Rust and Python tests cover:
 
-- mono construction and compatibility access through `audio.timeline`;
+- mono construction and access through `audio.timeline("mono")`;
 - independent left and right annotations on one `Audio`;
 - explicit `Waveform::channel` and `Waveform::to_mono` processing;
 - rejection of non-canonical `Channel(0)` and `Channel(1)` keys;
 - timeline `audio_id` invariant enforcement;
 - database round trips containing mono, left, and right timelines;
 - read-only decoding and read-write migration of v1/v2 databases;
-- Python mutation through `channel_timeline` updating only the selected
+- Python mutation through `timeline(channel)` updating only the selected
   timeline;
-- existing mono APIs and fixtures continuing to work unchanged.
+- rejection of the removed property-style and `channel_timeline` APIs.
 
 ## Out of scope
 

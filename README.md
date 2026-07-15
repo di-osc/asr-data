@@ -65,10 +65,10 @@ audio_from_pcm = Audio.from_pcm(b"\0\0" * 16000, sample_rate=16000, id="pcm-001"
 
 ```python
 # 语音段
-audio.timeline.add_speech(0, 1200, confidence=0.98)
+audio.timeline("mono").add_speech(0, 1200, confidence=0.98)
 
 # 转写文本
-audio.timeline.add_transcription(
+audio.timeline("mono").add_transcription(
     0,
     1200,
     "hello world",
@@ -79,10 +79,24 @@ audio.timeline.add_transcription(
 )
 
 # 说话人
-audio.timeline.add_speaker(0, 1200, "speaker-1")
+audio.timeline("mono").add_speaker(0, 1200, "speaker-1")
 
-print(audio.timeline.transcript_by_source("whisper-large").text)
+print(audio.timeline("mono").transcript_by_source("whisper-large").text)
 ```
+
+`audio.timeline("mono")` 表示 mono 时间轴。双声道通话可以把左右声道的标注分别保存在同一条 `Audio` 记录中：
+
+```python
+waveform = audio.load()
+caller_waveform = waveform.channel(0)
+agent_waveform = waveform.channel(1)
+
+# 识别器只处理提取后的 mono waveform；调用方把结果写回对应声道。
+audio.timeline("left").add_transcription(0, 1200, "caller text")
+audio.timeline("right").add_transcription(0, 1200, "agent text")
+```
+
+需要混音时仍显式调用 `waveform.to_mono()`，不会自动合并左右声道的 Timeline。
 
 ### 加载和处理波形
 

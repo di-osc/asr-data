@@ -6,13 +6,13 @@ use std::path::Path;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use crate::{Annotation, AudioEncoding, AudioSource, DurationMs, Timeline, Waveform};
+use crate::{Annotation, AudioChannel, AudioEncoding, AudioSource, DurationMs, Timeline, Waveform};
 
 /// An audio source together with all annotations and per-audio metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Audio {
     pub source: AudioSource,
-    pub timeline: Timeline,
+    pub(crate) timelines: BTreeMap<AudioChannel, Timeline>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
@@ -23,16 +23,60 @@ impl Audio {
     }
 
     pub fn with_id(audio_id: impl Into<String>, source: impl Into<AudioSource>) -> Self {
+        let timeline = Timeline::new(audio_id);
         Self {
             source: source.into(),
-            timeline: Timeline::new(audio_id),
+            timelines: BTreeMap::from([(AudioChannel::Mono, timeline)]),
             metadata: BTreeMap::new(),
         }
     }
 
     pub fn with_timeline(mut self, timeline: Timeline) -> Self {
-        self.timeline = timeline;
+        let audio_id = timeline.audio_id.clone();
+        self.set_audio_id(audio_id);
+        self.timelines.insert(AudioChannel::Mono, timeline);
         self
+    }
+
+    pub fn timeline(&self, channel: AudioChannel) -> Result<Option<&Timeline>, AudioChannelError> {
+        validate_channel(channel)?;
+        Ok(self.timelines.get(&channel))
+    }
+
+    pub fn timeline_mut(
+        &mut self,
+        channel: AudioChannel,
+    ) -> Result<Option<&mut Timeline>, AudioChannelError> {
+        validate_channel(channel)?;
+        Ok(self.timelines.get_mut(&channel))
+    }
+
+    pub fn ensure_timeline(
+        &mut self,
+        channel: AudioChannel,
+    ) -> Result<&mut Timeline, AudioChannelError> {
+        validate_channel(channel)?;
+        let audio_id = self.mono_timeline().audio_id.clone();
+        Ok(self
+            .timelines
+            .entry(channel)
+            .or_insert_with(|| Timeline::new(audio_id)))
+    }
+
+    pub fn mono_timeline(&self) -> &Timeline {
+        self.timelines
+            .get(&AudioChannel::Mono)
+            .expect("Audio always contains a mono timeline")
+    }
+
+    pub fn mono_timeline_mut(&mut self) -> &mut Timeline {
+        self.timelines
+            .get_mut(&AudioChannel::Mono)
+            .expect("Audio always contains a mono timeline")
+    }
+
+    pub fn timelines(&self) -> &BTreeMap<AudioChannel, Timeline> {
+        &self.timelines
     }
 
     pub fn with_metadata_value(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
@@ -45,7 +89,14 @@ impl Audio {
     }
 
     pub fn audio_id(&self) -> String {
-        sanitize_audio_id(&self.timeline.audio_id)
+        sanitize_audio_id(&self.mono_timeline().audio_id)
+    }
+
+    pub fn set_audio_id(&mut self, audio_id: impl Into<String>) {
+        let audio_id = audio_id.into();
+        for timeline in self.timelines.values_mut() {
+            timeline.audio_id.clone_from(&audio_id);
+        }
     }
 
     pub fn load(&self) -> anyhow::Result<Waveform> {
@@ -55,6 +106,19 @@ impl Audio {
     #[cfg(feature = "audio-loading")]
     pub async fn aload(&self) -> anyhow::Result<Waveform> {
         self.source.aload().await
+    }
+}
+
+#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
+#[error("channel index {index} has a named representation")]
+pub struct AudioChannelError {
+    pub index: u16,
+}
+
+fn validate_channel(channel: AudioChannel) -> Result<(), AudioChannelError> {
+    match channel {
+        AudioChannel::Channel(index @ 0..=1) => Err(AudioChannelError { index }),
+        _ => Ok(()),
     }
 }
 
@@ -210,14 +274,15 @@ impl<'de> Deserialize<'de> for LegacyAudio {
             (None, None) => return Err(serde::de::Error::missing_field("source")),
         };
 
+        let timeline = Timeline {
+            id: timeline.id,
+            audio_id: timeline.audio_id,
+            duration: timeline.duration,
+            annotations: timeline.annotations,
+        };
         Ok(Self(Audio {
             source,
-            timeline: Timeline {
-                id: timeline.id,
-                audio_id: timeline.audio_id,
-                duration: timeline.duration,
-                annotations: timeline.annotations,
-            },
+            timelines: BTreeMap::from([(AudioChannel::Mono, timeline)]),
             metadata,
         }))
     }

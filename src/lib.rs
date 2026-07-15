@@ -27,7 +27,7 @@ pub use extract_audio::{
 };
 pub use fasr::{FasrConvertSummary, convert_fasr_audiolist_to_db, read_fasr_audio_list};
 pub use media::{AudioChannel, AudioEncoding, AudioFormat, AudioSource};
-pub use record::{Audio, LegacyImportError, read_legacy_msgpack};
+pub use record::{Audio, AudioChannelError, LegacyImportError, read_legacy_msgpack};
 pub use segment::{TextSpan, Transcript};
 pub use stream::{AudioBytesStream, AudioChunk, AudioChunkList};
 pub use time::{DurationMs, SampleIndex, TimeRange};
