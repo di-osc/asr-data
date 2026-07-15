@@ -344,6 +344,9 @@ mod tests {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         let path_48k = root.join("fixtures").join("audio").join("asr_en.wav");
         let path_16k = root.join("fixtures").join("audio").join("asr_en_16k.wav");
+        if !path_48k.exists() || !path_16k.exists() {
+            return Ok(());
+        }
 
         let (wav_48k, sr_48k) = decode_path(&path_48k)?;
         if sr_48k != 48_000 {

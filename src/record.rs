@@ -11,6 +11,10 @@ use crate::{Annotation, AudioChannel, AudioEncoding, AudioSource, DurationMs, Ti
 /// An audio source together with all annotations and per-audio metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Audio {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub duration: Option<DurationMs>,
     pub source: AudioSource,
     pub(crate) timelines: BTreeMap<AudioChannel, Timeline>,
     #[serde(default)]
@@ -23,8 +27,11 @@ impl Audio {
     }
 
     pub fn with_id(audio_id: impl Into<String>, source: impl Into<AudioSource>) -> Self {
-        let timeline = Timeline::new(audio_id);
+        let audio_id = audio_id.into();
+        let timeline = Timeline::new(audio_id.clone());
         Self {
+            id: audio_id.clone(),
+            duration: None,
             source: source.into(),
             timelines: BTreeMap::from([(AudioChannel::Mono, timeline)]),
             metadata: BTreeMap::new(),
@@ -33,6 +40,7 @@ impl Audio {
 
     pub fn with_timeline(mut self, timeline: Timeline) -> Self {
         let audio_id = timeline.audio_id.clone();
+        self.duration = timeline.duration;
         self.set_audio_id(audio_id);
         self.timelines.insert(AudioChannel::Mono, timeline);
         self
@@ -56,11 +64,13 @@ impl Audio {
         channel: AudioChannel,
     ) -> Result<&mut Timeline, AudioChannelError> {
         validate_channel(channel)?;
-        let audio_id = self.mono_timeline().audio_id.clone();
-        Ok(self
-            .timelines
-            .entry(channel)
-            .or_insert_with(|| Timeline::new(audio_id)))
+        let audio_id = self.id.clone();
+        let duration = self.duration;
+        Ok(self.timelines.entry(channel).or_insert_with(|| {
+            let mut timeline = Timeline::new(audio_id);
+            timeline.duration = duration;
+            timeline
+        }))
     }
 
     pub fn mono_timeline(&self) -> &Timeline {
@@ -79,6 +89,17 @@ impl Audio {
         &self.timelines
     }
 
+    pub fn remove_timeline(
+        &mut self,
+        channel: AudioChannel,
+    ) -> Result<Option<Timeline>, AudioChannelError> {
+        validate_channel(channel)?;
+        if channel == AudioChannel::Mono {
+            return Ok(None);
+        }
+        Ok(self.timelines.remove(&channel))
+    }
+
     pub fn with_metadata_value(mut self, key: impl Into<String>, value: serde_json::Value) -> Self {
         self.metadata.insert(key.into(), value);
         self
@@ -89,14 +110,63 @@ impl Audio {
     }
 
     pub fn audio_id(&self) -> String {
-        sanitize_audio_id(&self.mono_timeline().audio_id)
+        sanitize_audio_id(&self.id)
     }
 
     pub fn set_audio_id(&mut self, audio_id: impl Into<String>) {
         let audio_id = audio_id.into();
+        self.id.clone_from(&audio_id);
         for timeline in self.timelines.values_mut() {
             timeline.audio_id.clone_from(&audio_id);
         }
+    }
+
+    pub fn set_duration(&mut self, duration: Option<DurationMs>) {
+        self.duration = duration;
+        for timeline in self.timelines.values_mut() {
+            timeline.duration = duration;
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), AudioValidationError> {
+        if self.id.trim().is_empty() {
+            return Err(AudioValidationError::EmptyAudioId);
+        }
+        if !self.timelines.contains_key(&AudioChannel::Mono) {
+            return Err(AudioValidationError::MissingMonoTimeline);
+        }
+        for (channel, timeline) in &self.timelines {
+            if !channel.is_canonical() {
+                return Err(AudioValidationError::NonCanonicalChannel { channel: *channel });
+            }
+            if timeline.audio_id != self.id {
+                return Err(AudioValidationError::TimelineAudioIdMismatch {
+                    channel: *channel,
+                    expected: self.id.clone(),
+                    found: timeline.audio_id.clone(),
+                });
+            }
+            if timeline.duration != self.duration {
+                return Err(AudioValidationError::TimelineDurationMismatch {
+                    channel: *channel,
+                    expected: self.duration,
+                    found: timeline.duration,
+                });
+            }
+            if let Some(duration) = self.duration {
+                for annotation in &timeline.annotations {
+                    if annotation.range.end > duration {
+                        return Err(AudioValidationError::AnnotationOutOfBounds {
+                            channel: *channel,
+                            annotation_id: annotation.id.clone(),
+                            end: annotation.range.end,
+                            duration,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn load(&self) -> anyhow::Result<Waveform> {
@@ -107,6 +177,37 @@ impl Audio {
     pub async fn aload(&self) -> anyhow::Result<Waveform> {
         self.source.aload().await
     }
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum AudioValidationError {
+    #[error("audio id must not be empty")]
+    EmptyAudioId,
+    #[error("audio is missing its mono timeline")]
+    MissingMonoTimeline,
+    #[error("audio channel {channel:?} is not canonical")]
+    NonCanonicalChannel { channel: AudioChannel },
+    #[error("timeline {channel:?} audio id mismatch: expected {expected:?}, found {found:?}")]
+    TimelineAudioIdMismatch {
+        channel: AudioChannel,
+        expected: String,
+        found: String,
+    },
+    #[error("timeline {channel:?} duration mismatch: expected {expected:?}, found {found:?}")]
+    TimelineDurationMismatch {
+        channel: AudioChannel,
+        expected: Option<DurationMs>,
+        found: Option<DurationMs>,
+    },
+    #[error(
+        "annotation {annotation_id:?} on {channel:?} ends at {end:?}, past audio duration {duration:?}"
+    )]
+    AnnotationOutOfBounds {
+        channel: AudioChannel,
+        annotation_id: String,
+        end: DurationMs,
+        duration: DurationMs,
+    },
 }
 
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +335,18 @@ impl<'de> Deserialize<'de> for LegacyAudio {
         let wire = LegacyAudioWire::deserialize(deserializer)?;
         if let Some(audio) = wire.audio {
             let mut audio = audio.0;
+            if audio.id.trim().is_empty() {
+                audio.id = audio.mono_timeline().audio_id.clone();
+            }
+            if audio.duration.is_none() {
+                audio.duration = audio
+                    .timelines
+                    .values()
+                    .filter_map(|timeline| timeline.duration)
+                    .max();
+            }
+            audio.set_audio_id(audio.id.clone());
+            audio.set_duration(audio.duration);
             for (key, value) in wire.metadata {
                 audio.metadata.entry(key).or_insert(value);
             }
@@ -281,6 +394,8 @@ impl<'de> Deserialize<'de> for LegacyAudio {
             annotations: timeline.annotations,
         };
         Ok(Self(Audio {
+            id: timeline.audio_id.clone(),
+            duration: timeline.duration,
             source,
             timelines: BTreeMap::from([(AudioChannel::Mono, timeline)]),
             metadata,

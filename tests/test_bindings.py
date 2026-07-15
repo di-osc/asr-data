@@ -95,13 +95,14 @@ def test_audio_waveform_timeline_and_db(tmp_path):
         "all",
         "remove",
         "contains",
-        "set_metadata",
-        "metadata_value",
         "import_legacy_msgpack",
         "relabel_annotation_sources",
     ):
         assert not hasattr(db, removed)
     db.insert(audio)
+    db.set_metadata("dataset", {"name": "calls"})
+    assert db.metadata_value("dataset") == {"name": "calls"}
+    assert db.metadata["dataset"]["name"] == "calls"
     assert len(db) == 1
     assert [item.id for item in db] == ["call-1"]
     assert "call-1" in db
@@ -164,8 +165,8 @@ def test_audio_db_query_filters_cursor_and_lazy_iteration(tmp_path):
 def test_audio_channel_timelines_round_trip(tmp_path):
     audio = Audio.from_pcm(b"\0\0" * 4, sample_rate=8000, channels=2, id="call-stereo")
 
-    audio.timeline("left").add_transcription(0, 100, "caller")
-    audio.timeline("right").add_transcription(0, 100, "agent")
+    audio.ensure_timeline("left").add_transcription(0, 100, "caller")
+    audio.ensure_timeline("right").add_transcription(0, 100, "agent")
 
     assert audio.timeline("mono").transcript().text == ""
     assert audio.timeline("left").transcript().text == "caller"
@@ -174,6 +175,11 @@ def test_audio_channel_timelines_round_trip(tmp_path):
     assert audio.timeline(1).transcript().text == "agent"
     assert set(audio.timelines) == {"mono", "left", "right"}
     assert not hasattr(audio, "channel_timeline")
+    assert audio.timeline(2) is None
+    created = audio.ensure_timeline(2)
+    assert created.id == audio.timeline(2).id
+    assert audio.remove_timeline(2) is True
+    assert audio.timeline(2) is None
 
     db = AudioDB(str(tmp_path / "stereo.sqlite"))
     db.insert(audio)
@@ -185,14 +191,25 @@ def test_audio_channel_timelines_round_trip(tmp_path):
 
 def test_setting_timeline_audio_id_updates_the_whole_audio():
     audio = Audio.from_pcm(b"\0\0" * 4, sample_rate=8000, channels=2, id="old-id")
-    audio.timeline("left")
-    audio.timeline("right")
+    audio.ensure_timeline("left")
+    audio.ensure_timeline("right")
 
     audio.timeline("left").audio_id = "new-id"
 
     assert audio.id == "new-id"
     assert audio.timeline("mono").audio_id == "new-id"
     assert audio.timeline("right").audio_id == "new-id"
+
+
+def test_audio_duration_and_validation_are_audio_scoped():
+    audio = Audio.from_pcm(b"\0\0" * 4000, sample_rate=8000, id="duration")
+    audio.ensure_timeline("right")
+    audio.duration_ms = 500
+
+    assert audio.duration_ms == 500
+    assert audio.timeline("mono").duration_ms == 500
+    assert audio.timeline("right").duration_ms == 500
+    audio.validate()
 
 
 def test_waveform_from_numpy_copies_input():
@@ -395,6 +412,10 @@ def test_database_update_detects_changes(tmp_path):
         db["timeline-only"].timeline("mono").transcript_by_source("second-model").text
         == "second"
     )
+
+    another = db["timeline-only"]
+    another.metadata["batch"] = True
+    assert db.update_many([another]) == 1
 
 
 def test_audio_has_only_explicit_public_constructors(tmp_path):

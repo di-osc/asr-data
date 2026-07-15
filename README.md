@@ -59,6 +59,9 @@ audio.metadata["speaker"] = "alice"
 audio_from_url = Audio.from_url("https://example.com/audio.wav", id="remote-001")
 audio_from_bytes = Audio.from_bytes(open("audio.wav", "rb").read(), id="bytes-001")
 audio_from_pcm = Audio.from_pcm(b"\0\0" * 16000, sample_rate=16000, id="pcm-001")
+
+# 音频 ID 和时长属于 Audio，并同步到所有声道 Timeline。
+audio_from_pcm.duration_ms = 1_000
 ```
 
 ### 添加时间轴标注
@@ -92,8 +95,18 @@ caller_waveform = waveform.channel(0)
 agent_waveform = waveform.channel(1)
 
 # 识别器只处理提取后的 mono waveform；调用方把结果写回对应声道。
-audio.timeline("left").add_transcription(0, 1200, "caller text")
-audio.timeline("right").add_transcription(0, 1200, "agent text")
+audio.ensure_timeline("left").add_transcription(0, 1200, "caller text")
+audio.ensure_timeline("right").add_transcription(0, 1200, "agent text")
+```
+
+`timeline()` 只查询，不会修改 Audio；声道不存在时返回 `None`。需要创建时显式使用 `ensure_timeline()`：
+
+```python
+right = audio.timeline("right")
+if right is None:
+    right = audio.ensure_timeline("right")
+
+audio.remove_timeline("right")
 ```
 
 需要混音时仍显式调用 `waveform.to_mono()`，不会自动合并左右声道的 Timeline。
@@ -133,6 +146,14 @@ loaded = db["call-001"]
 # 更新
 loaded.metadata["checked"] = True
 db.update(loaded)
+
+# 批量更新使用单个 SQLite 事务
+db.update_many([loaded])
+
+# 数据库级元数据适合保存模型运行信息
+db.set_metadata("annotation_runs", {
+    "whisper-large": {"language": "en"},
+})
 
 # 删除
 db.delete("call-001")

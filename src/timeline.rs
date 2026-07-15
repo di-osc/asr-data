@@ -125,38 +125,76 @@ impl Timeline {
             .collect()
     }
 
-    pub fn transcript(&self) -> Transcript {
-        let mut segments = self
-            .annotations
+    pub fn annotations_by_source<'a>(
+        &'a self,
+        source: &'a AnnotationSource,
+    ) -> impl Iterator<Item = &'a Annotation> + 'a {
+        self.annotations
             .iter()
-            .filter(|annotation| annotation.status == AnnotationStatus::Final)
-            .filter_map(|annotation| match &annotation.payload {
-                AnnotationPayload::Transcription(segment)
-                | AnnotationPayload::Sentence(segment) => {
-                    Some((annotation.range.start, segment.clone()))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+            .filter(move |annotation| &annotation.source == source)
+    }
 
-        segments.sort_by_key(|(start, _)| *start);
-        let segments = segments
-            .into_iter()
-            .map(|(_, segment)| segment)
-            .collect::<Vec<_>>();
-        let text = segments
-            .iter()
-            .map(|segment| segment.text.trim())
-            .filter(|text| !text.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let language = segments.iter().find_map(|segment| segment.language.clone());
+    pub fn transcript_by_source(&self, source: &AnnotationSource) -> Transcript {
+        transcript_from_annotations(self.annotations_by_source(source))
+    }
 
-        Transcript {
-            text,
-            language,
-            segments,
+    pub fn remove_annotations_by_source(&mut self, source: &AnnotationSource) -> usize {
+        let old_len = self.annotations.len();
+        self.annotations
+            .retain(|annotation| &annotation.source != source);
+        old_len - self.annotations.len()
+    }
+
+    pub fn relabel_annotations_source(
+        &mut self,
+        from: &AnnotationSource,
+        to: AnnotationSource,
+    ) -> usize {
+        let mut changed = 0;
+        for annotation in &mut self.annotations {
+            if &annotation.source == from {
+                annotation.source = to.clone();
+                changed += 1;
+            }
         }
+        changed
+    }
+
+    pub fn transcript(&self) -> Transcript {
+        transcript_from_annotations(self.annotations.iter())
+    }
+}
+
+fn transcript_from_annotations<'a>(
+    annotations: impl Iterator<Item = &'a Annotation>,
+) -> Transcript {
+    let mut segments = annotations
+        .filter(|annotation| annotation.status == AnnotationStatus::Final)
+        .filter_map(|annotation| match &annotation.payload {
+            AnnotationPayload::Transcription(segment) | AnnotationPayload::Sentence(segment) => {
+                Some((annotation.range.start, segment.clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    segments.sort_by_key(|(start, _)| *start);
+    let segments = segments
+        .into_iter()
+        .map(|(_, segment)| segment)
+        .collect::<Vec<_>>();
+    let text = segments
+        .iter()
+        .map(|segment| segment.text.trim())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let language = segments.iter().find_map(|segment| segment.language.clone());
+
+    Transcript {
+        text,
+        language,
+        segments,
     }
 }
 

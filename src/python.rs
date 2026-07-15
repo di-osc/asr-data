@@ -73,21 +73,14 @@ fn audio_channel(value: &Bound<'_, PyAny>) -> PyResult<RustAudioChannel> {
         ..0 => Err(PyValueError::new_err(
             "audio channel index must be non-negative",
         )),
-        0 => Ok(RustAudioChannel::Left),
-        1 => Ok(RustAudioChannel::Right),
         _ => u16::try_from(index)
-            .map(RustAudioChannel::Channel)
+            .map(RustAudioChannel::from_index)
             .map_err(|_| PyValueError::new_err("audio channel index exceeds u16")),
     }
 }
 
 fn audio_channel_name(channel: RustAudioChannel) -> String {
-    match channel {
-        RustAudioChannel::Mono => "mono".to_string(),
-        RustAudioChannel::Left => "left".to_string(),
-        RustAudioChannel::Right => "right".to_string(),
-        RustAudioChannel::Channel(index) => index.to_string(),
-    }
+    channel.name()
 }
 
 fn source_kind(source: &AnnotationSource) -> &'static str {
@@ -567,7 +560,7 @@ impl PyTimeline {
     #[setter]
     fn set_duration_ms(&self, value: Option<u64>) -> PyResult<()> {
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
-        self.selected_mut(&mut audio)?.duration = value.map(DurationMs);
+        audio.set_duration(value.map(DurationMs));
         Ok(())
     }
 
@@ -624,6 +617,7 @@ impl PyTimeline {
     }
 
     #[pyo3(signature = (start_ms, end_ms, text, source="asr", language=None, confidence=None, status="final", source_kind="stage"))]
+    #[allow(clippy::too_many_arguments)]
     fn add_transcription(
         &self,
         start_ms: u64,
@@ -651,6 +645,7 @@ impl PyTimeline {
     }
 
     #[pyo3(signature = (start_ms, end_ms, speaker, source="diarization", confidence=None, status="final", source_kind="stage"))]
+    #[allow(clippy::too_many_arguments)]
     fn add_speaker(
         &self,
         start_ms: u64,
@@ -694,40 +689,8 @@ impl PyTimeline {
     fn transcript_by_source(&self, source: &str, source_kind: &str) -> PyResult<PyTranscript> {
         let expected = annotation_source(source_kind, source)?;
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
-        let mut segments = audio
-            .timeline(self.channel)
-            .map_err(py_error)?
-            .ok_or_else(|| PyRuntimeError::new_err("selected timeline does not exist"))?
-            .annotations
-            .iter()
-            .filter(|annotation| {
-                annotation.status == AnnotationStatus::Final && annotation.source == expected
-            })
-            .filter_map(|annotation| match &annotation.payload {
-                AnnotationPayload::Transcription(span) | AnnotationPayload::Sentence(span) => {
-                    Some((annotation.range.start, span.clone()))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        segments.sort_by_key(|(start, _)| *start);
-        let segments = segments
-            .into_iter()
-            .map(|(_, segment)| segment)
-            .collect::<Vec<_>>();
-        let text = segments
-            .iter()
-            .map(|segment| segment.text.trim())
-            .filter(|text| !text.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let language = segments.iter().find_map(|segment| segment.language.clone());
         Ok(PyTranscript {
-            inner: RustTranscript {
-                text,
-                language,
-                segments,
-            },
+            inner: self.selected(&audio)?.transcript_by_source(&expected),
         })
     }
 
@@ -736,11 +699,7 @@ impl PyTimeline {
         let expected = annotation_source(source_kind, source)?;
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
         let timeline = self.selected_mut(&mut audio)?;
-        let old_len = timeline.annotations.len();
-        timeline
-            .annotations
-            .retain(|annotation| annotation.source != expected);
-        Ok(old_len - timeline.annotations.len())
+        Ok(timeline.remove_annotations_by_source(&expected))
     }
 
     #[pyo3(signature = (from_source, to_source, from_source_kind="stage", to_source_kind="model"))]
@@ -754,14 +713,9 @@ impl PyTimeline {
         let from = annotation_source(from_source_kind, from_source)?;
         let to = annotation_source(to_source_kind, to_source)?;
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
-        let mut changed = 0;
-        for annotation in &mut self.selected_mut(&mut audio)?.annotations {
-            if annotation.source == from {
-                annotation.source = to.clone();
-                changed += 1;
-            }
-        }
-        Ok(changed)
+        Ok(self
+            .selected_mut(&mut audio)?
+            .relabel_annotations_source(&from, to))
     }
 
     fn transcript(&self) -> PyResult<PyTranscript> {
@@ -819,6 +773,7 @@ impl PyTimeline {
         audio.ensure_timeline(self.channel).map_err(py_error)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn add_payload(
         &self,
         start_ms: u64,
@@ -954,7 +909,22 @@ impl PyAudio {
             .clone())
     }
 
-    fn timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<PyTimeline> {
+    fn timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<Option<PyTimeline>> {
+        let channel = audio_channel(channel)?;
+        let exists = self
+            .inner
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .timeline(channel)
+            .map_err(py_error)?
+            .is_some();
+        Ok(exists.then(|| PyTimeline {
+            audio: Arc::clone(&self.inner),
+            channel,
+        }))
+    }
+
+    fn ensure_timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<PyTimeline> {
         let channel = audio_channel(channel)?;
         self.inner
             .write()
@@ -965,6 +935,44 @@ impl PyAudio {
             audio: Arc::clone(&self.inner),
             channel,
         })
+    }
+
+    fn remove_timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let channel = audio_channel(channel)?;
+        Ok(self
+            .inner
+            .write()
+            .map_err(|_| poisoned("audio"))?
+            .remove_timeline(channel)
+            .map_err(py_error)?
+            .is_some())
+    }
+
+    #[getter]
+    fn duration_ms(&self) -> PyResult<Option<u64>> {
+        Ok(self
+            .inner
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .duration
+            .map(|duration| duration.0))
+    }
+
+    #[setter]
+    fn set_duration_ms(&self, value: Option<u64>) -> PyResult<()> {
+        self.inner
+            .write()
+            .map_err(|_| poisoned("audio"))?
+            .set_duration(value.map(DurationMs));
+        Ok(())
+    }
+
+    fn validate(&self) -> PyResult<()> {
+        self.inner
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .validate()
+            .map_err(py_error)
     }
 
     #[getter]
@@ -1025,28 +1033,31 @@ impl PyAudio {
 
     fn __repr__(&self) -> PyResult<String> {
         let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
-        let timeline = audio.mono_timeline();
         let mut fields = vec![
-            format!("id={:?}", truncate(&timeline.audio_id, 40)),
+            format!("id={:?}", truncate(&audio.id, 40)),
             format_source_field(&audio.source),
         ];
-        if let Some(duration) = timeline.duration {
+        if let Some(duration) = audio.duration {
             fields.push(format!(
                 "duration={:?}",
                 format_duration_ms(duration.0 as f64)
             ));
         }
-        if !timeline.annotations.is_empty() {
-            fields.push(format!("annotations={}", timeline.annotations.len()));
+        let annotation_count = audio
+            .timelines()
+            .values()
+            .map(|timeline| timeline.annotations.len())
+            .sum::<usize>();
+        if annotation_count != 0 {
+            fields.push(format!("annotations={annotation_count}"));
         }
         Ok(format!("Audio({})", fields.join(", ")))
     }
 
     fn __str__(&self) -> PyResult<String> {
         let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
-        let timeline = audio.mono_timeline();
-        let id = truncate(&timeline.audio_id, 40);
-        Ok(match timeline.duration {
+        let id = truncate(&audio.id, 40);
+        Ok(match audio.duration {
             Some(duration) => format!("Audio {:?} ({})", id, format_duration_ms(duration.0 as f64)),
             None => format!("Audio {id:?}"),
         })
@@ -1176,7 +1187,7 @@ impl PyAudioDb {
             .inner
             .lock()
             .map_err(|_| poisoned("AudioDB"))?
-            .get_by_id(audio_id)
+            .get(audio_id)
             .map_err(py_error)?
             .ok_or_else(|| PyKeyError::new_err(audio_id.to_string()))?;
         PyAudio::from_rust(py, audio)
@@ -1195,6 +1206,60 @@ impl PyAudioDb {
             .lock()
             .map_err(|_| poisoned("AudioDB"))?
             .delete(audio_id)
+            .map_err(py_error)
+    }
+
+    fn update_many(&self, py: Python<'_>, audios: Vec<Py<PyAudio>>) -> PyResult<usize> {
+        let audios = audios
+            .iter()
+            .map(|audio| audio.bind(py).borrow().cloned_inner(py))
+            .collect::<PyResult<Vec<_>>>()?;
+        self.inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .update_many(&audios)
+            .map_err(py_db_error)
+    }
+
+    fn set_metadata(&self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let value: serde_json::Value = pythonize::depythonize(value).map_err(py_error)?;
+        self.inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .set_metadata(key, &value)
+            .map_err(py_error)
+    }
+
+    fn metadata_value<'py>(
+        &self,
+        py: Python<'py>,
+        key: &str,
+    ) -> PyResult<Option<Bound<'py, PyAny>>> {
+        self.inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .metadata(key)
+            .map_err(py_error)?
+            .map(|value| pythonize::pythonize(py, &value).map_err(py_error))
+            .transpose()
+    }
+
+    #[getter]
+    fn metadata<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let metadata = self
+            .inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .all_metadata()
+            .map_err(py_error)?;
+        pythonize::pythonize(py, &metadata).map_err(py_error)
+    }
+
+    fn delete_metadata(&self, key: &str) -> PyResult<bool> {
+        self.inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .delete_metadata(key)
             .map_err(py_error)
     }
 

@@ -10,6 +10,38 @@ pub enum AudioChannel {
     Channel(u16),
 }
 
+impl AudioChannel {
+    pub fn from_index(index: u16) -> Self {
+        match index {
+            0 => Self::Left,
+            1 => Self::Right,
+            index => Self::Channel(index),
+        }
+    }
+
+    pub fn index(self) -> Option<u16> {
+        match self {
+            Self::Mono => None,
+            Self::Left => Some(0),
+            Self::Right => Some(1),
+            Self::Channel(index) => Some(index),
+        }
+    }
+
+    pub fn name(self) -> String {
+        match self {
+            Self::Mono => "mono".to_string(),
+            Self::Left => "left".to_string(),
+            Self::Right => "right".to_string(),
+            Self::Channel(index) => index.to_string(),
+        }
+    }
+
+    pub fn is_canonical(self) -> bool {
+        !matches!(self, Self::Channel(0 | 1))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AudioEncoding {
     Wav,

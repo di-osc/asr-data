@@ -200,6 +200,33 @@ fn audio_keeps_independent_channel_timelines() {
 }
 
 #[test]
+fn audio_owns_identity_duration_and_channel_normalization() {
+    let mut audio = Audio::with_id("call-1", AudioSource::from_encoded_bytes(vec![]));
+    audio.set_duration(Some(DurationMs(500)));
+    audio
+        .ensure_timeline(AudioChannel::from_index(1))
+        .expect("right timeline");
+
+    assert_eq!(audio.id, "call-1");
+    assert_eq!(audio.duration, Some(DurationMs(500)));
+    assert_eq!(AudioChannel::from_index(0), AudioChannel::Left);
+    assert_eq!(AudioChannel::from_index(1), AudioChannel::Right);
+    assert_eq!(AudioChannel::Right.index(), Some(1));
+    assert_eq!(AudioChannel::Mono.index(), None);
+    assert_eq!(AudioChannel::Right.name(), "right");
+    assert!(audio.timelines().values().all(
+        |timeline| timeline.audio_id == "call-1" && timeline.duration == Some(DurationMs(500))
+    ));
+    assert!(audio.validate().is_ok());
+    assert!(
+        audio
+            .remove_timeline(AudioChannel::Right)
+            .expect("canonical channel")
+            .is_some()
+    );
+}
+
+#[test]
 fn audio_bytes_stream_emits_fixed_pcm_chunks_and_flushes_tail() -> Result<(), WaveformError> {
     let mut stream = AudioBytesStream::new(16_000, 1, 100);
     let mut frame = Vec::new();
@@ -295,9 +322,9 @@ fn audio_source_loads_pcm_and_waveform_ops_preserve_original_format() {
 #[test]
 fn audio_db_crud_and_difference_update() {
     let path = std::env::temp_dir().join(format!("asr-db-{}.vasr", uuid::Uuid::new_v4().simple()));
-    let db = AudioDb::open(&path, AudioDbMode::ReadWrite).expect("open AudioDb");
+    let mut db = AudioDb::open(&path, AudioDbMode::ReadWrite).expect("open AudioDb");
     let mut first = annotated_audio();
-    first.mono_timeline_mut().duration = Some(DurationMs(100));
+    first.set_duration(Some(DurationMs(100)));
     first
         .ensure_timeline(AudioChannel::Left)
         .expect("left timeline")
@@ -317,14 +344,28 @@ fn audio_db_crud_and_difference_update() {
             AnnotationStatus::Final,
         ));
     let mut second = Audio::with_id("second", AudioSource::from_encoded_bytes(vec![5, 6, 7]));
-    second.mono_timeline_mut().duration = Some(DurationMs(250));
+    second.set_duration(Some(DurationMs(250)));
     db.insert(&first).expect("insert first");
     db.insert(&second).expect("insert second");
+    db.set_metadata("dataset", &serde_json::json!("calls"))
+        .expect("set database metadata");
+    assert_eq!(
+        db.metadata("dataset").expect("database metadata"),
+        Some(serde_json::json!("calls"))
+    );
 
     assert!(!db.update(&first).expect("unchanged update"));
     first = first.with_metadata_value("split", serde_json::json!("train"));
     assert!(db.update(&first).expect("changed update"));
     assert!(!db.update(&first).expect("second unchanged update"));
+    let mut batch = vec![first.clone(), second.clone()];
+    batch[0]
+        .metadata
+        .insert("batch".to_string(), serde_json::json!(1));
+    batch[1]
+        .metadata
+        .insert("batch".to_string(), serde_json::json!(1));
+    assert_eq!(db.update_many(&batch).expect("batch update"), 2);
     let first_page = db
         .query(&AudioQuery {
             limit: 1,
@@ -391,7 +432,7 @@ fn audio_db_crud_and_difference_update() {
 }
 
 #[test]
-fn audio_db_v1_is_migrated_to_channel_timeline_v3() {
+fn audio_db_v1_is_migrated_to_channel_timeline_v4() {
     let path = std::env::temp_dir().join(format!(
         "asr-db-v1-migration-{}.vasr",
         uuid::Uuid::new_v4().simple()
@@ -429,7 +470,7 @@ fn audio_db_v1_is_migrated_to_channel_timeline_v3() {
     }
 
     let db = AudioDb::open(&path, AudioDbMode::ReadWrite).expect("migrate v1 database");
-    assert_eq!(AudioDb::SCHEMA_VERSION, 3);
+    assert_eq!(AudioDb::SCHEMA_VERSION, 4);
     let migrated = db.query(&AudioQuery::default()).expect("query migrated");
     assert_eq!(migrated[0].mono_timeline().transcript().text, "hello");
     drop(db);
@@ -438,7 +479,7 @@ fn audio_db_v1_is_migrated_to_channel_timeline_v3() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("version");
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     assert_eq!(
         connection
             .query_row("SELECT COUNT(*) FROM audio_sources", [], |row| row
@@ -516,6 +557,71 @@ fn audio_db_v2_is_decoded_read_only_as_mono_timeline() {
     let loaded = db.query(&AudioQuery::default()).expect("query v2");
     assert_eq!(loaded[0].mono_timeline().transcript().text, "hello");
     assert_eq!(loaded[0].timelines().len(), 1);
+    drop(db);
+    std::fs::remove_file(path).ok();
+}
+
+#[test]
+fn audio_db_v3_is_decoded_read_only_with_top_level_identity_and_duration() {
+    let path = std::env::temp_dir().join(format!(
+        "asr-db-v3-read-only-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let mut audio = annotated_audio();
+    audio.set_duration(Some(DurationMs(100)));
+    let source = rmp_serde::to_vec_named(&audio.source).expect("encode source");
+    let timelines = rmp_serde::to_vec_named(audio.timelines()).expect("encode timelines");
+    let metadata = serde_json::to_string(&audio.metadata).expect("encode metadata");
+    {
+        let connection = rusqlite::Connection::open(&path).expect("open v3 fixture");
+        connection
+            .execute_batch(
+                "PRAGMA application_id = 0x56415352;
+                 PRAGMA user_version = 3;
+                 CREATE TABLE metadata (
+                     key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL
+                 ) STRICT;
+                 CREATE TABLE audios (
+                     audio_id TEXT PRIMARY KEY NOT NULL,
+                     metadata TEXT NOT NULL,
+                     duration_ms INTEGER
+                 ) STRICT;
+                 CREATE TABLE audio_sources (
+                     audio_id TEXT PRIMARY KEY NOT NULL REFERENCES audios(audio_id),
+                     source BLOB NOT NULL
+                 ) STRICT;
+                 CREATE TABLE timelines (
+                     audio_id TEXT PRIMARY KEY NOT NULL REFERENCES audios(audio_id),
+                     timeline BLOB NOT NULL
+                 ) STRICT;",
+            )
+            .expect("create v3 schema");
+        connection
+            .execute(
+                "INSERT INTO audios(audio_id, metadata, duration_ms) VALUES (?1, ?2, ?3)",
+                rusqlite::params![audio.audio_id(), metadata, 100_i64],
+            )
+            .expect("insert audio");
+        connection
+            .execute(
+                "INSERT INTO audio_sources(audio_id, source) VALUES (?1, ?2)",
+                rusqlite::params![audio.audio_id(), source],
+            )
+            .expect("insert source");
+        connection
+            .execute(
+                "INSERT INTO timelines(audio_id, timeline) VALUES (?1, ?2)",
+                rusqlite::params![audio.audio_id(), timelines],
+            )
+            .expect("insert timelines");
+    }
+
+    let db = AudioDb::open(&path, AudioDbMode::ReadOnly).expect("open v3 read-only");
+    let loaded = db.query(&AudioQuery::default()).expect("query v3");
+    assert_eq!(loaded[0].id, "audio_1");
+    assert_eq!(loaded[0].duration, Some(DurationMs(100)));
+    assert_eq!(loaded[0].mono_timeline().transcript().text, "hello");
+    loaded[0].validate().expect("valid migrated audio");
     drop(db);
     std::fs::remove_file(path).ok();
 }

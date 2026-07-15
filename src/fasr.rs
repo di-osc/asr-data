@@ -149,6 +149,7 @@ fn fasr_record_to_asr(index: usize, meta: Value, audio_bytes: Vec<u8>) -> Result
                 "channels": channels,
             }),
         );
+    audio.set_duration(duration_ms);
     if let Some(sha256) = source.get("sha256").and_then(Value::as_str) {
         audio = audio.with_metadata_value("sha256", serde_json::json!(sha256));
     }

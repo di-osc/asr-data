@@ -104,7 +104,7 @@ impl Waveform {
         sample_rate: u32,
         channels: u16,
     ) -> Result<Self, WaveformError> {
-        if bytes.len() % 2 != 0 {
+        if !bytes.len().is_multiple_of(2) {
             return Err(WaveformError::OddPcmByteLength);
         }
         if channels == 0 {
