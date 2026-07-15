@@ -160,12 +160,6 @@ for audio in db:
 
 `asr-data` 使用标准 SQLite 数据库文件保存数据，推荐使用 `.sqlite` 后缀。库会写入 SQLite application ID，用于识别和校验数据库格式。
 
-## 发布
+## 许可证
 
-发布由 GitHub Releases 驱动。更新 `Cargo.toml` 和 `pyproject.toml` 中的版本号后运行：
-
-```bash
-./scripts/release.sh 0.1.0
-```
-
-该脚本会创建 `v0.1.0` 标签并触发 release workflow，构建 Python wheels / sdist、发布 PyPI 包，并发布 Rust crate。
+本项目采用 [MIT License](LICENSE) 开源。
