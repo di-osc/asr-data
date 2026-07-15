@@ -55,3 +55,24 @@ database lazily in bounded batches.
 
 Existing `.vasr` SQLite databases remain supported. The file extension and
 SQLite application ID are retained as a stable on-disk format identifier.
+
+## Release
+
+Publishing is driven by GitHub Releases. After bumping `version` in both
+`Cargo.toml` and `pyproject.toml`, create a release with the GitHub CLI:
+
+```bash
+./scripts/release.sh 0.1.0
+```
+
+That creates tag `v0.1.0`, runs `gh release create`, and the
+`.github/workflows/release.yml` workflow then:
+
+1. Builds Python wheels / sdist and uploads them to the release
+2. Publishes the package to PyPI
+3. Publishes the crate to crates.io
+
+Repository setup required once:
+
+- GitHub Environments `pypi` (Trusted Publishing / OIDC) and `crates-io`
+- Secret `CARGO_REGISTRY_TOKEN` on the `crates-io` environment
