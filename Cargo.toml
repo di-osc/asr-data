@@ -2,8 +2,13 @@
 name = "asr-data"
 version = "0.1.0"
 edition = "2024"
+description = "ASR audio/transcript data model with SQLite storage and optional Python bindings"
 license = "MIT"
+readme = "README.md"
 repository = "https://github.com/di-osc/asr-data"
+homepage = "https://github.com/di-osc/asr-data"
+keywords = ["asr", "audio", "speech", "sqlite"]
+categories = ["multimedia::audio", "science"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
