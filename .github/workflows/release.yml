@@ -178,7 +178,6 @@ jobs:
     if: github.event_name == 'release' || inputs.publish_crates
     needs: [prepare, upload-release-assets]
     runs-on: ubuntu-latest
-    environment: crates-io
     permissions:
       contents: read
     steps:
@@ -187,6 +186,18 @@ jobs:
           ref: ${{ needs.prepare.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check crates.io token
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [[ -z "${CARGO_REGISTRY_TOKEN}" ]]; then
+            echo "::error::CARGO_REGISTRY_TOKEN is empty."
+            echo "Add a repository secret named CARGO_REGISTRY_TOKEN:"
+            echo "  Settings → Secrets and variables → Actions → New repository secret"
+            echo "Value: a crates.io API token with publish permissions."
+            exit 1
+          fi
 
       - name: Publish asr-data
         run: cargo publish -p asr-data --locked

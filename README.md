@@ -78,6 +78,5 @@ That creates tag `v0.1.0`, runs `gh release create`, and the
 
 Repository setup required once:
 
-- GitHub Environments：`pypi`、`crates-io`
-- Secret `PYPI_API_TOKEN`（`pypi` 环境）
-- Secret `CARGO_REGISTRY_TOKEN`（`crates-io` 环境）
+- Environment `pypi` + secret `PYPI_API_TOKEN`
+- Repository secret `CARGO_REGISTRY_TOKEN`（Settings → Secrets and variables → Actions）
