@@ -1,0 +1,1212 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+
+use crate::{
+    Annotation as RustAnnotation, AnnotationPayload, AnnotationSource, AnnotationStatus,
+    Audio as RustAudio, AudioDb as RustAudioDb, AudioDbError as RustAudioDbError, AudioDbMode,
+    AudioEncoding, AudioFormat as RustAudioFormat, AudioQuery, AudioSource as RustAudioSource,
+    DurationMs, TextSpan, TimeRange, Transcript as RustTranscript, Waveform as RustWaveform,
+};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
+use pyo3::create_exception;
+use pyo3::exceptions::{PyException, PyKeyError, PyRuntimeError, PyValueError};
+use pyo3::prelude::*;
+use pyo3::types::{PyAny, PyBytes, PyDict};
+
+create_exception!(_native, AsrDataError, PyException);
+
+fn py_error(error: impl std::fmt::Display) -> PyErr {
+    AsrDataError::new_err(error.to_string())
+}
+
+fn py_db_error(error: RustAudioDbError) -> PyErr {
+    match error {
+        RustAudioDbError::NotFound { audio_id } => PyKeyError::new_err(audio_id),
+        error => py_error(error),
+    }
+}
+
+fn poisoned(label: &str) -> PyErr {
+    PyRuntimeError::new_err(format!("{label} lock is poisoned"))
+}
+
+fn annotation_status(value: &str) -> PyResult<AnnotationStatus> {
+    match value.to_ascii_lowercase().as_str() {
+        "partial" => Ok(AnnotationStatus::Partial),
+        "final" => Ok(AnnotationStatus::Final),
+        "revised" => Ok(AnnotationStatus::Revised),
+        "deleted" => Ok(AnnotationStatus::Deleted),
+        _ => Err(PyValueError::new_err(format!(
+            "unsupported annotation status {value:?}"
+        ))),
+    }
+}
+
+fn annotation_source(kind: &str, name: &str) -> PyResult<AnnotationSource> {
+    match kind.to_ascii_lowercase().as_str() {
+        "user" => Ok(AnnotationSource::User),
+        "model" => Ok(AnnotationSource::Model(name.to_string())),
+        "stage" => Ok(AnnotationSource::Stage(name.to_string())),
+        "system" => Ok(AnnotationSource::System),
+        _ => Err(PyValueError::new_err(format!(
+            "unsupported annotation source kind {kind:?}; expected user, model, stage, or system"
+        ))),
+    }
+}
+
+fn source_kind(source: &AnnotationSource) -> &'static str {
+    match source {
+        AnnotationSource::User => "user",
+        AnnotationSource::Model(_) => "model",
+        AnnotationSource::Stage(_) => "stage",
+        AnnotationSource::System => "system",
+    }
+}
+
+fn source_name(source: &AnnotationSource) -> Option<&str> {
+    match source {
+        AnnotationSource::Model(name) | AnnotationSource::Stage(name) => Some(name),
+        AnnotationSource::User | AnnotationSource::System => None,
+    }
+}
+
+fn status_name(status: &AnnotationStatus) -> &'static str {
+    match status {
+        AnnotationStatus::Partial => "partial",
+        AnnotationStatus::Final => "final",
+        AnnotationStatus::Revised => "revised",
+        AnnotationStatus::Deleted => "deleted",
+    }
+}
+
+fn encoding_name(encoding: &AudioEncoding) -> String {
+    match encoding {
+        AudioEncoding::Wav => "wav".to_string(),
+        AudioEncoding::Flac => "flac".to_string(),
+        AudioEncoding::Mp3 => "mp3".to_string(),
+        AudioEncoding::Ogg => "ogg".to_string(),
+        AudioEncoding::PcmS16Le => "pcm_s16le".to_string(),
+        AudioEncoding::Other(value) => value.clone(),
+        AudioEncoding::Unknown => "unknown".to_string(),
+    }
+}
+
+fn truncate(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut output = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    output.push('…');
+    output
+}
+
+fn format_duration_ms(duration_ms: f64) -> String {
+    if duration_ms < 1_000.0 {
+        return format!("{duration_ms:.0}ms");
+    }
+    let seconds = duration_ms / 1_000.0;
+    if seconds < 60.0 {
+        return format!("{seconds:.2}s");
+    }
+    let minutes = (seconds / 60.0).floor() as u64;
+    let remaining_seconds = seconds - minutes as f64 * 60.0;
+    if minutes < 60 {
+        return format!("{minutes}m{remaining_seconds:04.1}s");
+    }
+    let hours = minutes / 60;
+    let remaining_minutes = minutes % 60;
+    format!("{hours}h{remaining_minutes:02}m{remaining_seconds:04.1}s")
+}
+
+fn format_source_field(source: &RustAudioSource) -> String {
+    match source {
+        RustAudioSource::Path(path) => {
+            format!("file={:?}", truncate(&path.display().to_string(), 72))
+        }
+        RustAudioSource::Url(url) => format!("url={:?}", truncate(url, 72)),
+        RustAudioSource::Base64(data) => format!("base64_chars={}", data.len()),
+        RustAudioSource::EncodedBytes(bytes) => format!("bytes={}", bytes.len()),
+        RustAudioSource::PcmS16Le {
+            bytes,
+            sample_rate,
+            channels,
+        } => format!(
+            "pcm_bytes={}, sample_rate={}, channels={}",
+            bytes.len(),
+            sample_rate,
+            channels
+        ),
+    }
+}
+
+#[pyclass(name = "AudioFormat", frozen)]
+#[derive(Clone)]
+struct PyAudioFormat {
+    inner: RustAudioFormat,
+}
+
+#[pymethods]
+impl PyAudioFormat {
+    #[getter]
+    fn encoding(&self) -> String {
+        encoding_name(&self.inner.encoding)
+    }
+
+    #[getter]
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate
+    }
+
+    #[getter]
+    fn channels(&self) -> u16 {
+        self.inner.channels
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AudioFormat(encoding={:?}, sample_rate={}, channels={})",
+            self.encoding(),
+            self.sample_rate(),
+            self.channels()
+        )
+    }
+
+    fn __str__(&self) -> String {
+        format!(
+            "{}/{}Hz/{}ch",
+            self.encoding(),
+            self.sample_rate(),
+            self.channels()
+        )
+    }
+}
+
+#[pyclass(name = "Waveform")]
+#[derive(Clone)]
+struct PyWaveform {
+    inner: RustWaveform,
+}
+
+#[pymethods]
+impl PyWaveform {
+    #[new]
+    #[pyo3(signature = (samples, sample_rate, channels=1))]
+    fn new(samples: PyReadonlyArray1<'_, f32>, sample_rate: u32, channels: u16) -> PyResult<Self> {
+        let samples = samples.as_slice().map_err(py_error)?.to_vec();
+        let inner = RustWaveform::try_new_with_channels(samples, sample_rate, channels)
+            .map_err(py_error)?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate
+    }
+
+    #[getter]
+    fn channels(&self) -> u16 {
+        self.inner.channels
+    }
+
+    #[getter]
+    fn is_normalized(&self) -> bool {
+        self.inner.is_normalized
+    }
+
+    #[getter]
+    fn frame_count(&self) -> usize {
+        self.inner.frame_count()
+    }
+
+    #[getter]
+    fn duration_ms(&self) -> f64 {
+        self.inner.duration_ms()
+    }
+
+    #[getter]
+    fn source_format(&self) -> Option<PyAudioFormat> {
+        self.inner
+            .source_format
+            .clone()
+            .map(|inner| PyAudioFormat { inner })
+    }
+
+    fn numpy<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
+        self.inner.samples.clone().into_pyarray(py)
+    }
+
+    /// Displays an IPython audio player in a notebook cell.
+    #[pyo3(signature = (autoplay=false))]
+    fn display(&self, py: Python<'_>, autoplay: bool) -> PyResult<()> {
+        let ipython = py.import("IPython.display").map_err(|_| {
+            AsrDataError::new_err(
+                "Waveform.display() requires IPython; install it with `pip install ipython`",
+            )
+        })?;
+        let samples = self.inner.samples.clone().into_pyarray(py);
+        let data: Bound<'_, PyAny> = if self.inner.channels == 1 {
+            samples.into_any()
+        } else {
+            // Rust stores interleaved frames; IPython expects [channels, frames].
+            samples
+                .call_method1(
+                    "reshape",
+                    (self.inner.frame_count(), usize::from(self.inner.channels)),
+                )?
+                .getattr("T")?
+        };
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("data", data)?;
+        kwargs.set_item("rate", self.inner.sample_rate)?;
+        kwargs.set_item("autoplay", autoplay)?;
+        let player = ipython.getattr("Audio")?.call((), Some(&kwargs))?;
+        ipython.getattr("display")?.call1((player,))?;
+        Ok(())
+    }
+
+    fn to_mono(&self) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.to_mono().map_err(py_error)?,
+        })
+    }
+
+    fn channel(&self, index: u16) -> PyResult<Self> {
+        Ok(Self {
+            inner: self.inner.channel(index).map_err(py_error)?,
+        })
+    }
+
+    fn resample(&self, py: Python<'_>, sample_rate: u32) -> PyResult<Self> {
+        let waveform = self.inner.clone();
+        py.detach(move || waveform.resample(sample_rate))
+            .map(|inner| Self { inner })
+            .map_err(py_error)
+    }
+
+    fn normalize(&self) -> Self {
+        Self {
+            inner: self.inner.clone().normalize(),
+        }
+    }
+
+    fn slice_ms(&self, start_ms: u64, end_ms: u64) -> Self {
+        Self {
+            inner: self.inner.slice_ms(start_ms, end_ms),
+        }
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.samples.len()
+    }
+
+    fn __repr__(&self) -> String {
+        let source_format = self.source_format().map_or_else(
+            || "None".to_string(),
+            |format| format!("{:?}", format.__str__()),
+        );
+        format!(
+            "Waveform(frames={}, duration={}, sample_rate={}, channels={}, is_normalized={}, source_format={})",
+            self.frame_count(),
+            format_duration_ms(self.duration_ms()),
+            self.sample_rate(),
+            self.channels(),
+            self.is_normalized(),
+            source_format,
+        )
+    }
+
+    fn __str__(&self) -> String {
+        format!(
+            "Waveform({}, {}Hz, {}ch)",
+            format_duration_ms(self.duration_ms()),
+            self.sample_rate(),
+            self.channels()
+        )
+    }
+}
+
+#[pyclass(name = "Annotation", frozen)]
+#[derive(Clone)]
+struct PyAnnotation {
+    inner: RustAnnotation,
+}
+
+#[pymethods]
+impl PyAnnotation {
+    #[getter]
+    fn id(&self) -> String {
+        self.inner.id.clone()
+    }
+
+    #[getter]
+    fn start_ms(&self) -> u64 {
+        self.inner.range.start.0
+    }
+
+    #[getter]
+    fn end_ms(&self) -> u64 {
+        self.inner.range.end.0
+    }
+
+    #[getter]
+    fn status(&self) -> &'static str {
+        status_name(&self.inner.status)
+    }
+
+    #[getter]
+    fn confidence(&self) -> Option<f32> {
+        self.inner.confidence
+    }
+
+    #[getter]
+    fn source_kind(&self) -> &'static str {
+        source_kind(&self.inner.source)
+    }
+
+    #[getter]
+    fn source(&self) -> Option<String> {
+        source_name(&self.inner.source).map(str::to_string)
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match &self.inner.payload {
+            AnnotationPayload::Speech => "speech",
+            AnnotationPayload::Silence => "silence",
+            AnnotationPayload::Token(_) => "token",
+            AnnotationPayload::Transcription(_) => "transcription",
+            AnnotationPayload::Sentence(_) => "sentence",
+            AnnotationPayload::Speaker(_) => "speaker",
+            AnnotationPayload::Language(_) => "language",
+            AnnotationPayload::Hotword(_) => "hotword",
+            AnnotationPayload::AcousticEvent(_) => "acoustic_event",
+            AnnotationPayload::Diagnostic(_) => "diagnostic",
+        }
+    }
+
+    #[getter]
+    fn text(&self) -> Option<String> {
+        match &self.inner.payload {
+            AnnotationPayload::Transcription(span) | AnnotationPayload::Sentence(span) => {
+                Some(span.text.clone())
+            }
+            AnnotationPayload::Token(token) => Some(token.text.clone()),
+            _ => None,
+        }
+    }
+
+    #[getter]
+    fn speaker(&self) -> Option<String> {
+        match &self.inner.payload {
+            AnnotationPayload::Speaker(speaker) => Some(speaker.clone()),
+            _ => None,
+        }
+    }
+
+    #[getter]
+    fn language(&self) -> Option<String> {
+        match &self.inner.payload {
+            AnnotationPayload::Transcription(span) | AnnotationPayload::Sentence(span) => {
+                span.language.clone()
+            }
+            AnnotationPayload::Language(language) => Some(language.clone()),
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let text = self
+            .text()
+            .map(|text| format!(", text={:?}", truncate(&text, 60)))
+            .unwrap_or_default();
+        let confidence = self
+            .confidence()
+            .map(|value| format!(", confidence={value:.3}"))
+            .unwrap_or_default();
+        format!(
+            "Annotation(id={:?}, kind={:?}, range={}..{}ms, status={:?}{text}{confidence})",
+            truncate(&self.id(), 20),
+            self.kind(),
+            self.start_ms(),
+            self.end_ms(),
+            self.status(),
+        )
+    }
+
+    fn __str__(&self) -> String {
+        let text = self
+            .text()
+            .map(|text| format!(": {:?}", truncate(&text, 60)))
+            .unwrap_or_default();
+        format!(
+            "{} [{}..{}ms]{text}",
+            self.kind(),
+            self.start_ms(),
+            self.end_ms()
+        )
+    }
+}
+
+#[pyclass(name = "Transcript", frozen)]
+#[derive(Clone)]
+struct PyTranscript {
+    inner: RustTranscript,
+}
+
+#[pymethods]
+impl PyTranscript {
+    #[getter]
+    fn text(&self) -> String {
+        self.inner.text.clone()
+    }
+
+    #[getter]
+    fn language(&self) -> Option<String> {
+        self.inner.language.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Transcript(text={:?}, language={:?})",
+            truncate(&self.text(), 100),
+            self.language()
+        )
+    }
+
+    fn __str__(&self) -> String {
+        self.text()
+    }
+}
+
+type SharedAudio = Arc<RwLock<RustAudio>>;
+type AsyncLoadResult = Arc<Mutex<Option<Result<RustWaveform, String>>>>;
+
+fn async_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|error| panic!("failed to create audio async runtime: {error}"))
+    })
+}
+
+#[pyclass(name = "Timeline")]
+#[derive(Clone)]
+struct PyTimeline {
+    audio: SharedAudio,
+}
+
+#[pymethods]
+impl PyTimeline {
+    #[getter]
+    fn id(&self) -> PyResult<String> {
+        Ok(self
+            .audio
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .timeline
+            .id
+            .clone())
+    }
+
+    #[getter]
+    fn audio_id(&self) -> PyResult<String> {
+        Ok(self
+            .audio
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .timeline
+            .audio_id
+            .clone())
+    }
+
+    #[setter]
+    fn set_audio_id(&self, value: String) -> PyResult<()> {
+        self.audio
+            .write()
+            .map_err(|_| poisoned("audio"))?
+            .timeline
+            .audio_id = value;
+        Ok(())
+    }
+
+    #[getter]
+    fn duration_ms(&self) -> PyResult<Option<u64>> {
+        Ok(self
+            .audio
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .timeline
+            .duration
+            .map(|duration| duration.0))
+    }
+
+    #[setter]
+    fn set_duration_ms(&self, value: Option<u64>) -> PyResult<()> {
+        self.audio
+            .write()
+            .map_err(|_| poisoned("audio"))?
+            .timeline
+            .duration = value.map(DurationMs);
+        Ok(())
+    }
+
+    #[getter]
+    fn annotations(&self) -> PyResult<Vec<PyAnnotation>> {
+        Ok(self
+            .audio
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .timeline
+            .annotations
+            .iter()
+            .cloned()
+            .map(|inner| PyAnnotation { inner })
+            .collect())
+    }
+
+    #[pyo3(signature = (start_ms, end_ms, source="vad", confidence=None, source_kind="stage"))]
+    fn add_speech(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        source: &str,
+        confidence: Option<f32>,
+        source_kind: &str,
+    ) -> PyResult<PyAnnotation> {
+        self.add_payload(
+            start_ms,
+            end_ms,
+            AnnotationPayload::Speech,
+            source,
+            source_kind,
+            confidence,
+            AnnotationStatus::Final,
+        )
+    }
+
+    #[pyo3(signature = (start_ms, end_ms, source="vad", confidence=None, source_kind="stage"))]
+    fn add_silence(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        source: &str,
+        confidence: Option<f32>,
+        source_kind: &str,
+    ) -> PyResult<PyAnnotation> {
+        self.add_payload(
+            start_ms,
+            end_ms,
+            AnnotationPayload::Silence,
+            source,
+            source_kind,
+            confidence,
+            AnnotationStatus::Final,
+        )
+    }
+
+    #[pyo3(signature = (start_ms, end_ms, text, source="asr", language=None, confidence=None, status="final", source_kind="stage"))]
+    fn add_transcription(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        text: String,
+        source: &str,
+        language: Option<String>,
+        confidence: Option<f32>,
+        status: &str,
+        source_kind: &str,
+    ) -> PyResult<PyAnnotation> {
+        self.add_payload(
+            start_ms,
+            end_ms,
+            AnnotationPayload::Transcription(TextSpan {
+                text,
+                tokens: Vec::new(),
+                language,
+            }),
+            source,
+            source_kind,
+            confidence,
+            annotation_status(status)?,
+        )
+    }
+
+    #[pyo3(signature = (start_ms, end_ms, speaker, source="diarization", confidence=None, status="final", source_kind="stage"))]
+    fn add_speaker(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        speaker: String,
+        source: &str,
+        confidence: Option<f32>,
+        status: &str,
+        source_kind: &str,
+    ) -> PyResult<PyAnnotation> {
+        self.add_payload(
+            start_ms,
+            end_ms,
+            AnnotationPayload::Speaker(speaker),
+            source,
+            source_kind,
+            confidence,
+            annotation_status(status)?,
+        )
+    }
+
+    #[pyo3(signature = (source, source_kind="model"))]
+    fn annotations_by_source(
+        &self,
+        source: &str,
+        source_kind: &str,
+    ) -> PyResult<Vec<PyAnnotation>> {
+        let expected = annotation_source(source_kind, source)?;
+        Ok(self
+            .audio
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .timeline
+            .annotations
+            .iter()
+            .filter(|annotation| annotation.source == expected)
+            .cloned()
+            .map(|inner| PyAnnotation { inner })
+            .collect())
+    }
+
+    #[pyo3(signature = (source, source_kind="model"))]
+    fn transcript_by_source(&self, source: &str, source_kind: &str) -> PyResult<PyTranscript> {
+        let expected = annotation_source(source_kind, source)?;
+        let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
+        let mut segments = audio
+            .timeline
+            .annotations
+            .iter()
+            .filter(|annotation| {
+                annotation.status == AnnotationStatus::Final && annotation.source == expected
+            })
+            .filter_map(|annotation| match &annotation.payload {
+                AnnotationPayload::Transcription(span) | AnnotationPayload::Sentence(span) => {
+                    Some((annotation.range.start, span.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        segments.sort_by_key(|(start, _)| *start);
+        let segments = segments
+            .into_iter()
+            .map(|(_, segment)| segment)
+            .collect::<Vec<_>>();
+        let text = segments
+            .iter()
+            .map(|segment| segment.text.trim())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let language = segments.iter().find_map(|segment| segment.language.clone());
+        Ok(PyTranscript {
+            inner: RustTranscript {
+                text,
+                language,
+                segments,
+            },
+        })
+    }
+
+    #[pyo3(signature = (source, source_kind="model"))]
+    fn remove_annotations_by_source(&self, source: &str, source_kind: &str) -> PyResult<usize> {
+        let expected = annotation_source(source_kind, source)?;
+        let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
+        let old_len = audio.timeline.annotations.len();
+        audio
+            .timeline
+            .annotations
+            .retain(|annotation| annotation.source != expected);
+        Ok(old_len - audio.timeline.annotations.len())
+    }
+
+    #[pyo3(signature = (from_source, to_source, from_source_kind="stage", to_source_kind="model"))]
+    fn relabel_annotations_source(
+        &self,
+        from_source: &str,
+        to_source: &str,
+        from_source_kind: &str,
+        to_source_kind: &str,
+    ) -> PyResult<usize> {
+        let from = annotation_source(from_source_kind, from_source)?;
+        let to = annotation_source(to_source_kind, to_source)?;
+        let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
+        let mut changed = 0;
+        for annotation in &mut audio.timeline.annotations {
+            if annotation.source == from {
+                annotation.source = to.clone();
+                changed += 1;
+            }
+        }
+        Ok(changed)
+    }
+
+    fn transcript(&self) -> PyResult<PyTranscript> {
+        Ok(PyTranscript {
+            inner: self
+                .audio
+                .read()
+                .map_err(|_| poisoned("audio"))?
+                .timeline
+                .transcript(),
+        })
+    }
+
+    fn __len__(&self) -> PyResult<usize> {
+        Ok(self
+            .audio
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .timeline
+            .annotations
+            .len())
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
+        let duration = audio.timeline.duration.map_or_else(
+            || "None".to_string(),
+            |duration| format!("{:?}", format_duration_ms(duration.0 as f64)),
+        );
+        Ok(format!(
+            "Timeline(id={:?}, audio_id={:?}, duration={}, annotations={})",
+            truncate(&audio.timeline.id, 24),
+            truncate(&audio.timeline.audio_id, 40),
+            duration,
+            audio.timeline.annotations.len()
+        ))
+    }
+
+    fn __str__(&self) -> PyResult<String> {
+        let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
+        let duration = audio.timeline.duration.map_or_else(
+            || "unknown duration".to_string(),
+            |duration| format_duration_ms(duration.0 as f64),
+        );
+        Ok(format!(
+            "Timeline({}, {} annotations)",
+            duration,
+            audio.timeline.annotations.len()
+        ))
+    }
+}
+
+impl PyTimeline {
+    fn add_payload(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        payload: AnnotationPayload,
+        source: &str,
+        source_kind: &str,
+        confidence: Option<f32>,
+        status: AnnotationStatus,
+    ) -> PyResult<PyAnnotation> {
+        if end_ms < start_ms {
+            return Err(PyValueError::new_err("end_ms must be >= start_ms"));
+        }
+        let mut annotation = RustAnnotation::new(
+            TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
+            payload,
+            annotation_source(source_kind, source)?,
+            status,
+        );
+        annotation.confidence = confidence;
+        self.audio
+            .write()
+            .map_err(|_| poisoned("audio"))?
+            .timeline
+            .push(annotation.clone());
+        Ok(PyAnnotation { inner: annotation })
+    }
+}
+
+#[pyclass(name = "Audio")]
+struct PyAudio {
+    inner: SharedAudio,
+    metadata: Py<PyDict>,
+}
+
+#[pyclass(name = "_AudioLoadTask")]
+struct PyAudioLoadTask {
+    result: AsyncLoadResult,
+}
+
+#[pymethods]
+impl PyAudioLoadTask {
+    fn done(&self) -> PyResult<bool> {
+        Ok(self
+            .result
+            .lock()
+            .map_err(|_| poisoned("audio load task"))?
+            .is_some())
+    }
+
+    fn result(&self) -> PyResult<PyWaveform> {
+        let result = self
+            .result
+            .lock()
+            .map_err(|_| poisoned("audio load task"))?
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("audio load has not completed"))?;
+        result
+            .map(|inner| PyWaveform { inner })
+            .map_err(AsrDataError::new_err)
+    }
+}
+
+impl PyAudio {
+    fn from_rust(py: Python<'_>, audio: RustAudio) -> PyResult<Self> {
+        let metadata = PyDict::new(py);
+        for (key, value) in &audio.metadata {
+            metadata.set_item(key, pythonize::pythonize(py, value).map_err(py_error)?)?;
+        }
+        Ok(Self {
+            inner: Arc::new(RwLock::new(audio)),
+            metadata: metadata.unbind(),
+        })
+    }
+
+    fn build(py: Python<'_>, source: RustAudioSource, id: Option<String>) -> PyResult<Self> {
+        let audio = match id {
+            Some(id) => RustAudio::with_id(id, source),
+            None => RustAudio::new(source),
+        };
+        Self::from_rust(py, audio)
+    }
+
+    fn cloned_inner(&self, py: Python<'_>) -> PyResult<RustAudio> {
+        let mut audio = self.inner.read().map_err(|_| poisoned("audio"))?.clone();
+        audio.metadata =
+            pythonize::depythonize(self.metadata.bind(py).as_any()).map_err(py_error)?;
+        Ok(audio)
+    }
+}
+
+#[pymethods]
+impl PyAudio {
+    #[staticmethod]
+    #[pyo3(signature = (path, id=None))]
+    fn from_file(py: Python<'_>, path: String, id: Option<String>) -> PyResult<Self> {
+        Self::build(py, RustAudioSource::from_path(path), id)
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (url, id=None))]
+    fn from_url(py: Python<'_>, url: String, id: Option<String>) -> PyResult<Self> {
+        Self::build(py, RustAudioSource::from_url(url), id)
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (data, id=None))]
+    fn from_bytes(py: Python<'_>, data: &Bound<'_, PyBytes>, id: Option<String>) -> PyResult<Self> {
+        Self::build(py, RustAudioSource::from_encoded_bytes(data.as_bytes()), id)
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (data, sample_rate, channels=1, id=None))]
+    fn from_pcm(
+        py: Python<'_>,
+        data: &Bound<'_, PyBytes>,
+        sample_rate: u32,
+        channels: u16,
+        id: Option<String>,
+    ) -> PyResult<Self> {
+        Self::build(
+            py,
+            RustAudioSource::from_pcm_s16le(data.as_bytes(), sample_rate, channels),
+            id,
+        )
+    }
+
+    #[getter]
+    fn id(&self) -> PyResult<String> {
+        Ok(self
+            .inner
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .timeline
+            .audio_id
+            .clone())
+    }
+
+    #[getter]
+    fn timeline(&self) -> PyTimeline {
+        PyTimeline {
+            audio: Arc::clone(&self.inner),
+        }
+    }
+
+    #[getter]
+    fn metadata<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        self.metadata.bind(py).clone()
+    }
+
+    fn load(&self, py: Python<'_>) -> PyResult<PyWaveform> {
+        let source = self
+            .inner
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .source
+            .clone();
+        py.detach(move || source.load())
+            .map(|inner| PyWaveform { inner })
+            .map_err(py_error)
+    }
+
+    fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
+        let audio = self.inner.read().map_err(|_| poisoned("audio"))?.clone();
+        let result: AsyncLoadResult = Arc::new(Mutex::new(None));
+        let task_result = Arc::clone(&result);
+        async_runtime().spawn(async move {
+            let loaded = audio.aload().await.map_err(|error| format!("{error:#}"));
+            if let Ok(mut slot) = task_result.lock() {
+                *slot = Some(loaded);
+            }
+        });
+        Ok(PyAudioLoadTask { result })
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
+        let mut fields = vec![
+            format!("id={:?}", truncate(&audio.timeline.audio_id, 40)),
+            format_source_field(&audio.source),
+        ];
+        if let Some(duration) = audio.timeline.duration {
+            fields.push(format!(
+                "duration={:?}",
+                format_duration_ms(duration.0 as f64)
+            ));
+        }
+        if !audio.timeline.annotations.is_empty() {
+            fields.push(format!("annotations={}", audio.timeline.annotations.len()));
+        }
+        Ok(format!("Audio({})", fields.join(", ")))
+    }
+
+    fn __str__(&self) -> PyResult<String> {
+        let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
+        let id = truncate(&audio.timeline.audio_id, 40);
+        Ok(match audio.timeline.duration {
+            Some(duration) => format!("Audio {:?} ({})", id, format_duration_ms(duration.0 as f64)),
+            None => format!("Audio {id:?}"),
+        })
+    }
+}
+
+#[pyclass(name = "AudioDB")]
+struct PyAudioDb {
+    inner: Arc<Mutex<RustAudioDb>>,
+    path: String,
+    read_only: bool,
+}
+
+#[pyclass(name = "AudioDBIterator")]
+struct PyAudioDbIterator {
+    inner: Arc<Mutex<RustAudioDb>>,
+    audios: std::vec::IntoIter<RustAudio>,
+    after: Option<String>,
+    exhausted: bool,
+}
+
+#[pymethods]
+impl PyAudioDbIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyAudio>> {
+        loop {
+            if let Some(audio) = self.audios.next() {
+                return PyAudio::from_rust(py, audio).map(Some);
+            }
+            if self.exhausted {
+                return Ok(None);
+            }
+
+            let page = self
+                .inner
+                .lock()
+                .map_err(|_| poisoned("AudioDB"))?
+                .query(&AudioQuery {
+                    after: self.after.clone(),
+                    ..AudioQuery::default()
+                })
+                .map_err(py_error)?;
+            if page.is_empty() {
+                self.exhausted = true;
+                return Ok(None);
+            }
+            self.after = page.last().map(RustAudio::audio_id);
+            self.audios = page.into_iter();
+        }
+    }
+}
+
+#[pymethods]
+impl PyAudioDb {
+    #[new]
+    #[pyo3(signature = (path, read_only=false))]
+    fn new(path: String, read_only: bool) -> PyResult<Self> {
+        let mode = if read_only {
+            AudioDbMode::ReadOnly
+        } else {
+            AudioDbMode::ReadWrite
+        };
+        let db = RustAudioDb::open(&path, mode);
+        Ok(Self {
+            inner: Arc::new(Mutex::new(db.map_err(py_error)?)),
+            path,
+            read_only,
+        })
+    }
+
+    fn insert(&self, py: Python<'_>, audio: PyRef<'_, PyAudio>) -> PyResult<()> {
+        let audio = audio.cloned_inner(py)?;
+        self.inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .insert(&audio)
+            .map_err(py_error)
+    }
+
+    fn update(&self, py: Python<'_>, audio: PyRef<'_, PyAudio>) -> PyResult<bool> {
+        let audio = audio.cloned_inner(py)?;
+        self.inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .update(&audio)
+            .map_err(py_db_error)
+    }
+
+    #[pyo3(signature = (limit=100, *, after=None, min_duration_ms=None, max_duration_ms=None, metadata=None))]
+    fn query(
+        &self,
+        py: Python<'_>,
+        limit: usize,
+        after: Option<String>,
+        min_duration_ms: Option<u64>,
+        max_duration_ms: Option<u64>,
+        metadata: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Vec<PyAudio>> {
+        let metadata = metadata
+            .map(|metadata| {
+                pythonize::depythonize::<BTreeMap<String, serde_json::Value>>(metadata.as_any())
+                    .map_err(py_error)
+            })
+            .transpose()?
+            .unwrap_or_default();
+        self.inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .query(&AudioQuery {
+                limit,
+                after,
+                min_duration: min_duration_ms.map(DurationMs),
+                max_duration: max_duration_ms.map(DurationMs),
+                metadata,
+            })
+            .map_err(py_error)?
+            .into_iter()
+            .map(|audio| PyAudio::from_rust(py, audio))
+            .collect()
+    }
+
+    fn __getitem__(&self, py: Python<'_>, audio_id: &str) -> PyResult<PyAudio> {
+        let audio = self
+            .inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .get_by_id(audio_id)
+            .map_err(py_error)?
+            .ok_or_else(|| PyKeyError::new_err(audio_id.to_string()))?;
+        PyAudio::from_rust(py, audio)
+    }
+
+    fn __contains__(&self, audio_id: &str) -> PyResult<bool> {
+        self.inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .contains(audio_id)
+            .map_err(py_error)
+    }
+
+    fn delete(&self, audio_id: &str) -> PyResult<bool> {
+        self.inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .delete(audio_id)
+            .map_err(py_error)
+    }
+
+    fn __len__(&self) -> PyResult<usize> {
+        self.inner
+            .lock()
+            .map_err(|_| poisoned("AudioDB"))?
+            .len()
+            .map_err(py_error)
+    }
+
+    fn __iter__(&self) -> PyResult<PyAudioDbIterator> {
+        Ok(PyAudioDbIterator {
+            inner: Arc::clone(&self.inner),
+            audios: Vec::new().into_iter(),
+            after: None,
+            exhausted: false,
+        })
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        let db = self.inner.lock().map_err(|_| poisoned("AudioDB"))?;
+        let len = db.len().map_err(py_error)?;
+        let duration = db.total_duration().map_err(py_error)?;
+        let mode = if self.read_only {
+            "read-only"
+        } else {
+            "read-write"
+        };
+        Ok(format!(
+            "AudioDB(path={:?}, mode={:?}, audios={}, duration={:?})",
+            truncate(&self.path, 72),
+            mode,
+            len,
+            format_duration_ms(duration.0 as f64)
+        ))
+    }
+
+    fn __str__(&self) -> PyResult<String> {
+        let db = self.inner.lock().map_err(|_| poisoned("AudioDB"))?;
+        let len = db.len().map_err(py_error)?;
+        Ok(format!(
+            "AudioDB({:?}, {} audios)",
+            truncate(&self.path, 72),
+            len
+        ))
+    }
+}
+
+#[pymodule]
+fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+    let _ = async_runtime();
+    module.add("AsrDataError", py.get_type::<AsrDataError>())?;
+    module.add_class::<PyAudioFormat>()?;
+    module.add_class::<PyWaveform>()?;
+    module.add_class::<PyAnnotation>()?;
+    module.add_class::<PyTranscript>()?;
+    module.add_class::<PyTimeline>()?;
+    module.add_class::<PyAudio>()?;
+    module.add_class::<PyAudioLoadTask>()?;
+    module.add_class::<PyAudioDb>()?;
+    module.add_class::<PyAudioDbIterator>()?;
+    Ok(())
+}

@@ -1,0 +1,37 @@
+[package]
+name = "asr-data"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/di-osc/asr-data"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+anyhow = "1"
+base64 = { version = "0.22", optional = true }
+clap = { version = "4", features = ["derive"] }
+numpy = { version = "0.27", optional = true }
+pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
+pythonize = { version = "0.27", optional = true }
+reqwest = { version = "0.13", features = ["blocking", "rustls"], default-features = false, optional = true }
+rmp-serde = "1"
+rusqlite = { version = "0.38", features = ["bundled"] }
+rubato = { version = "3", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1"
+symphonia = { version = "0.6", features = ["all-codecs", "all-formats"], optional = true }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
+unicode-general-category = "1.1.0"
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = []
+audio-loading = ["dep:base64", "dep:reqwest", "dep:rubato", "dep:symphonia", "dep:tokio"]
+python-bindings = ["audio-loading", "dep:numpy", "dep:pyo3", "dep:pythonize"]
+
+[lints.rust]
+unsafe_code = "forbid"
