@@ -10,6 +10,7 @@ pub mod decode;
 pub mod input;
 pub mod normalize;
 pub mod resample;
+pub mod waveform;
 
 pub use input::AudioInput;
 pub use normalize::normalize_audio_input;

@@ -309,14 +309,11 @@ fn audio_source_loads_pcm_and_waveform_ops_preserve_original_format() {
         })
     );
 
-    #[cfg(feature = "audio-loading")]
-    {
-        let mono = waveform.to_mono().expect("downmix");
-        let resampled = mono.resample(16_000).expect("resample");
-        assert_eq!(resampled.sample_rate, 16_000);
-        assert_eq!(resampled.channels, 1);
-        assert_eq!(resampled.source_format, waveform.source_format);
-    }
+    let mono = waveform.to_mono().expect("downmix");
+    let resampled = mono.resample(16_000).expect("resample");
+    assert_eq!(resampled.sample_rate, 16_000);
+    assert_eq!(resampled.channels, 1);
+    assert_eq!(resampled.source_format, waveform.source_format);
 }
 
 #[test]

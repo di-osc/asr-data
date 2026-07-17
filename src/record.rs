@@ -173,7 +173,6 @@ impl Audio {
         self.source.load()
     }
 
-    #[cfg(feature = "audio-loading")]
     pub async fn aload(&self) -> anyhow::Result<Waveform> {
         self.source.aload().await
     }

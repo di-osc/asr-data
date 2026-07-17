@@ -1,24 +1,16 @@
 //! Decoding audio bytes into a waveform.
-//!
-//! This is intentionally feature-gated: production ASR can accept paths/URLs/base64,
-//! but for model/math bring-up you can start with in-memory waveform inputs only.
 
-use anyhow::{Result, bail};
 use std::path::Path;
-#[cfg(feature = "audio-loading")]
 use std::sync::OnceLock;
 
-#[cfg(feature = "audio-loading")]
-use anyhow::Context;
+use anyhow::{Context, Result, bail};
 
-#[cfg(feature = "audio-loading")]
 pub fn decode_path(path: &Path) -> Result<(Vec<f32>, u32)> {
     let waveform = decode_path_waveform(path)?;
     let mono = waveform.to_mono()?;
     Ok((mono.samples, mono.sample_rate))
 }
 
-#[cfg(feature = "audio-loading")]
 pub fn decode_path_waveform(path: &Path) -> Result<crate::Waveform> {
     use std::fs::File;
 
@@ -50,24 +42,12 @@ pub fn decode_path_waveform(path: &Path) -> Result<crate::Waveform> {
     )
 }
 
-#[cfg(not(feature = "audio-loading"))]
-pub fn decode_path(_path: &Path) -> Result<(Vec<f32>, u32)> {
-    bail!("decode_path requires the `audio-loading` feature")
-}
-
-#[cfg(not(feature = "audio-loading"))]
-pub fn decode_path_waveform(_path: &Path) -> Result<crate::Waveform> {
-    bail!("decode_path_waveform requires the `audio-loading` feature")
-}
-
-#[cfg(feature = "audio-loading")]
 pub fn decode_url(url: &str) -> Result<(Vec<f32>, u32)> {
     let waveform = decode_url_waveform(url)?;
     let mono = waveform.to_mono()?;
     Ok((mono.samples, mono.sample_rate))
 }
 
-#[cfg(feature = "audio-loading")]
 pub fn decode_url_waveform(url: &str) -> Result<crate::Waveform> {
     use std::io::Cursor;
 
@@ -108,7 +88,6 @@ pub fn decode_url_waveform(url: &str) -> Result<crate::Waveform> {
     )
 }
 
-#[cfg(feature = "audio-loading")]
 pub async fn download_url_bytes(url: &str) -> Result<Vec<u8>> {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     static NO_PROXY_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -140,24 +119,12 @@ pub async fn download_url_bytes(url: &str) -> Result<Vec<u8>> {
         .to_vec())
 }
 
-#[cfg(not(feature = "audio-loading"))]
-pub fn decode_url(_url: &str) -> Result<(Vec<f32>, u32)> {
-    bail!("decode_url requires the `audio-loading` feature")
-}
-
-#[cfg(not(feature = "audio-loading"))]
-pub fn decode_url_waveform(_url: &str) -> Result<crate::Waveform> {
-    bail!("decode_url_waveform requires the `audio-loading` feature")
-}
-
-#[cfg(feature = "audio-loading")]
 pub fn decode_base64(b64: &str) -> Result<(Vec<f32>, u32)> {
     let waveform = decode_base64_waveform(b64)?;
     let mono = waveform.to_mono()?;
     Ok((mono.samples, mono.sample_rate))
 }
 
-#[cfg(feature = "audio-loading")]
 pub fn decode_base64_waveform(b64: &str) -> Result<crate::Waveform> {
     use base64::Engine;
 
@@ -176,7 +143,6 @@ pub fn decode_base64_waveform(b64: &str) -> Result<crate::Waveform> {
     decode_bytes_waveform(bytes)
 }
 
-#[cfg(feature = "audio-loading")]
 pub fn decode_bytes_waveform(bytes: impl Into<Vec<u8>>) -> Result<crate::Waveform> {
     use std::io::Cursor;
 
@@ -199,7 +165,6 @@ pub fn decode_bytes_waveform(bytes: impl Into<Vec<u8>>) -> Result<crate::Wavefor
     )
 }
 
-#[cfg(feature = "audio-loading")]
 fn encoding_from_url(url: &str, bytes: &[u8]) -> crate::AudioEncoding {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let extension = path.rsplit_once('.').map(|(_, extension)| extension);
@@ -209,7 +174,6 @@ fn encoding_from_url(url: &str, bytes: &[u8]) -> crate::AudioEncoding {
         .unwrap_or_else(|| detect_encoding(bytes))
 }
 
-#[cfg(feature = "audio-loading")]
 fn encoding_from_extension(extension: &str) -> crate::AudioEncoding {
     match extension.to_ascii_lowercase().as_str() {
         "wav" | "wave" => crate::AudioEncoding::Wav,
@@ -220,7 +184,6 @@ fn encoding_from_extension(extension: &str) -> crate::AudioEncoding {
     }
 }
 
-#[cfg(feature = "audio-loading")]
 fn detect_encoding(bytes: &[u8]) -> crate::AudioEncoding {
     if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
         crate::AudioEncoding::Wav
@@ -239,22 +202,6 @@ fn detect_encoding(bytes: &[u8]) -> crate::AudioEncoding {
     }
 }
 
-#[cfg(not(feature = "audio-loading"))]
-pub fn decode_base64(_b64: &str) -> Result<(Vec<f32>, u32)> {
-    bail!("decode_base64 requires the `audio-loading` feature")
-}
-
-#[cfg(not(feature = "audio-loading"))]
-pub fn decode_base64_waveform(_b64: &str) -> Result<crate::Waveform> {
-    bail!("decode_base64_waveform requires the `audio-loading` feature")
-}
-
-#[cfg(not(feature = "audio-loading"))]
-pub fn decode_bytes_waveform(_bytes: impl Into<Vec<u8>>) -> Result<crate::Waveform> {
-    bail!("decode_bytes_waveform requires the `audio-loading` feature")
-}
-
-#[cfg(feature = "audio-loading")]
 fn decode_audio_stream(
     mss: symphonia::core::io::MediaSourceStream,
     hint: symphonia::core::formats::probe::Hint,
@@ -333,7 +280,7 @@ fn decode_audio_stream(
     Ok((samples, sample_rate, channels))
 }
 
-#[cfg(all(test, feature = "audio-loading"))]
+#[cfg(test)]
 mod tests {
     use super::{decode_bytes_waveform, decode_path, decode_path_waveform};
     use crate::Waveform;

@@ -14,7 +14,6 @@ mod stream;
 mod time;
 mod timeline;
 mod token;
-mod waveform;
 
 pub use audio::{AudioInput, AudioLoadOptions, AudioLoader, SAMPLE_RATE_HZ, normalize_audio_input};
 pub use cer::{CerStats, compute_cer, normalize_for_cer};
@@ -38,4 +37,4 @@ pub use timeline::{
     AudioId, Diagnostic, HotwordMatch, LanguageTag, SpeakerId, Timeline, TimelineId,
 };
 pub use token::Token;
-pub use waveform::{Waveform, WaveformError};
+pub use audio::waveform::{Waveform, WaveformError};

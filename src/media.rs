@@ -126,7 +126,6 @@ impl AudioSource {
         loader.load_raw(self)
     }
 
-    #[cfg(feature = "audio-loading")]
     pub async fn aload(&self) -> anyhow::Result<crate::Waveform> {
         match self {
             Self::Url(url) if url.starts_with("http://") || url.starts_with("https://") => {

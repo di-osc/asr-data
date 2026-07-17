@@ -31,13 +31,6 @@ pip install asr-data
 cargo add asr-data
 ```
 
-安装命令行工具：
-
-```bash
-cargo install asr-data
-asr-data --help
-```
-
 ## Python 使用示例
 
 ### 创建音频对象

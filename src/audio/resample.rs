@@ -1,11 +1,7 @@
 //! Resampling utilities.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
-#[cfg(feature = "audio-loading")]
-use anyhow::Context;
-
-#[cfg(feature = "audio-loading")]
 pub fn resample_mono_f32(samples: &[f32], from_hz: u32, to_hz: u32) -> Result<Vec<f32>> {
     use rubato::audioadapter_buffers::direct::InterleavedSlice;
     use rubato::{
@@ -59,12 +55,7 @@ pub fn resample_mono_f32(samples: &[f32], from_hz: u32, to_hz: u32) -> Result<Ve
     Ok(outdata)
 }
 
-#[cfg(not(feature = "audio-loading"))]
-pub fn resample_mono_f32(_samples: &[f32], _from_hz: u32, _to_hz: u32) -> Result<Vec<f32>> {
-    bail!("resample_mono_f32 requires the `audio-loading` feature")
-}
-
-#[cfg(all(test, feature = "audio-loading"))]
+#[cfg(test)]
 mod tests {
     use super::resample_mono_f32;
 
