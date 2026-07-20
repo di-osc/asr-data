@@ -290,6 +290,16 @@ fn annotated_audio() -> AudioDoc {
 }
 
 #[test]
+fn waveform_from_pcm_matches_source_load() {
+    let bytes = vec![0u8, 0, 0xe8, 0x03, 0x18, 0xfc, 0xd0, 0x07];
+    let via_source = AudioSource::from_pcm_s16le(bytes.clone(), 8_000, 2)
+        .load()
+        .expect("source load");
+    let via_waveform = Waveform::from_pcm_s16le(bytes, 8_000, 2).expect("waveform from pcm");
+    assert_eq!(via_source, via_waveform);
+}
+
+#[test]
 fn audio_source_loads_pcm_and_waveform_ops_preserve_original_format() {
     let bytes = [0_i16, 1000, -1000, 2000]
         .into_iter()

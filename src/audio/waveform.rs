@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{AudioEncoding, AudioFormat};
+use crate::{AudioEncoding, AudioFormat, AudioSource};
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum WaveformError {
@@ -126,6 +126,38 @@ impl Waveform {
                 channels,
             })
         })
+    }
+
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
+        AudioSource::from_path(path.as_ref().to_path_buf()).load()
+    }
+
+    pub fn from_url(url: impl Into<String>) -> anyhow::Result<Self> {
+        AudioSource::from_url(url).load()
+    }
+
+    pub fn from_encoded_bytes(bytes: impl Into<Vec<u8>>) -> anyhow::Result<Self> {
+        AudioSource::from_encoded_bytes(bytes).load()
+    }
+
+    pub fn from_base64(data: impl Into<String>) -> anyhow::Result<Self> {
+        AudioSource::from_base64(data).load()
+    }
+
+    pub fn from_pcm_s16le(
+        bytes: impl Into<Vec<u8>>,
+        sample_rate: u32,
+        channels: u16,
+    ) -> anyhow::Result<Self> {
+        AudioSource::from_pcm_s16le(bytes, sample_rate, channels).load()
+    }
+
+    pub fn from_source(source: &AudioSource) -> anyhow::Result<Self> {
+        source.load()
+    }
+
+    pub async fn aload_from_source(source: &AudioSource) -> anyhow::Result<Self> {
+        source.aload().await
     }
 
     pub fn duration_ms(&self) -> f64 {
