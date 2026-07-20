@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import os
 import struct
@@ -228,6 +229,45 @@ def test_waveform_from_numpy_copies_input():
     np.testing.assert_array_equal(
         waveform.numpy(), np.array([0.0, 0.5, -0.5], np.float32)
     )
+
+
+def test_waveform_from_pcm_matches_source_load():
+    pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
+    source = AudioPcm(pcm, sample_rate=8000, channels=2)
+    via_source = source.load()
+    via_waveform = Waveform.from_pcm(pcm, sample_rate=8000, channels=2)
+    assert via_waveform.sample_rate == via_source.sample_rate
+    assert via_waveform.channels == via_source.channels
+    np.testing.assert_allclose(via_waveform.numpy(), via_source.numpy())
+
+
+def test_waveform_from_base64_decodes_wav_bytes():
+    wav = io.BytesIO()
+    with wave.open(wav, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(8000)
+        writer.writeframes(struct.pack("<hh", 0, 1000))
+    encoded = base64.b64encode(wav.getvalue()).decode("ascii")
+
+    waveform = Waveform.from_base64(encoded)
+
+    assert waveform.sample_rate == 8000
+    assert waveform.channels == 1
+    assert waveform.source_format.encoding == "wav"
+
+
+def test_waveform_aload_from_source_returns_pcm_waveform():
+    pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
+    source = AudioPcm(pcm, sample_rate=8000, channels=2)
+
+    async def load():
+        return await Waveform.aload_from_source(source)
+
+    waveform = asyncio.run(load())
+
+    assert waveform.sample_rate == 8000
+    assert waveform.channels == 2
 
 
 def test_waveform_aload_from_path_returns_waveform(tmp_path):

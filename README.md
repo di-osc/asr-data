@@ -9,11 +9,25 @@
 
 ## 特点
 
-- **统一的数据模型**：用 `AudioDoc` 表示一条音频记录，用 `Timeline` 管理语音段、转写、说话人、语言、热词、诊断信息等时间轴标注；音频来源由 `AudioPath`、`AudioUrl`、`AudioBytes`、`AudioPcm` 等类型描述。
+- **统一的数据模型**：用 `AudioDoc` 表示一条音频记录，用 `Timeline` 管理语音段、转写、说话人、语言、热词、诊断信息等时间轴标注；音频来源由 `AudioPath`、`AudioUrl`、`AudioBytes`、`AudioBase64`、`AudioPcm` 等类型描述。
 - **SQLite 本地存储**：`AudioDB` 将数据保存为 `.sqlite` 文件，支持按 ID 查询、分页遍历、元数据过滤和时长过滤。
 - **音频加载与处理**：支持从文件、URL、字节流和 PCM 构造音频；可解码为 `Waveform`，并进行声道拆分、转单声道、重采样、归一化等操作。
 - **Rust 核心，Python 易用**：核心能力由 Rust 实现，同时提供 PyO3 Python 绑定，适合在脚本、Notebook 和数据处理流水线中使用。
 - **面向 ASR 流程**：可区分人工标注、模型输出、系统阶段产物等来源，便于保存参考文本、模型预测和后处理结果。
+
+## Breaking change / Migration
+
+旧版 `Audio` 已重命名为 `AudioDoc`，音频来源改为显式类型；加载入口也拆分到 source 或 `Waveform` 工厂方法。
+
+| 旧 API | 新 API |
+| --- | --- |
+| `Audio` | `AudioDoc` |
+| `Audio.from_file(p)` | `AudioDoc(AudioPath(p))` |
+| `Audio.from_url(...)` | `AudioDoc(AudioUrl(...))` |
+| `Audio.from_bytes(...)` | `AudioDoc(AudioBytes(...))` |
+| `Audio.from_pcm(...)` | `AudioDoc(AudioPcm(...))` |
+| `audio.load()` | `doc.source.load()` 或 `Waveform.from_*` |
+| `await audio.aload()` | `await doc.source.aload()` |
 
 ## 安装
 
