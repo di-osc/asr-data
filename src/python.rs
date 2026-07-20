@@ -834,6 +834,305 @@ impl PyAudioLoadTask {
     }
 }
 
+fn spawn_source_aload(source: RustAudioSource) -> PyResult<PyAudioLoadTask> {
+    let result: AsyncLoadResult = Arc::new(Mutex::new(None));
+    let task_result = Arc::clone(&result);
+    async_runtime().spawn(async move {
+        let loaded = source.aload().await.map_err(|error| format!("{error:#}"));
+        if let Ok(mut slot) = task_result.lock() {
+            *slot = Some(loaded);
+        }
+    });
+    Ok(PyAudioLoadTask { result })
+}
+
+#[pyclass(name = "AudioPath", frozen)]
+#[derive(Clone)]
+struct PyAudioPath {
+    path: String,
+}
+
+#[pymethods]
+impl PyAudioPath {
+    #[new]
+    fn new(path: String) -> Self {
+        Self { path }
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "path"
+    }
+
+    #[getter]
+    fn path(&self) -> String {
+        self.path.clone()
+    }
+
+    fn load(&self, py: Python<'_>) -> PyResult<PyWaveform> {
+        let source = RustAudioSource::from_path(self.path.clone());
+        py.detach(move || source.load())
+            .map(|inner| PyWaveform { inner })
+            .map_err(py_error)
+    }
+
+    fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
+        spawn_source_aload(RustAudioSource::from_path(self.path.clone()))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("AudioPath({:?})", truncate(&self.path, 72))
+    }
+}
+
+#[pyclass(name = "AudioUrl", frozen)]
+#[derive(Clone)]
+struct PyAudioUrl {
+    url: String,
+}
+
+#[pymethods]
+impl PyAudioUrl {
+    #[new]
+    fn new(url: String) -> Self {
+        Self { url }
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "url"
+    }
+
+    #[getter]
+    fn url(&self) -> String {
+        self.url.clone()
+    }
+
+    fn load(&self, py: Python<'_>) -> PyResult<PyWaveform> {
+        let source = RustAudioSource::from_url(self.url.clone());
+        py.detach(move || source.load())
+            .map(|inner| PyWaveform { inner })
+            .map_err(py_error)
+    }
+
+    fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
+        spawn_source_aload(RustAudioSource::from_url(self.url.clone()))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("AudioUrl({:?})", truncate(&self.url, 72))
+    }
+}
+
+#[pyclass(name = "AudioBytes", frozen)]
+#[derive(Clone)]
+struct PyAudioBytes {
+    bytes: Vec<u8>,
+}
+
+#[pymethods]
+impl PyAudioBytes {
+    #[new]
+    fn new(data: &Bound<'_, PyBytes>) -> Self {
+        Self {
+            bytes: data.as_bytes().to_vec(),
+        }
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "bytes"
+    }
+
+    #[getter]
+    fn byte_size(&self) -> usize {
+        self.bytes.len()
+    }
+
+    fn load(&self, py: Python<'_>) -> PyResult<PyWaveform> {
+        let source = RustAudioSource::from_encoded_bytes(self.bytes.clone());
+        py.detach(move || source.load())
+            .map(|inner| PyWaveform { inner })
+            .map_err(py_error)
+    }
+
+    fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
+        spawn_source_aload(RustAudioSource::from_encoded_bytes(self.bytes.clone()))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("AudioBytes(byte_size={})", self.bytes.len())
+    }
+}
+
+#[pyclass(name = "AudioBase64", frozen)]
+#[derive(Clone)]
+struct PyAudioBase64 {
+    data: String,
+}
+
+#[pymethods]
+impl PyAudioBase64 {
+    #[new]
+    fn new(data: String) -> Self {
+        Self { data }
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "base64"
+    }
+
+    #[getter]
+    fn data(&self) -> String {
+        self.data.clone()
+    }
+
+    fn load(&self, py: Python<'_>) -> PyResult<PyWaveform> {
+        let source = RustAudioSource::from_base64(self.data.clone());
+        py.detach(move || source.load())
+            .map(|inner| PyWaveform { inner })
+            .map_err(py_error)
+    }
+
+    fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
+        spawn_source_aload(RustAudioSource::from_base64(self.data.clone()))
+    }
+
+    fn __repr__(&self) -> String {
+        format!("AudioBase64(chars={})", self.data.len())
+    }
+}
+
+#[pyclass(name = "AudioPcm", frozen)]
+#[derive(Clone)]
+struct PyAudioPcm {
+    bytes: Vec<u8>,
+    sample_rate: u32,
+    channels: u16,
+}
+
+#[pymethods]
+impl PyAudioPcm {
+    #[new]
+    #[pyo3(signature = (data, sample_rate, channels=1))]
+    fn new(data: &Bound<'_, PyBytes>, sample_rate: u32, channels: u16) -> Self {
+        Self {
+            bytes: data.as_bytes().to_vec(),
+            sample_rate,
+            channels,
+        }
+    }
+
+    #[getter]
+    fn kind(&self) -> &'static str {
+        "pcm"
+    }
+
+    #[getter]
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    #[getter]
+    fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    #[getter]
+    fn byte_size(&self) -> usize {
+        self.bytes.len()
+    }
+
+    fn load(&self, py: Python<'_>) -> PyResult<PyWaveform> {
+        let source =
+            RustAudioSource::from_pcm_s16le(self.bytes.clone(), self.sample_rate, self.channels);
+        py.detach(move || source.load())
+            .map(|inner| PyWaveform { inner })
+            .map_err(py_error)
+    }
+
+    fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
+        spawn_source_aload(RustAudioSource::from_pcm_s16le(
+            self.bytes.clone(),
+            self.sample_rate,
+            self.channels,
+        ))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AudioPcm(byte_size={}, sample_rate={}, channels={})",
+            self.bytes.len(),
+            self.sample_rate,
+            self.channels
+        )
+    }
+}
+
+#[allow(dead_code)]
+fn rust_source_from_py(obj: &Bound<'_, PyAny>) -> PyResult<RustAudioSource> {
+    if let Ok(v) = obj.extract::<PyRef<'_, PyAudioPath>>() {
+        return Ok(RustAudioSource::from_path(v.path.clone()));
+    }
+    if let Ok(v) = obj.extract::<PyRef<'_, PyAudioUrl>>() {
+        return Ok(RustAudioSource::from_url(v.url.clone()));
+    }
+    if let Ok(v) = obj.extract::<PyRef<'_, PyAudioBytes>>() {
+        return Ok(RustAudioSource::from_encoded_bytes(v.bytes.clone()));
+    }
+    if let Ok(v) = obj.extract::<PyRef<'_, PyAudioBase64>>() {
+        return Ok(RustAudioSource::from_base64(v.data.clone()));
+    }
+    if let Ok(v) = obj.extract::<PyRef<'_, PyAudioPcm>>() {
+        return Ok(RustAudioSource::from_pcm_s16le(
+            v.bytes.clone(),
+            v.sample_rate,
+            v.channels,
+        ));
+    }
+    Err(PyValueError::new_err(
+        "expected AudioPath, AudioUrl, AudioBytes, AudioBase64, or AudioPcm",
+    ))
+}
+
+#[allow(dead_code)]
+fn py_source_from_rust(py: Python<'_>, source: &RustAudioSource) -> PyResult<Py<PyAny>> {
+    match source {
+        RustAudioSource::Path(path) => Ok(Py::new(
+            py,
+            PyAudioPath {
+                path: path.display().to_string(),
+            },
+        )?
+        .into_any()),
+        RustAudioSource::Url(url) => Ok(Py::new(py, PyAudioUrl { url: url.clone() })?.into_any()),
+        RustAudioSource::EncodedBytes(bytes) => Ok(Py::new(
+            py,
+            PyAudioBytes {
+                bytes: bytes.clone(),
+            },
+        )?
+        .into_any()),
+        RustAudioSource::Base64(data) => {
+            Ok(Py::new(py, PyAudioBase64 { data: data.clone() })?.into_any())
+        }
+        RustAudioSource::PcmS16Le {
+            bytes,
+            sample_rate,
+            channels,
+        } => Ok(Py::new(
+            py,
+            PyAudioPcm {
+                bytes: bytes.clone(),
+                sample_rate: *sample_rate,
+                channels: *channels,
+            },
+        )?
+        .into_any()),
+    }
+}
+
 impl PyAudio {
     fn from_rust(py: Python<'_>, audio: RustAudio) -> PyResult<Self> {
         let metadata = PyDict::new(py);
@@ -1025,15 +1324,7 @@ impl PyAudio {
             .map_err(|_| poisoned("audio"))?
             .source
             .clone();
-        let result: AsyncLoadResult = Arc::new(Mutex::new(None));
-        let task_result = Arc::clone(&result);
-        async_runtime().spawn(async move {
-            let loaded = source.aload().await.map_err(|error| format!("{error:#}"));
-            if let Ok(mut slot) = task_result.lock() {
-                *slot = Some(loaded);
-            }
-        });
-        Ok(PyAudioLoadTask { result })
+        spawn_source_aload(source)
     }
 
     fn __repr__(&self) -> PyResult<String> {
@@ -1323,6 +1614,11 @@ fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAnnotation>()?;
     module.add_class::<PyTranscript>()?;
     module.add_class::<PyTimeline>()?;
+    module.add_class::<PyAudioPath>()?;
+    module.add_class::<PyAudioUrl>()?;
+    module.add_class::<PyAudioBytes>()?;
+    module.add_class::<PyAudioBase64>()?;
+    module.add_class::<PyAudioPcm>()?;
     module.add_class::<PyAudio>()?;
     module.add_class::<PyAudioLoadTask>()?;
     module.add_class::<PyAudioDb>()?;
