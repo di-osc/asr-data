@@ -1019,11 +1019,16 @@ impl PyAudio {
     }
 
     fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
-        let audio = self.inner.read().map_err(|_| poisoned("audio"))?.clone();
+        let source = self
+            .inner
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .source
+            .clone();
         let result: AsyncLoadResult = Arc::new(Mutex::new(None));
         let task_result = Arc::clone(&result);
         async_runtime().spawn(async move {
-            let loaded = audio.aload().await.map_err(|error| format!("{error:#}"));
+            let loaded = source.aload().await.map_err(|error| format!("{error:#}"));
             if let Ok(mut slot) = task_result.lock() {
                 *slot = Some(loaded);
             }

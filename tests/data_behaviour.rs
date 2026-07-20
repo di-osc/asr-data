@@ -297,7 +297,7 @@ fn audio_source_loads_pcm_and_waveform_ops_preserve_original_format() {
         .collect::<Vec<_>>();
     let audio = AudioDoc::with_id("pcm", AudioSource::from_pcm_s16le(bytes, 8_000, 2));
 
-    let waveform = audio.load().expect("load PCM source");
+    let waveform = audio.source.load().expect("load PCM source");
     assert_eq!(waveform.sample_rate, 8_000);
     assert_eq!(waveform.channels, 2);
     assert_eq!(

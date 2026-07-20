@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use crate::{Annotation, AudioChannel, AudioEncoding, AudioSource, DurationMs, Timeline, Waveform};
+use crate::{Annotation, AudioChannel, AudioEncoding, AudioSource, DurationMs, Timeline};
 
 /// An audio source together with all annotations and per-audio metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -167,14 +167,6 @@ impl AudioDoc {
             }
         }
         Ok(())
-    }
-
-    pub fn load(&self) -> anyhow::Result<Waveform> {
-        self.source.load()
-    }
-
-    pub async fn aload(&self) -> anyhow::Result<Waveform> {
-        self.source.aload().await
     }
 }
 
