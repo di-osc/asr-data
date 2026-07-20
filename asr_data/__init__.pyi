@@ -1,3 +1,5 @@
+from collections.abc import Awaitable
+
 from ._types import AnnotationKind as AnnotationKind
 from ._types import AnnotationSourceKind as AnnotationSourceKind
 from ._types import AnnotationStatus as AnnotationStatus
@@ -13,6 +15,14 @@ from ._native import AudioUrl as AudioUrl
 from ._native import Timeline as Timeline
 from ._native import Transcript as Transcript
 from ._native import AsrDataError as AsrDataError
-from ._native import Waveform as Waveform
+from ._native import Waveform as _Waveform
+
+class Waveform(_Waveform):
+    @staticmethod
+    def aload_from_path(path: str) -> Awaitable[Waveform]: ...
+    @staticmethod
+    def aload_from_source(
+        source: AudioPath | AudioUrl | AudioBytes | AudioBase64 | AudioPcm,
+    ) -> Awaitable[Waveform]: ...
 
 __all__: list[str]

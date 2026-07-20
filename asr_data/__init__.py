@@ -25,8 +25,25 @@ async def _source_aload(self):
     return task.result()
 
 
+async def _wf_aload_from_path(cls, path: str):
+    task = cls._start_aload_from_path(path)
+    while not task.done():
+        await _asyncio.sleep(0.005)
+    return task.result()
+
+
+async def _wf_aload_from_source(cls, source):
+    task = cls._start_aload_from_source(source)
+    while not task.done():
+        await _asyncio.sleep(0.005)
+    return task.result()
+
+
 for _cls in (AudioPath, AudioUrl, AudioBytes, AudioBase64, AudioPcm):
     _cls.aload = _source_aload
+
+Waveform.aload_from_path = classmethod(_wf_aload_from_path)
+Waveform.aload_from_source = classmethod(_wf_aload_from_source)
 
 __all__ = [
     "Annotation",

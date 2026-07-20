@@ -230,6 +230,24 @@ def test_waveform_from_numpy_copies_input():
     )
 
 
+def test_waveform_aload_from_path_returns_waveform(tmp_path):
+    wav_path = tmp_path / "audio.wav"
+    with wave.open(str(wav_path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(8000)
+        writer.writeframes(struct.pack("<hh", 0, 1000))
+
+    async def load():
+        return await Waveform.aload_from_path(str(wav_path))
+
+    waveform = asyncio.run(load())
+
+    assert waveform.sample_rate == 8000
+    assert waveform.channels == 1
+    assert waveform.source_format.encoding == "wav"
+
+
 def test_audio_aload_returns_waveform_without_blocking_api_changes():
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
     source = AudioPcm(pcm, sample_rate=8000, channels=2)

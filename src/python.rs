@@ -282,12 +282,12 @@ impl PyWaveform {
     }
 
     #[staticmethod]
-    fn aload_from_path(path: String) -> PyResult<PyAudioLoadTask> {
+    fn _start_aload_from_path(path: String) -> PyResult<PyAudioLoadTask> {
         spawn_source_aload(RustAudioSource::from_path(path))
     }
 
     #[staticmethod]
-    fn aload_from_source(source: &Bound<'_, PyAny>) -> PyResult<PyAudioLoadTask> {
+    fn _start_aload_from_source(source: &Bound<'_, PyAny>) -> PyResult<PyAudioLoadTask> {
         spawn_source_aload(rust_source_from_py(source)?)
     }
 
