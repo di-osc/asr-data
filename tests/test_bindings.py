@@ -15,8 +15,12 @@ from asr_data import (
     AnnotationKind,
     AnnotationSourceKind,
     AnnotationStatus,
-    Audio,
+    AudioBytes,
     AudioDB,
+    AudioDoc,
+    AudioPath,
+    AudioPcm,
+    AudioUrl,
     Waveform,
 )
 
@@ -50,13 +54,14 @@ def test_annotation_literal_types_are_public_and_complete():
 
 def test_audio_waveform_timeline_and_db(tmp_path):
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    audio = Audio.from_pcm(pcm, sample_rate=8000, channels=2, id="call-1")
+    audio = AudioDoc(AudioPcm(pcm, sample_rate=8000, channels=2), id="call-1")
+    assert isinstance(audio.source, AudioPcm)
     audio.metadata["speaker"] = {"name": "alice", "age": 30}
     audio.timeline("mono").duration_ms = 1
     audio.timeline("mono").add_speech(0, 1, confidence=0.9)
     audio.timeline("mono").add_transcription(0, 1, "hello", language="en")
 
-    waveform = audio.load()
+    waveform = audio.source.load()
     assert waveform.sample_rate == 8000
     assert waveform.channels == 2
     assert waveform.is_normalized is True
@@ -109,6 +114,8 @@ def test_audio_waveform_timeline_and_db(tmp_path):
 
     loaded = db["call-1"]
     assert loaded.id == "call-1"
+    assert isinstance(loaded, AudioDoc)
+    assert isinstance(loaded.source, AudioPcm)
     assert loaded.metadata["speaker"]["name"] == "alice"
     assert loaded.timeline("mono").transcript().text == "hello"
     loaded.metadata["speaker"]["name"] = "bob"
@@ -124,7 +131,7 @@ def test_audio_waveform_timeline_and_db(tmp_path):
 def test_audio_db_query_filters_cursor_and_lazy_iteration(tmp_path):
     db = AudioDB(str(tmp_path / "query.vasr"))
     for index in range(105):
-        audio = Audio.from_pcm(b"\0\0", sample_rate=8000, id=f"audio-{index:03}")
+        audio = AudioDoc(AudioPcm(b"\0\0", sample_rate=8000), id=f"audio-{index:03}")
         audio.timeline("mono").duration_ms = index * 10
         audio.metadata["split"] = "train" if index % 2 == 0 else "test"
         db.insert(audio)
@@ -163,7 +170,9 @@ def test_audio_db_query_filters_cursor_and_lazy_iteration(tmp_path):
 
 
 def test_audio_channel_timelines_round_trip(tmp_path):
-    audio = Audio.from_pcm(b"\0\0" * 4, sample_rate=8000, channels=2, id="call-stereo")
+    audio = AudioDoc(
+        AudioPcm(b"\0\0" * 4, sample_rate=8000, channels=2), id="call-stereo"
+    )
 
     audio.ensure_timeline("left").add_transcription(0, 100, "caller")
     audio.ensure_timeline("right").add_transcription(0, 100, "agent")
@@ -190,7 +199,7 @@ def test_audio_channel_timelines_round_trip(tmp_path):
 
 
 def test_setting_timeline_audio_id_updates_the_whole_audio():
-    audio = Audio.from_pcm(b"\0\0" * 4, sample_rate=8000, channels=2, id="old-id")
+    audio = AudioDoc(AudioPcm(b"\0\0" * 4, sample_rate=8000, channels=2), id="old-id")
     audio.ensure_timeline("left")
     audio.ensure_timeline("right")
 
@@ -202,7 +211,7 @@ def test_setting_timeline_audio_id_updates_the_whole_audio():
 
 
 def test_audio_duration_and_validation_are_audio_scoped():
-    audio = Audio.from_pcm(b"\0\0" * 4000, sample_rate=8000, id="duration")
+    audio = AudioDoc(AudioPcm(b"\0\0" * 4000, sample_rate=8000), id="duration")
     audio.ensure_timeline("right")
     audio.duration_ms = 500
 
@@ -216,15 +225,17 @@ def test_waveform_from_numpy_copies_input():
     samples = np.array([0.0, 0.5, -0.5], dtype=np.float32)
     waveform = Waveform(samples, 16000)
     samples[:] = 1.0
-    np.testing.assert_array_equal(waveform.numpy(), np.array([0.0, 0.5, -0.5], np.float32))
+    np.testing.assert_array_equal(
+        waveform.numpy(), np.array([0.0, 0.5, -0.5], np.float32)
+    )
 
 
 def test_audio_aload_returns_waveform_without_blocking_api_changes():
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    audio = Audio.from_pcm(pcm, sample_rate=8000, channels=2, id="async-call")
+    source = AudioPcm(pcm, sample_rate=8000, channels=2)
 
     async def load():
-        return await audio.aload()
+        return await source.aload()
 
     waveform = asyncio.run(load())
 
@@ -256,14 +267,14 @@ def test_url_aload_uses_async_download_and_blocking_decode():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    audio = Audio.from_url(
-        f"http://127.0.0.1:{server.server_port}/audio.wav", id="url-call"
-    )
+    source = AudioUrl(f"http://127.0.0.1:{server.server_port}/audio.wav")
 
     async def load_and_probe_loop():
-        task = asyncio.create_task(audio.aload())
+        task = asyncio.create_task(source.aload())
         await asyncio.sleep(0.03)
-        assert not task.done(), "download should still be waiting on the delayed HTTP response"
+        assert not task.done(), (
+            "download should still be waiting on the delayed HTTP response"
+        )
         return await task
 
     try:
@@ -303,7 +314,7 @@ def test_existing_db_can_be_opened_read_only():
 
 def test_public_types_have_informative_repr(tmp_path):
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    audio = Audio.from_pcm(pcm, sample_rate=8000, channels=2, id="call-1")
+    audio = AudioDoc(AudioPcm(pcm, sample_rate=8000, channels=2), id="call-1")
     audio.timeline("mono").duration_ms = 3250
     annotation = audio.timeline("mono").add_transcription(
         100,
@@ -312,24 +323,24 @@ def test_public_types_have_informative_repr(tmp_path):
         confidence=0.95,
     )
     audio.metadata["speaker"] = "alice"
-    waveform = audio.load()
+    waveform = audio.source.load()
     db = AudioDB(str(tmp_path / "repr.vasr"))
     db.insert(audio)
 
     assert repr(audio) == (
-        'Audio(id="call-1", pcm_bytes=8, sample_rate=8000, channels=2, '
+        'AudioDoc(id="call-1", pcm_bytes=8, sample_rate=8000, channels=2, '
         'duration="3.25s", annotations=1)'
     )
-    assert str(audio) == 'Audio "call-1" (3.25s)'
+    assert str(audio) == 'AudioDoc "call-1" (3.25s)'
     assert "duration=0ms" in repr(waveform)
-    assert "text=\"hello world\"" in repr(annotation)
+    assert 'text="hello world"' in repr(annotation)
     assert str(annotation) == 'transcription [100..800ms]: "hello world"'
-    assert "duration=\"3.25s\"" in repr(audio.timeline("mono"))
+    assert 'duration="3.25s"' in repr(audio.timeline("mono"))
     assert repr(db).endswith('mode="read-write", audios=1, duration="3.25s")')
 
 
 def test_model_annotations_can_be_written_queried_and_removed():
-    audio = Audio.from_pcm(b"\0\0" * 8000, sample_rate=8000, id="sources")
+    audio = AudioDoc(AudioPcm(b"\0\0" * 8000, sample_rate=8000), id="sources")
     reference = audio.timeline("mono").add_transcription(
         0, 1000, "reference", source="xlsx_import", language="zh"
     )
@@ -354,17 +365,23 @@ def test_model_annotations_can_be_written_queried_and_removed():
     assert speaker.kind == "speaker"
     assert speaker.speaker == "user"
     assert speaker.source_kind == "stage"
-    assert [item.id for item in audio.timeline("mono").annotations_by_source("tegasr")] == [
-        prediction.id
-    ]
+    assert [
+        item.id for item in audio.timeline("mono").annotations_by_source("tegasr")
+    ] == [prediction.id]
     assert audio.timeline("mono").transcript_by_source("tegasr").text == "prediction"
-    assert audio.timeline("mono").transcript_by_source(
-        "xlsx_import", source_kind="stage"
-    ).text == "reference"
+    assert (
+        audio.timeline("mono")
+        .transcript_by_source("xlsx_import", source_kind="stage")
+        .text
+        == "reference"
+    )
     original_id = prediction.id
-    assert audio.timeline("mono").relabel_annotations_source(
-        "tegasr", "tegasr-v2", from_source_kind="model"
-    ) == 1
+    assert (
+        audio.timeline("mono").relabel_annotations_source(
+            "tegasr", "tegasr-v2", from_source_kind="model"
+        )
+        == 1
+    )
     relabeled = audio.timeline("mono").annotations_by_source("tegasr-v2")
     assert [item.id for item in relabeled] == [original_id]
     assert relabeled[0].source_kind == "model"
@@ -374,9 +391,7 @@ def test_model_annotations_can_be_written_queried_and_removed():
 
 def test_database_update_detects_changes(tmp_path):
     path = tmp_path / "timeline-only.vasr"
-    audio = Audio.from_pcm(
-        b"\0\0" * 8000, sample_rate=8000, id="timeline-only"
-    )
+    audio = AudioDoc(AudioPcm(b"\0\0" * 8000, sample_rate=8000), id="timeline-only")
     audio.metadata["preserved"] = True
     db = AudioDB(str(path))
     db.insert(audio)
@@ -386,23 +401,30 @@ def test_database_update_detects_changes(tmp_path):
     )
     assert db.update(audio) is True
     assert db.update(audio) is False
-    missing = Audio.from_pcm(b"\0\0", sample_rate=8000, id="missing")
+    missing = AudioDoc(AudioPcm(b"\0\0", sample_rate=8000), id="missing")
     with pytest.raises(KeyError, match="missing"):
         db.update(missing)
     loaded = db["timeline-only"]
     assert loaded.metadata["preserved"] is True
-    assert loaded.timeline("mono").transcript_by_source("old-model").text == "prediction"
+    assert (
+        loaded.timeline("mono").transcript_by_source("old-model").text == "prediction"
+    )
 
-    assert loaded.timeline("mono").relabel_annotations_source(
-        "old-model",
-        "new-model",
-        from_source_kind="model",
-        to_source_kind="model",
-    ) == 1
+    assert (
+        loaded.timeline("mono").relabel_annotations_source(
+            "old-model",
+            "new-model",
+            from_source_kind="model",
+            to_source_kind="model",
+        )
+        == 1
+    )
     assert db.update(loaded) is True
     loaded = db["timeline-only"]
     assert loaded.timeline("mono").annotations_by_source("old-model") == []
-    assert loaded.timeline("mono").transcript_by_source("new-model").text == "prediction"
+    assert (
+        loaded.timeline("mono").transcript_by_source("new-model").text == "prediction"
+    )
 
     loaded.timeline("mono").add_transcription(
         0, 1000, "second", source="second-model", source_kind="model"
@@ -418,7 +440,7 @@ def test_database_update_detects_changes(tmp_path):
     assert db.update_many([another]) == 1
 
 
-def test_audio_has_only_explicit_public_constructors(tmp_path):
+def test_audiodoc_has_no_legacy_load_factories(tmp_path):
     wav_path = tmp_path / "audio.wav"
     with wave.open(str(wav_path), "wb") as writer:
         writer.setnchannels(1)
@@ -426,15 +448,21 @@ def test_audio_has_only_explicit_public_constructors(tmp_path):
         writer.setframerate(8000)
         writer.writeframes(struct.pack("<hh", 0, 1000))
 
-    from_file = Audio.from_file(str(wav_path), id="file")
-    from_bytes = Audio.from_bytes(wav_path.read_bytes(), id="bytes")
-    assert from_file.load().channels == 1
-    assert from_bytes.load().channels == 1
-    assert not hasattr(Audio, "from_source")
-    assert not hasattr(Audio, "from_base64")
-    assert not hasattr(Audio, "from_pcm_s16le")
-    assert not hasattr(from_file, "source")
-    assert not hasattr(from_file.load(), "num_channels")
-    assert repr(from_file).startswith('Audio(id="file", file="')
+    from_file = AudioDoc(AudioPath(str(wav_path)), id="file")
+    from_bytes = AudioDoc(AudioBytes(wav_path.read_bytes()), id="bytes")
+    assert isinstance(from_file.source, AudioPath)
+    assert isinstance(from_bytes.source, AudioBytes)
+    assert from_file.source.load().channels == 1
+    assert from_bytes.source.load().channels == 1
+    assert Waveform.from_path(str(wav_path)).channels == 1
+    assert Waveform.from_bytes(wav_path.read_bytes()).channels == 1
+    assert Waveform.from_source(from_file.source).channels == 1
+    assert not hasattr(AudioDoc, "from_file")
+    assert not hasattr(AudioDoc, "from_url")
+    assert not hasattr(AudioDoc, "from_bytes")
+    assert not hasattr(AudioDoc, "from_pcm")
+    assert not hasattr(from_file, "load")
+    assert not hasattr(from_file.source.load(), "num_channels")
+    assert repr(from_file).startswith('AudioDoc(id="file", file="')
     assert repr(from_file).endswith('")')
-    assert str(from_file) == 'Audio "file"'
+    assert str(from_file) == 'AudioDoc "file"'
