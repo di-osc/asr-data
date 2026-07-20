@@ -4,7 +4,6 @@ pub mod audio;
 mod cer;
 mod db;
 mod extract_audio;
-mod fasr;
 mod media;
 #[cfg(feature = "python-bindings")]
 mod python;
@@ -24,7 +23,6 @@ pub use db::{
 pub use extract_audio::{
     ExtractAudioSummary, extract_embedded_audio, extract_embedded_audio_from_db,
 };
-pub use fasr::{FasrConvertSummary, convert_fasr_audiolist_to_db, read_fasr_audio_list};
 pub use media::{AudioChannel, AudioEncoding, AudioFormat, AudioSource};
 pub use record::{
     Audio, AudioChannelError, AudioValidationError, LegacyImportError, read_legacy_msgpack,
