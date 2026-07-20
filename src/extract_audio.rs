@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::{Audio, AudioDb, AudioDbError, AudioSource};
+use crate::{AudioDb, AudioDbError, AudioDoc, AudioSource};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExtractAudioSummary {
@@ -10,7 +10,7 @@ pub struct ExtractAudioSummary {
 }
 
 pub fn extract_embedded_audio(
-    audios: &[Audio],
+    audios: &[AudioDoc],
     dir: impl AsRef<Path>,
 ) -> Result<ExtractAudioSummary, std::io::Error> {
     let dir = dir.as_ref();
@@ -43,7 +43,7 @@ pub fn extract_embedded_audio(
     Ok(ExtractAudioSummary { extracted, skipped })
 }
 
-fn embedded_audio_bytes(audio: &Audio) -> Option<(&[u8], &'static str)> {
+fn embedded_audio_bytes(audio: &AudioDoc) -> Option<(&[u8], &'static str)> {
     match &audio.source {
         AudioSource::EncodedBytes(bytes) => Some((bytes, detect_extension(bytes))),
         AudioSource::PcmS16Le { bytes, .. } => Some((bytes, "pcm")),
@@ -81,11 +81,11 @@ pub fn extract_embedded_audio_from_db(
 
 #[cfg(test)]
 mod tests {
-    use crate::{Audio, AudioSource};
+    use crate::{AudioDoc, AudioSource};
 
     #[test]
     fn exported_filename_uses_audio_id() {
-        let audio = Audio::with_id("record-12", AudioSource::from_encoded_bytes(vec![1, 2, 3]));
+        let audio = AudioDoc::with_id("record-12", AudioSource::from_encoded_bytes(vec![1, 2, 3]));
         assert_eq!(audio.audio_id(), "record-12");
     }
 }

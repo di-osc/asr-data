@@ -10,7 +10,7 @@ use crate::{Annotation, AudioChannel, AudioEncoding, AudioSource, DurationMs, Ti
 
 /// An audio source together with all annotations and per-audio metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Audio {
+pub struct AudioDoc {
     #[serde(default)]
     pub id: String,
     #[serde(default)]
@@ -21,7 +21,7 @@ pub struct Audio {
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
-impl Audio {
+impl AudioDoc {
     pub fn new(source: impl Into<AudioSource>) -> Self {
         Self::with_id(format!("audio_{}", uuid::Uuid::new_v4().simple()), source)
     }
@@ -76,13 +76,13 @@ impl Audio {
     pub fn mono_timeline(&self) -> &Timeline {
         self.timelines
             .get(&AudioChannel::Mono)
-            .expect("Audio always contains a mono timeline")
+            .expect("AudioDoc always contains a mono timeline")
     }
 
     pub fn mono_timeline_mut(&mut self) -> &mut Timeline {
         self.timelines
             .get_mut(&AudioChannel::Mono)
-            .expect("Audio always contains a mono timeline")
+            .expect("AudioDoc always contains a mono timeline")
     }
 
     pub fn timelines(&self) -> &BTreeMap<AudioChannel, Timeline> {
@@ -222,19 +222,19 @@ fn validate_channel(channel: AudioChannel) -> Result<(), AudioChannelError> {
     }
 }
 
-impl From<AudioSource> for Audio {
+impl From<AudioSource> for AudioDoc {
     fn from(source: AudioSource) -> Self {
         Self::new(source)
     }
 }
 
-impl From<&str> for Audio {
+impl From<&str> for AudioDoc {
     fn from(source: &str) -> Self {
         Self::new(AudioSource::new(source))
     }
 }
 
-impl From<String> for Audio {
+impl From<String> for AudioDoc {
     fn from(source: String) -> Self {
         Self::new(AudioSource::new(source))
     }
@@ -250,7 +250,7 @@ pub enum LegacyImportError {
 
 /// Reads the original MessagePack list formats for migration into [`crate::AudioDb`].
 /// New data should be stored in an `AudioDb`, not written back to MessagePack.
-pub fn read_legacy_msgpack(path: impl AsRef<Path>) -> Result<Vec<Audio>, LegacyImportError> {
+pub fn read_legacy_msgpack(path: impl AsRef<Path>) -> Result<Vec<AudioDoc>, LegacyImportError> {
     let path = path.as_ref();
     let list_result = LegacyAudioList::deserialize(&mut rmp_serde::Deserializer::new(
         BufReader::new(File::open(path)?),
@@ -269,11 +269,11 @@ pub fn read_legacy_msgpack(path: impl AsRef<Path>) -> Result<Vec<Audio>, LegacyI
 }
 
 struct LegacyAudioList {
-    audios: Option<Vec<Audio>>,
-    records: Option<Vec<Audio>>,
+    audios: Option<Vec<AudioDoc>>,
+    records: Option<Vec<AudioDoc>>,
 }
 
-struct LegacyAudio(Audio);
+struct LegacyAudio(AudioDoc);
 
 #[derive(Deserialize)]
 struct LegacyAudioWire {
@@ -392,7 +392,7 @@ impl<'de> Deserialize<'de> for LegacyAudio {
             duration: timeline.duration,
             annotations: timeline.annotations,
         };
-        Ok(Self(Audio {
+        Ok(Self(AudioDoc {
             id: timeline.audio_id.clone(),
             duration: timeline.duration,
             source,

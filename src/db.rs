@@ -8,7 +8,7 @@ use rusqlite::{
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
-use crate::{Audio, DurationMs};
+use crate::{AudioDoc, DurationMs};
 
 const SCHEMA_VERSION: i64 = 4;
 const CHANNEL_TIMELINE_SCHEMA_VERSION: i64 = 3;
@@ -117,21 +117,21 @@ impl AudioDb {
         }
     }
 
-    pub fn insert(&self, audio: &Audio) -> Result<(), AudioDbError> {
+    pub fn insert(&self, audio: &AudioDoc) -> Result<(), AudioDbError> {
         insert_with(&self.connection, audio)
     }
 
     /// Updates only the parts of an existing audio that differ from its stored value.
     /// Returns `true` when at least one part changed and `false` for a no-op update.
-    pub fn update(&self, audio: &Audio) -> Result<bool, AudioDbError> {
+    pub fn update(&self, audio: &AudioDoc) -> Result<bool, AudioDbError> {
         update_with(&self.connection, audio)
     }
 
-    pub fn query(&self, query: &AudioQuery) -> Result<Vec<Audio>, AudioDbError> {
+    pub fn query(&self, query: &AudioQuery) -> Result<Vec<AudioDoc>, AudioDbError> {
         query_with(&self.connection, query, self.schema_version)
     }
 
-    pub fn get(&self, audio_id: &str) -> Result<Option<Audio>, AudioDbError> {
+    pub fn get(&self, audio_id: &str) -> Result<Option<AudioDoc>, AudioDbError> {
         get_with(&self.connection, audio_id, self.schema_version)
     }
 
@@ -154,7 +154,7 @@ impl AudioDb {
             != 0)
     }
 
-    pub fn update_many(&mut self, audios: &[Audio]) -> Result<usize, AudioDbError> {
+    pub fn update_many(&mut self, audios: &[AudioDoc]) -> Result<usize, AudioDbError> {
         let transaction = self.connection.transaction()?;
         let mut updated = 0;
         for audio in audios {
@@ -180,7 +180,7 @@ impl AudioDb {
         Ok(DurationMs(u64::try_from(duration).unwrap_or_default()))
     }
 
-    pub(crate) fn load_all(&self) -> Result<Vec<Audio>, AudioDbError> {
+    pub(crate) fn load_all(&self) -> Result<Vec<AudioDoc>, AudioDbError> {
         let mut audios = Vec::new();
         let mut after = None;
         loop {
@@ -192,7 +192,7 @@ impl AudioDb {
             if page.is_empty() {
                 break;
             }
-            after = page.last().map(Audio::audio_id);
+            after = page.last().map(AudioDoc::audio_id);
             audios.extend(page);
         }
         Ok(audios)
@@ -248,7 +248,7 @@ impl AudioDb {
 }
 
 impl AudioDbTransaction<'_> {
-    pub(crate) fn insert(&self, audio: &Audio) -> Result<(), AudioDbError> {
+    pub(crate) fn insert(&self, audio: &AudioDoc) -> Result<(), AudioDbError> {
         insert_with(&self.transaction, audio)
     }
 
@@ -440,7 +440,7 @@ fn validate(connection: &Connection) -> Result<i64, AudioDbError> {
     Ok(version)
 }
 
-fn insert_with(connection: &Connection, audio: &Audio) -> Result<(), AudioDbError> {
+fn insert_with(connection: &Connection, audio: &AudioDoc) -> Result<(), AudioDbError> {
     audio.validate()?;
     let source = encode(&audio.source)?;
     let timeline = encode(audio.timelines())?;
@@ -476,7 +476,7 @@ fn insert_with(connection: &Connection, audio: &Audio) -> Result<(), AudioDbErro
     }
 }
 
-fn update_with(connection: &Connection, audio: &Audio) -> Result<bool, AudioDbError> {
+fn update_with(connection: &Connection, audio: &AudioDoc) -> Result<bool, AudioDbError> {
     audio.validate()?;
     let audio_id = &audio.id;
     let source = encode(&audio.source)?;
@@ -540,7 +540,7 @@ fn query_with(
     connection: &Connection,
     query: &AudioQuery,
     schema_version: i64,
-) -> Result<Vec<Audio>, AudioDbError> {
+) -> Result<Vec<AudioDoc>, AudioDbError> {
     if query.limit > MAX_QUERY_LIMIT {
         return Err(AudioDbError::QueryLimitExceeded {
             limit: query.limit,
@@ -632,7 +632,7 @@ fn get_with(
     connection: &Connection,
     audio_id: &str,
     schema_version: i64,
-) -> Result<Option<Audio>, AudioDbError> {
+) -> Result<Option<AudioDoc>, AudioDbError> {
     let sql = if schema_version == LEGACY_SCHEMA_VERSION {
         "SELECT source, timeline, metadata, audio_id, duration_ms
          FROM audios WHERE audio_id = ?1"
@@ -650,7 +650,7 @@ fn get_with(
         .map_err(AudioDbError::from)
 }
 
-fn decode_audio_row(row: &rusqlite::Row<'_>, schema_version: i64) -> rusqlite::Result<Audio> {
+fn decode_audio_row(row: &rusqlite::Row<'_>, schema_version: i64) -> rusqlite::Result<AudioDoc> {
     let source: Vec<u8> = row.get(0)?;
     let timeline: Vec<u8> = row.get(1)?;
     let metadata: String = row.get(2)?;
@@ -671,7 +671,7 @@ fn decode_audio_row(row: &rusqlite::Row<'_>, schema_version: i64) -> rusqlite::R
         timeline.audio_id.clone_from(&audio_id);
         timeline.duration = duration;
     }
-    Ok(Audio {
+    Ok(AudioDoc {
         id: audio_id,
         duration,
         source,

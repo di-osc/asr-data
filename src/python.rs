@@ -3,10 +3,10 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crate::{
     Annotation as RustAnnotation, AnnotationPayload, AnnotationSource, AnnotationStatus,
-    Audio as RustAudio, AudioChannel as RustAudioChannel, AudioDb as RustAudioDb,
-    AudioDbError as RustAudioDbError, AudioDbMode, AudioEncoding, AudioFormat as RustAudioFormat,
-    AudioQuery, AudioSource as RustAudioSource, DurationMs, TextSpan, TimeRange,
-    Timeline as RustTimeline, Transcript as RustTranscript, Waveform as RustWaveform,
+    AudioChannel as RustAudioChannel, AudioDb as RustAudioDb, AudioDbError as RustAudioDbError,
+    AudioDbMode, AudioDoc as RustAudio, AudioEncoding, AudioFormat as RustAudioFormat, AudioQuery,
+    AudioSource as RustAudioSource, DurationMs, TextSpan, TimeRange, Timeline as RustTimeline,
+    Transcript as RustTranscript, Waveform as RustWaveform,
 };
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::create_exception;

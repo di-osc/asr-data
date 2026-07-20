@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use asr_data::{
-    Annotation, AnnotationPayload, AnnotationSource, AnnotationStatus, Audio, AudioBytesStream,
-    AudioChannel, AudioDb, AudioDbError, AudioDbMode, AudioEncoding, AudioFormat, AudioQuery,
-    AudioSource, DurationMs, MAX_QUERY_LIMIT, TextSpan, TimeRange, Timeline, Token, Waveform,
-    WaveformError, import_legacy_msgpack_to_db, read_legacy_msgpack,
+    Annotation, AnnotationPayload, AnnotationSource, AnnotationStatus, AudioBytesStream,
+    AudioChannel, AudioDb, AudioDbError, AudioDbMode, AudioDoc, AudioEncoding, AudioFormat,
+    AudioQuery, AudioSource, DurationMs, MAX_QUERY_LIMIT, TextSpan, TimeRange, Timeline, Token,
+    Waveform, WaveformError, import_legacy_msgpack_to_db, read_legacy_msgpack,
 };
 
 #[test]
@@ -157,7 +157,7 @@ fn timeline_derives_transcript_from_final_text_annotations_only() {
 
 #[test]
 fn audio_keeps_independent_channel_timelines() {
-    let mut audio = Audio::with_id("call-1", AudioSource::from_pcm_s16le(vec![0; 8], 8_000, 2));
+    let mut audio = AudioDoc::with_id("call-1", AudioSource::from_pcm_s16le(vec![0; 8], 8_000, 2));
     let transcription = |text: &str| {
         Annotation::new(
             TimeRange::new(DurationMs(0), DurationMs(100)),
@@ -201,7 +201,7 @@ fn audio_keeps_independent_channel_timelines() {
 
 #[test]
 fn audio_owns_identity_duration_and_channel_normalization() {
-    let mut audio = Audio::with_id("call-1", AudioSource::from_encoded_bytes(vec![]));
+    let mut audio = AudioDoc::with_id("call-1", AudioSource::from_encoded_bytes(vec![]));
     audio.set_duration(Some(DurationMs(500)));
     audio
         .ensure_timeline(AudioChannel::from_index(1))
@@ -275,7 +275,7 @@ fn audio_bytes_stream_preserves_stereo_channel_count() -> Result<(), WaveformErr
     Ok(())
 }
 
-fn annotated_audio() -> Audio {
+fn annotated_audio() -> AudioDoc {
     let mut timeline = Timeline::new("audio_1");
     timeline.push(Annotation::new(
         TimeRange::new(DurationMs(0), DurationMs(100)),
@@ -283,7 +283,7 @@ fn annotated_audio() -> Audio {
         AnnotationSource::Model("asr".to_string()),
         AnnotationStatus::Final,
     ));
-    let audio = Audio::with_id("audio_1", AudioSource::from_encoded_bytes(vec![1, 2, 3, 4]))
+    let audio = AudioDoc::with_id("audio_1", AudioSource::from_encoded_bytes(vec![1, 2, 3, 4]))
         .with_timeline(timeline)
         .with_metadata_value("sha256", serde_json::json!("sha"));
     audio.with_metadata_value("model", serde_json::json!("qwen3-asr"))
@@ -295,7 +295,7 @@ fn audio_source_loads_pcm_and_waveform_ops_preserve_original_format() {
         .into_iter()
         .flat_map(i16::to_le_bytes)
         .collect::<Vec<_>>();
-    let audio = Audio::with_id("pcm", AudioSource::from_pcm_s16le(bytes, 8_000, 2));
+    let audio = AudioDoc::with_id("pcm", AudioSource::from_pcm_s16le(bytes, 8_000, 2));
 
     let waveform = audio.load().expect("load PCM source");
     assert_eq!(waveform.sample_rate, 8_000);
@@ -340,7 +340,7 @@ fn audio_db_crud_and_difference_update() {
             AnnotationSource::Model("asr".to_string()),
             AnnotationStatus::Final,
         ));
-    let mut second = Audio::with_id("second", AudioSource::from_encoded_bytes(vec![5, 6, 7]));
+    let mut second = AudioDoc::with_id("second", AudioSource::from_encoded_bytes(vec![5, 6, 7]));
     second.set_duration(Some(DurationMs(250)));
     db.insert(&first).expect("insert first");
     db.insert(&second).expect("insert second");
@@ -395,7 +395,7 @@ fn audio_db_crud_and_difference_update() {
         }),
         Err(AudioDbError::QueryLimitExceeded { .. })
     ));
-    let missing = Audio::with_id("missing", AudioSource::from_encoded_bytes(vec![]));
+    let missing = AudioDoc::with_id("missing", AudioSource::from_encoded_bytes(vec![]));
     assert!(matches!(
         db.update(&missing),
         Err(AudioDbError::NotFound { audio_id }) if audio_id == "missing"
