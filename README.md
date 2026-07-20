@@ -9,9 +9,9 @@
 
 ## 特点
 
-- **统一的数据模型**：用 `Audio` 表示一段音频，用 `Timeline` 管理语音段、转写、说话人、语言、热词、诊断信息等时间轴标注。
+- **统一的数据模型**：用 `AudioDoc` 表示一条音频记录，用 `Timeline` 管理语音段、转写、说话人、语言、热词、诊断信息等时间轴标注；音频来源由 `AudioPath`、`AudioUrl`、`AudioBytes`、`AudioPcm` 等类型描述。
 - **SQLite 本地存储**：`AudioDB` 将数据保存为 `.sqlite` 文件，支持按 ID 查询、分页遍历、元数据过滤和时长过滤。
-- **音频加载与处理**：支持从文件、URL、字节流和 PCM 构造音频；可解码为 `Waveform`，并进行声道拆分、转单声道、重采样等操作。
+- **音频加载与处理**：支持从文件、URL、字节流和 PCM 构造音频；可解码为 `Waveform`，并进行声道拆分、转单声道、重采样、归一化等操作。
 - **Rust 核心，Python 易用**：核心能力由 Rust 实现，同时提供 PyO3 Python 绑定，适合在脚本、Notebook 和数据处理流水线中使用。
 - **面向 ASR 流程**：可区分人工标注、模型输出、系统阶段产物等来源，便于保存参考文本、模型预测和后处理结果。
 
@@ -33,38 +33,40 @@ cargo add asr-data
 
 ## Python 使用示例
 
-### 创建音频对象
+### 创建音频记录
 
 ```python
-from asr_data import Audio
+from asr_data import AudioDoc, AudioPath, AudioPcm, Waveform
 
 # 从本地文件创建
-audio = Audio.from_file("audio.wav", id="call-001")
+doc = AudioDoc(AudioPath("audio.wav"), id="call-001")
 
 # 添加元数据
-audio.metadata["split"] = "train"
-audio.metadata["speaker"] = "alice"
+doc.metadata["split"] = "train"
+doc.metadata["speaker"] = "alice"
 ```
 
 也可以从 URL、原始字节或 PCM 数据创建：
 
 ```python
-audio_from_url = Audio.from_url("https://example.com/audio.wav", id="remote-001")
-audio_from_bytes = Audio.from_bytes(open("audio.wav", "rb").read(), id="bytes-001")
-audio_from_pcm = Audio.from_pcm(b"\0\0" * 16000, sample_rate=16000, id="pcm-001")
+from asr_data import AudioBytes, AudioDoc, AudioPcm, AudioUrl
 
-# 音频 ID 和时长属于 Audio，并同步到所有声道 Timeline。
-audio_from_pcm.duration_ms = 1_000
+doc_from_url = AudioDoc(AudioUrl("https://example.com/audio.wav"), id="remote-001")
+doc_from_bytes = AudioDoc(AudioBytes(open("audio.wav", "rb").read()), id="bytes-001")
+doc_from_pcm = AudioDoc(AudioPcm(b"\0\0" * 16000, sample_rate=16000), id="pcm-001")
+
+# 音频 ID 和时长属于 AudioDoc，并同步到所有声道 Timeline。
+doc_from_pcm.duration_ms = 1_000
 ```
 
 ### 添加时间轴标注
 
 ```python
 # 语音段
-audio.timeline("mono").add_speech(0, 1200, confidence=0.98)
+doc.timeline("mono").add_speech(0, 1200, confidence=0.98)
 
 # 转写文本
-audio.timeline("mono").add_transcription(
+doc.timeline("mono").add_transcription(
     0,
     1200,
     "hello world",
@@ -75,31 +77,31 @@ audio.timeline("mono").add_transcription(
 )
 
 # 说话人
-audio.timeline("mono").add_speaker(0, 1200, "speaker-1")
+doc.timeline("mono").add_speaker(0, 1200, "speaker-1")
 
-print(audio.timeline("mono").transcript_by_source("whisper-large").text)
+print(doc.timeline("mono").transcript_by_source("whisper-large").text)
 ```
 
-`audio.timeline("mono")` 表示 mono 时间轴。双声道通话可以把左右声道的标注分别保存在同一条 `Audio` 记录中：
+`doc.timeline("mono")` 表示 mono 时间轴。双声道通话可以把左右声道的标注分别保存在同一条 `AudioDoc` 记录中：
 
 ```python
-waveform = audio.load()
+waveform = doc.source.load()
 caller_waveform = waveform.channel(0)
 agent_waveform = waveform.channel(1)
 
 # 识别器只处理提取后的 mono waveform；调用方把结果写回对应声道。
-audio.ensure_timeline("left").add_transcription(0, 1200, "caller text")
-audio.ensure_timeline("right").add_transcription(0, 1200, "agent text")
+doc.ensure_timeline("left").add_transcription(0, 1200, "caller text")
+doc.ensure_timeline("right").add_transcription(0, 1200, "agent text")
 ```
 
-`timeline()` 只查询，不会修改 Audio；声道不存在时返回 `None`。需要创建时显式使用 `ensure_timeline()`：
+`timeline()` 只查询，不会修改 AudioDoc；声道不存在时返回 `None`。需要创建时显式使用 `ensure_timeline()`：
 
 ```python
-right = audio.timeline("right")
+right = doc.timeline("right")
 if right is None:
-    right = audio.ensure_timeline("right")
+    right = doc.ensure_timeline("right")
 
-audio.remove_timeline("right")
+doc.remove_timeline("right")
 ```
 
 需要混音时仍显式调用 `waveform.to_mono()`，不会自动合并左右声道的 Timeline。
@@ -107,31 +109,40 @@ audio.remove_timeline("right")
 ### 加载和处理波形
 
 ```python
-waveform = audio.load()
+from asr_data import Waveform
 
-print(waveform.sample_rate)
-print(waveform.channels)
+# 从文件直接加载
+wf = Waveform.from_path("audio.wav")
 
-mono = waveform.to_mono()
-resampled = mono.resample(16000)
-left = waveform.channel(0)
+# 或通过 source 对象加载
+wf = doc.source.load()
+# 或 AudioPath("audio.wav").load()
+
+wf = wf.resample(16000).normalize()
+
+print(wf.sample_rate)
+print(wf.channels)
+
+mono = wf.to_mono()
+left = wf.channel(0)
 ```
 
 异步加载：
 
 ```python
-waveform = await audio.aload()
+waveform = await doc.source.aload()
 ```
 
 ### 使用 AudioDB 持久化
 
 ```python
-from asr_data import AudioDB
+from asr_data import AudioDB, AudioDoc, AudioPath
 
+doc = AudioDoc(AudioPath("audio.wav"), id="call-001")
 db = AudioDB("dataset.sqlite")
 
 # 写入
-db.insert(audio)
+db.insert(doc)
 
 # 按 ID 读取
 loaded = db["call-001"]
@@ -180,8 +191,8 @@ items = db.query(
 直接迭代数据库会按内部游标懒加载：
 
 ```python
-for audio in db:
-    print(audio.id)
+for doc in db:
+    print(doc.id)
 ```
 
 ## 数据格式
