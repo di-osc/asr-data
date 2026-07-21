@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{
+use super::annotation::{
     Annotation, AnnotationPayload, AnnotationSource, AnnotationStatus, AudioId, TimelineId,
-    Transcript,
 };
+use super::segment::{TextSpan, Transcript};
 use crate::utils::DurationMs;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -100,7 +100,7 @@ fn transcript_from_annotations<'a>(
             }
             _ => None,
         })
-        .collect::<Vec<_>>();
+        .collect::<Vec<(DurationMs, TextSpan)>>();
 
     segments.sort_by_key(|(start, _)| *start);
     let segments = segments

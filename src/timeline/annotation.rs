@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{TextSpan, Token};
+use super::segment::TextSpan;
+use super::token::Token;
 use crate::utils::TimeRange;
 
 pub type AudioId = String;

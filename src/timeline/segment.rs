@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::Token;
+use super::token::Token;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextSpan {
