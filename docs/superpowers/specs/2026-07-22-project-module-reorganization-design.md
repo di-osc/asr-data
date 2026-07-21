@@ -90,7 +90,7 @@ src/
 ## Python Binding Responsibilities
 
 - `python/mod.rs`: exception creation, submodule declarations, and the single `_native` registration entry point.
-- `python/common.rs`: shared error conversion, string formatting, and annotation enum conversion helpers.
+- `python/common.rs`: shared error conversion, string formatting, annotation enum conversion helpers, and the shared synchronized `AudioDoc` owner type.
 - `python/audio.rs`: audio data, formats, source conversion, sources, loading tasks, streaming tasks, and iterators.
 - `python/timeline.rs`: annotations, transcripts, and timeline bindings.
 - `python/doc.rs`: `AudioDoc` binding and document-specific synchronization.
