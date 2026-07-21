@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::TimeRange;
+use crate::utils::TimeRange;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Token {

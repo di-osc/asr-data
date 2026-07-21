@@ -6,9 +6,7 @@ mod doc;
 mod metrics;
 #[cfg(feature = "python-bindings")]
 mod python;
-mod segment;
 mod timeline;
-mod token;
 mod utils;
 
 pub use audio::{Audio, AudioChunk, AudioChunks, AudioError};
@@ -23,10 +21,9 @@ pub use doc::{
     read_legacy_msgpack,
 };
 pub use metrics::{CerStats, compute_cer, normalize_for_cer};
-pub use segment::{TextSpan, Transcript};
 pub use timeline::{
     AcousticEvent, Annotation, AnnotationId, AnnotationPayload, AnnotationSource, AnnotationStatus,
-    AudioId, Diagnostic, HotwordMatch, LanguageTag, SpeakerId, Timeline, TimelineId,
+    AudioId, Diagnostic, HotwordMatch, LanguageTag, SpeakerId, TextSpan, Timeline, TimelineId,
+    Token, Transcript,
 };
-pub use token::Token;
 pub use utils::{DurationMs, SampleIndex, TimeRange};

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::Token;
+use super::Token;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextSpan {
