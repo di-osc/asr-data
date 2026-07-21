@@ -180,24 +180,6 @@ impl AudioDb {
         Ok(DurationMs(u64::try_from(duration).unwrap_or_default()))
     }
 
-    pub(crate) fn load_all(&self) -> Result<Vec<AudioDoc>, AudioDbError> {
-        let mut audios = Vec::new();
-        let mut after = None;
-        loop {
-            let page = self.query(&AudioQuery {
-                limit: MAX_QUERY_LIMIT,
-                after,
-                ..AudioQuery::default()
-            })?;
-            if page.is_empty() {
-                break;
-            }
-            after = page.last().map(AudioDoc::audio_id);
-            audios.extend(page);
-        }
-        Ok(audios)
-    }
-
     pub fn set_metadata(&self, key: &str, value: &serde_json::Value) -> Result<(), AudioDbError> {
         let value = serde_json::to_string(value)?;
         self.connection.execute(

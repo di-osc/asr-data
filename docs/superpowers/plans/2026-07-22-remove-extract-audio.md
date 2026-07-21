@@ -14,14 +14,16 @@
 
 - Delete `src/extract_audio.rs`: remove the extraction implementation and its local unit test.
 - Modify `src/lib.rs`: remove the private module declaration and three public exports.
+- Modify `src/db.rs`: remove the private `load_all` helper left unused by the module deletion.
 
 ### Task 1: Remove the module and exports
 
 **Files:**
 - Delete: `src/extract_audio.rs`
 - Modify: `src/lib.rs`
+- Modify: `src/db.rs`
 
-- [ ] **Step 1: Verify the removal check fails before implementation**
+- [x] **Step 1: Verify the removal check fails before implementation**
 
 Run:
 
@@ -31,7 +33,7 @@ test -z "$(rg -n 'extract_audio|ExtractAudioSummary|extract_embedded_audio' src)
 
 Expected: exit code 1 because the module and exports still exist.
 
-- [ ] **Step 2: Delete the implementation and crate-root API**
+- [x] **Step 2: Delete the implementation and crate-root API**
 
 Delete `src/extract_audio.rs`. In `src/lib.rs`, delete:
 
@@ -47,7 +49,9 @@ pub use extract_audio::{
 };
 ```
 
-- [ ] **Step 3: Verify no references remain**
+Delete the now-unused private `AudioDb::load_all` method from `src/db.rs`.
+
+- [x] **Step 3: Verify no references remain**
 
 Run:
 
@@ -57,7 +61,7 @@ test -z "$(rg -n 'extract_audio|ExtractAudioSummary|extract_embedded_audio' src)
 
 Expected: exit code 0 with no output.
 
-- [ ] **Step 4: Run complete verification**
+- [x] **Step 4: Run complete verification**
 
 Run:
 
@@ -73,12 +77,12 @@ git diff --check
 
 Expected: all commands exit successfully; Rust and Python test suites have no failures.
 
-- [ ] **Step 5: Commit the removal**
+- [x] **Step 5: Commit the removal**
 
 Run:
 
 ```bash
-git add src/lib.rs src/extract_audio.rs docs/superpowers/plans/2026-07-22-remove-extract-audio.md
+git add src/lib.rs src/db.rs src/extract_audio.rs docs/superpowers/specs/2026-07-22-remove-extract-audio-design.md docs/superpowers/plans/2026-07-22-remove-extract-audio.md
 git commit -m "refactor: remove unused audio extraction module"
 ```
 

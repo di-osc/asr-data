@@ -4,7 +4,6 @@ pub mod audio;
 mod cer;
 mod db;
 mod doc;
-mod extract_audio;
 mod media;
 #[cfg(feature = "python-bindings")]
 mod python;
@@ -23,9 +22,6 @@ pub use db::{
 pub use doc::{
     AudioChannelError, AudioDoc, AudioTimelineError, AudioValidationError, LegacyImportError,
     read_legacy_msgpack,
-};
-pub use extract_audio::{
-    ExtractAudioSummary, extract_embedded_audio, extract_embedded_audio_from_db,
 };
 pub use media::{AudioChannel, AudioEncoding, AudioFormat, AudioSource};
 pub use segment::{TextSpan, Transcript};
