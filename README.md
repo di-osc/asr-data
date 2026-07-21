@@ -4,30 +4,21 @@
 
 <h1 align="center">asr-data</h1>
 
-`asr-data` 是一个面向 ASR（Automatic Speech Recognition，自动语音识别）
-数据管理的 Rust / Python 库。它把音频、转写、说话人、语言、模型预测等信息组织成统一的数据模型，并使用 SQLite `.sqlite` 文件持久化，方便构建语音数据集、标注流水线和模型评测工具。
+<p align="center">
+  <a href="https://crates.io/crates/asr-data"><img src="https://img.shields.io/crates/v/asr-data?label=crates.io" alt="crates.io" /></a>
+  <a href="https://pypi.org/project/asr-data/"><img src="https://img.shields.io/pypi/v/asr-data?label=PyPI" alt="PyPI" /></a>
+  <a href="https://libraries-793f13szd-di-osc1.vercel.app/asr-data"><img src="https://img.shields.io/badge/docs-latest-blue" alt="docs" /></a>
+</p>
+
+`asr-data` 是一个面向 ASR（Automatic Speech Recognition，自动语音识别）数据管理的 Rust / Python 库。它提供统一的音频与标注数据模型，并使用 SQLite 持久化，适合构建语音数据集、标注流水线和模型评测工具。
 
 ## 特点
 
-- **统一的数据模型**：用 `AudioDoc` 表示一条音频记录，用 `Timeline` 管理语音段、转写、说话人、语言、热词、诊断信息等时间轴标注；音频来源由 `AudioPath`、`AudioUrl`、`AudioBytes`、`AudioBase64`、`AudioPcm` 等类型描述。
-- **SQLite 本地存储**：`AudioDB` 将数据保存为 `.sqlite` 文件，支持按 ID 查询、分页遍历、元数据过滤和时长过滤。
-- **音频加载与处理**：支持从文件、URL、字节流和 PCM 构造音频；可解码为 `Audio`，并进行声道拆分、转单声道、重采样、归一化等操作。
-- **Rust 核心，Python 易用**：核心能力由 Rust 实现，同时提供 PyO3 Python 绑定，适合在脚本、Notebook 和数据处理流水线中使用。
-- **面向 ASR 流程**：可区分人工标注、模型输出、系统阶段产物等来源，便于保存参考文本、模型预测和后处理结果。
-
-## Breaking change / Migration
-
-旧版 `Audio` 已重命名为 `AudioDoc`，音频来源改为显式类型；加载入口也拆分到 source 或 `Audio` 工厂方法。
-
-| 旧 API | 新 API |
-| --- | --- |
-| `Audio` | `AudioDoc` |
-| `Audio.from_file(p)` | `AudioDoc(AudioPath(p))` |
-| `Audio.from_url(...)` | `AudioDoc(AudioUrl(...))` |
-| `Audio.from_bytes(...)` | `AudioDoc(AudioBytes(...))` |
-| `Audio.from_pcm(...)` | `AudioDoc(AudioPcm(...))` |
-| `audio.load()` | `doc.source.load()` 或 `Audio.from_*` |
-| `await audio.aload()` | `await doc.source.aload()` |
+- **统一数据模型**：集中管理音频、转写、说话人、语言和模型预测等信息。
+- **SQLite 本地存储**：数据保存为易于管理和迁移的 `.sqlite` 文件。
+- **音频处理**：支持从文件、URL、字节流和 PCM 加载音频，并提供声道、重采样和归一化等操作。
+- **Rust 核心，Python 易用**：兼顾 Rust 性能与 Python 脚本、Notebook 的使用体验。
+- **面向 ASR 工作流**：适用于数据集构建、人工标注、模型输出和评测结果管理。
 
 ## 安装
 
@@ -39,198 +30,26 @@ pip install asr-data
 
 ### Rust
 
-作为依赖添加到项目：
-
 ```bash
 cargo add asr-data
 ```
 
-## Python 使用示例
-
-### 创建音频记录
-
-```python
-from asr_data import AudioDoc, AudioPath, AudioPcm, Audio
-
-# 从本地文件创建
-doc = AudioDoc(AudioPath("audio.wav"), id="call-001")
-
-# 添加元数据
-doc.metadata["split"] = "train"
-doc.metadata["speaker"] = "alice"
-```
-
-也可以从 URL、原始字节或 PCM 数据创建：
-
-```python
-from asr_data import AudioBytes, AudioDoc, AudioPcm, AudioUrl
-
-doc_from_url = AudioDoc(AudioUrl("https://example.com/audio.wav"), id="remote-001")
-doc_from_bytes = AudioDoc(AudioBytes(open("audio.wav", "rb").read()), id="bytes-001")
-doc_from_pcm = AudioDoc(AudioPcm(b"\0\0" * 16000, sample_rate=16000), id="pcm-001")
-
-# AudioDoc 初始化后不包含 Timeline。创建第一条 Timeline 时必须提供时长。
-mono = doc_from_pcm.ensure_timeline("mono", duration_ms=1_000)
-```
-
-### 添加时间轴标注
-
-```python
-mono = doc.ensure_timeline("mono", duration_ms=1_200)
-
-# 语音段
-mono.add_speech(0, 1200, confidence=0.98)
-
-# 转写文本
-mono.add_transcription(
-    0,
-    1200,
-    "hello world",
-    source="whisper-large",
-    source_kind="model",
-    language="en",
-    confidence=0.91,
-)
-
-# 说话人
-mono.add_speaker(0, 1200, "speaker-1")
-
-print(doc.timeline("mono").transcript_by_source("whisper-large").text)
-```
-
-`doc.timeline("mono")` 表示 mono 时间轴。双声道通话可以把左右声道的标注分别保存在同一条 `AudioDoc` 记录中：
-
-```python
-waveform = doc.source.load()
-caller_waveform = waveform.channel(0)
-agent_waveform = waveform.channel(1)
-
-# 识别器只处理提取后的 mono waveform；调用方把结果写回对应声道。
-# 第一条 Timeline 必须给出 duration_ms，后续 Timeline 自动继承相同时长。
-doc.ensure_timeline("left", duration_ms=1200).add_transcription(0, 1200, "caller text")
-doc.ensure_timeline("right").add_transcription(0, 1200, "agent text")
-```
-
-`timeline()` 只查询，不会修改 AudioDoc；声道不存在时返回 `None`。同一个 `AudioDoc` 的所有 Timeline 时长必须相同，且 `Timeline.duration_ms` 是只读的：
-
-```python
-right = doc.timeline("right")
-if right is None:
-    right = doc.ensure_timeline("right", duration_ms=1200)  # 仅首条需要时长
-
-doc.remove_timeline("right")
-```
-
-需要混音时仍显式调用 `waveform.to_mono()`，不会自动合并左右声道的 Timeline。
-
-### 加载和处理音频
-
-```python
-from asr_data import Audio
-
-# 从文件直接加载
-audio = Audio.from_path("audio.wav")
-
-# 或通过 source 对象加载
-audio = doc.source.load()
-# 或 AudioPath("audio.wav").load()
-
-# 按固定时长迭代 Audio；最后一块可能更短且不会补零
-for chunk in doc.source.stream(chunk_size_ms=100):
-    print(chunk.offset_ms, chunk.is_final)
-    process(chunk)
-
-audio = audio.resample(16000).normalize()
-
-print(audio.sample_rate)
-print(audio.channels)
-
-mono = audio.to_mono()
-left = audio.channel(0)
-
-# 在 notebook 中播放完整音频或指定的毫秒区间
-audio.display()
-audio.display(start_ms=1_000, end_ms=5_000, autoplay=True)
-
-# 将长音频限制在 30 秒以内，并尽量在低能量位置切分
-segments = audio.split_at_low_energy(max_duration_ms=30_000)
-```
-
-`AudioPath`、`AudioUrl`、`AudioBytes`、`AudioBase64` 和 `AudioPcm` 的 `stream()` 返回 `AudioChunk`。它直接持有 samples，并提供 `offset_ms` 和 `is_final`；每块保持完整采样帧、采样率和声道数，顺序拼接所有块可还原 `load()` 的采样数据。
-
-`Audio.split_at_low_energy()` 面向长音频分段：每段不超过指定时长，在上限之前寻找低能量边界。切分不会补零或修改采样，拼接所有结果可还原原始 `Audio`。
-
-异步加载：
-
-```python
-audio = await doc.source.aload()
-```
-
-### 使用 AudioDB 持久化
+## 快速开始
 
 ```python
 from asr_data import AudioDB, AudioDoc, AudioPath
 
 doc = AudioDoc(AudioPath("audio.wav"), id="call-001")
+timeline = doc.ensure_timeline("mono", duration_ms=1_200)
+timeline.add_transcription(0, 1_200, "hello world", language="en")
+
 db = AudioDB("dataset.sqlite")
-
-# 写入
 db.insert(doc)
-
-# 按 ID 读取
-loaded = db["call-001"]
-
-# 更新
-loaded.metadata["checked"] = True
-db.update(loaded)
-
-# 批量更新使用单个 SQLite 事务
-db.update_many([loaded])
-
-# 数据库级元数据适合保存模型运行信息
-db.set_metadata("annotation_runs", {
-    "whisper-large": {"language": "en"},
-})
-
-# 删除
-db.delete("call-001")
 ```
 
-### 查询和分页
+## 文档
 
-`query` 按 `audio_id` 排序。分页时，把上一页最后一条 ID 作为下一页的 `after`：
-
-```python
-first_page = db.query(limit=100, metadata={"split": "train"})
-
-if first_page:
-    second_page = db.query(
-        limit=100,
-        after=first_page[-1].id,
-        metadata={"split": "train"},
-    )
-```
-
-也可以按时长过滤：
-
-```python
-items = db.query(
-    limit=50,
-    min_duration_ms=1_000,
-    max_duration_ms=30_000,
-)
-```
-
-直接迭代数据库会按内部游标懒加载：
-
-```python
-for doc in db:
-    print(doc.id)
-```
-
-## 数据格式
-
-`asr-data` 使用标准 SQLite 数据库文件保存数据，推荐使用 `.sqlite` 后缀。库会写入 SQLite application ID，用于识别和校验数据库格式。
+完整的 API 与使用说明请查看[在线文档](https://libraries-793f13szd-di-osc1.vercel.app/asr-data)。
 
 ## 许可证
 
