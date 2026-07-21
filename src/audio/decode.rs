@@ -7,13 +7,15 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 
+use super::{Audio, AudioChunk, AudioEncoding, AudioFormat, AudioSource};
+
 pub struct DecodedAudioChunks {
     format: Box<dyn symphonia::core::formats::FormatReader>,
     decoder: Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
     track_id: u32,
     sample_rate: u32,
     channels: u16,
-    source_format: crate::AudioFormat,
+    source_format: AudioFormat,
     samples_per_chunk: usize,
     buffered: VecDeque<f32>,
     offset_frames: usize,
@@ -24,7 +26,7 @@ impl DecodedAudioChunks {
     fn new(
         mss: symphonia::core::io::MediaSourceStream<'static>,
         hint: symphonia::core::formats::probe::Hint,
-        encoding: crate::AudioEncoding,
+        encoding: AudioEncoding,
         chunk_size_ms: u64,
     ) -> Result<Self> {
         use symphonia::core::codecs::audio::AudioDecoderOptions;
@@ -66,7 +68,7 @@ impl DecodedAudioChunks {
             track_id,
             sample_rate,
             channels,
-            source_format: crate::AudioFormat {
+            source_format: AudioFormat {
                 encoding,
                 sample_rate,
                 channels,
@@ -110,7 +112,7 @@ impl DecodedAudioChunks {
 }
 
 impl Iterator for DecodedAudioChunks {
-    type Item = Result<crate::AudioChunk>;
+    type Item = Result<AudioChunk>;
     fn next(&mut self) -> Option<Self::Item> {
         while self.buffered.len() < self.samples_per_chunk && !self.finished {
             if let Err(error) = self.decode_packet() {
@@ -125,7 +127,7 @@ impl Iterator for DecodedAudioChunks {
         let samples = self.buffered.drain(..count).collect::<Vec<_>>();
         let offset_ms = self.offset_frames as u64 * 1000 / u64::from(self.sample_rate);
         self.offset_frames += count / usize::from(self.channels);
-        Some(Ok(crate::AudioChunk {
+        Some(Ok(AudioChunk {
             samples,
             sample_rate: self.sample_rate,
             channels: self.channels,
@@ -159,10 +161,7 @@ impl symphonia::core::io::MediaSource for HttpMediaSource {
     }
 }
 
-pub fn stream_source(
-    source: &crate::AudioSource,
-    chunk_size_ms: u64,
-) -> Result<DecodedAudioChunks> {
+pub fn stream_source(source: &AudioSource, chunk_size_ms: u64) -> Result<DecodedAudioChunks> {
     use base64::Engine;
     use std::fs::File;
     use std::io::Cursor;
@@ -171,9 +170,9 @@ pub fn stream_source(
     let (media, hint, encoding): (
         Box<dyn symphonia::core::io::MediaSource>,
         Hint,
-        crate::AudioEncoding,
+        AudioEncoding,
     ) = match source {
-        crate::AudioSource::Path(path) => {
+        AudioSource::Path(path) => {
             let mut hint = Hint::new();
             if let Some(ext) = path.extension().and_then(|v| v.to_str()) {
                 hint.with_extension(ext);
@@ -184,10 +183,10 @@ pub fn stream_source(
                 path.extension()
                     .and_then(|v| v.to_str())
                     .map(encoding_from_extension)
-                    .unwrap_or(crate::AudioEncoding::Unknown),
+                    .unwrap_or(AudioEncoding::Unknown),
             )
         }
-        crate::AudioSource::Url(url) => {
+        AudioSource::Url(url) => {
             if let Ok(parsed) = reqwest::Url::parse(url)
                 && parsed.scheme() == "file"
             {
@@ -202,7 +201,7 @@ pub fn stream_source(
                     .extension()
                     .and_then(|v| v.to_str())
                     .map(encoding_from_extension)
-                    .unwrap_or(crate::AudioEncoding::Unknown);
+                    .unwrap_or(AudioEncoding::Unknown);
                 return DecodedAudioChunks::new(
                     MediaSourceStream::new(Box::new(File::open(path)?), Default::default()),
                     hint,
@@ -227,12 +226,12 @@ pub fn stream_source(
                 ),
             )
         }
-        crate::AudioSource::EncodedBytes(bytes) => (
+        AudioSource::EncodedBytes(bytes) => (
             Box::new(Cursor::new(bytes.clone())),
             Hint::new(),
             detect_encoding(bytes),
         ),
-        crate::AudioSource::Base64(data) => {
+        AudioSource::Base64(data) => {
             let raw = data
                 .strip_prefix("data:")
                 .and_then(|v| v.split_once(',').map(|v| v.1))
@@ -241,7 +240,7 @@ pub fn stream_source(
             let encoding = detect_encoding(&bytes);
             (Box::new(Cursor::new(bytes)), Hint::new(), encoding)
         }
-        crate::AudioSource::PcmS16Le { .. } => bail!("raw PCM uses the direct chunk iterator"),
+        AudioSource::PcmS16Le { .. } => bail!("raw PCM uses the direct chunk iterator"),
     };
     DecodedAudioChunks::new(
         MediaSourceStream::new(media, Default::default()),
@@ -257,7 +256,7 @@ pub fn decode_path(path: &Path) -> Result<(Vec<f32>, u32)> {
     Ok((mono.samples, mono.sample_rate))
 }
 
-pub fn decode_path_audio(path: &Path) -> Result<crate::Audio> {
+pub fn decode_path_audio(path: &Path) -> Result<Audio> {
     use std::fs::File;
 
     use symphonia::core::formats::probe::Hint;
@@ -275,11 +274,11 @@ pub fn decode_path_audio(path: &Path) -> Result<crate::Audio> {
         .extension()
         .and_then(|ext| ext.to_str())
         .map(encoding_from_extension)
-        .unwrap_or(crate::AudioEncoding::Unknown);
+        .unwrap_or(AudioEncoding::Unknown);
     let (samples, sr, channels) = decode_audio_stream(mss, hint)?;
     Ok(
-        crate::Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
-            crate::AudioFormat {
+        Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
+            AudioFormat {
                 encoding,
                 sample_rate: sr,
                 channels: channels as u16,
@@ -294,7 +293,7 @@ pub fn decode_url(url: &str) -> Result<(Vec<f32>, u32)> {
     Ok((mono.samples, mono.sample_rate))
 }
 
-pub fn decode_url_audio(url: &str) -> Result<crate::Audio> {
+pub fn decode_url_audio(url: &str) -> Result<Audio> {
     use std::io::Cursor;
 
     use symphonia::core::formats::probe::Hint;
@@ -324,8 +323,8 @@ pub fn decode_url_audio(url: &str) -> Result<crate::Audio> {
 
     let (samples, sr, channels) = decode_audio_stream(mss, hint)?;
     Ok(
-        crate::Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
-            crate::AudioFormat {
+        Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
+            AudioFormat {
                 encoding,
                 sample_rate: sr,
                 channels: channels as u16,
@@ -371,7 +370,7 @@ pub fn decode_base64(b64: &str) -> Result<(Vec<f32>, u32)> {
     Ok((mono.samples, mono.sample_rate))
 }
 
-pub fn decode_base64_audio(b64: &str) -> Result<crate::Audio> {
+pub fn decode_base64_audio(b64: &str) -> Result<Audio> {
     use base64::Engine;
 
     let data = if b64.contains(',') && b64.trim().starts_with("data:") {
@@ -389,7 +388,7 @@ pub fn decode_base64_audio(b64: &str) -> Result<crate::Audio> {
     decode_bytes_audio(bytes)
 }
 
-pub fn decode_bytes_audio(bytes: impl Into<Vec<u8>>) -> Result<crate::Audio> {
+pub fn decode_bytes_audio(bytes: impl Into<Vec<u8>>) -> Result<Audio> {
     use std::io::Cursor;
 
     use symphonia::core::formats::probe::Hint;
@@ -401,8 +400,8 @@ pub fn decode_bytes_audio(bytes: impl Into<Vec<u8>>) -> Result<crate::Audio> {
     let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
     let (samples, sr, channels) = decode_audio_stream(mss, Hint::new())?;
     Ok(
-        crate::Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
-            crate::AudioFormat {
+        Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
+            AudioFormat {
                 encoding,
                 sample_rate: sr,
                 channels: channels as u16,
@@ -411,40 +410,40 @@ pub fn decode_bytes_audio(bytes: impl Into<Vec<u8>>) -> Result<crate::Audio> {
     )
 }
 
-fn encoding_from_url(url: &str, bytes: &[u8]) -> crate::AudioEncoding {
+fn encoding_from_url(url: &str, bytes: &[u8]) -> AudioEncoding {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let extension = path.rsplit_once('.').map(|(_, extension)| extension);
     extension
         .map(encoding_from_extension)
-        .filter(|encoding| *encoding != crate::AudioEncoding::Unknown)
+        .filter(|encoding| *encoding != AudioEncoding::Unknown)
         .unwrap_or_else(|| detect_encoding(bytes))
 }
 
-fn encoding_from_extension(extension: &str) -> crate::AudioEncoding {
+fn encoding_from_extension(extension: &str) -> AudioEncoding {
     match extension.to_ascii_lowercase().as_str() {
-        "wav" | "wave" => crate::AudioEncoding::Wav,
-        "flac" => crate::AudioEncoding::Flac,
-        "mp3" | "mpeg" => crate::AudioEncoding::Mp3,
-        "ogg" | "oga" | "opus" => crate::AudioEncoding::Ogg,
-        _ => crate::AudioEncoding::Unknown,
+        "wav" | "wave" => AudioEncoding::Wav,
+        "flac" => AudioEncoding::Flac,
+        "mp3" | "mpeg" => AudioEncoding::Mp3,
+        "ogg" | "oga" | "opus" => AudioEncoding::Ogg,
+        _ => AudioEncoding::Unknown,
     }
 }
 
-fn detect_encoding(bytes: &[u8]) -> crate::AudioEncoding {
+fn detect_encoding(bytes: &[u8]) -> AudioEncoding {
     if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
-        crate::AudioEncoding::Wav
+        AudioEncoding::Wav
     } else if bytes.starts_with(b"fLaC") {
-        crate::AudioEncoding::Flac
+        AudioEncoding::Flac
     } else if bytes.starts_with(b"OggS") {
-        crate::AudioEncoding::Ogg
+        AudioEncoding::Ogg
     } else if bytes.starts_with(b"ID3")
         || bytes
             .get(..2)
             .is_some_and(|prefix| prefix[0] == 0xff && prefix[1] & 0xe0 == 0xe0)
     {
-        crate::AudioEncoding::Mp3
+        AudioEncoding::Mp3
     } else {
-        crate::AudioEncoding::Unknown
+        AudioEncoding::Unknown
     }
 }
 
@@ -529,8 +528,7 @@ fn decode_audio_stream(
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_bytes_audio, decode_path, decode_path_audio};
-    use crate::Audio;
+    use super::{Audio, decode_bytes_audio, decode_path, decode_path_audio};
     use std::io::Write;
 
     #[test]

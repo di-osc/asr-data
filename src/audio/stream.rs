@@ -8,7 +8,7 @@ use rubato::{
 };
 
 #[cfg(feature = "python-bindings")]
-use super::{AudioChunk, AudioChunks, AudioLoadOptions, AudioSource};
+use super::{AudioChunk, AudioChunks, AudioFormat, AudioLoadOptions, AudioSource};
 
 #[cfg(feature = "python-bindings")]
 enum RawAudioStream {
@@ -159,7 +159,7 @@ pub(crate) struct SourceAudioStream {
     output: VecDeque<f32>,
     output_sample_rate: Option<u32>,
     output_channels: Option<u16>,
-    source_format: Option<crate::AudioFormat>,
+    source_format: Option<AudioFormat>,
     resampler: Option<StreamingResampler>,
     next_output_frame: usize,
     finished: bool,
