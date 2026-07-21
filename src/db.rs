@@ -446,7 +446,7 @@ fn insert_with(connection: &Connection, audio: &AudioDoc) -> Result<(), AudioDbE
     let timeline = encode(audio.timelines())?;
     let metadata = serde_json::to_string(&audio.metadata)?;
     let duration = audio
-        .duration
+        .timeline_duration()
         .map(|duration| i64::try_from(duration.0).unwrap_or(i64::MAX));
     connection.execute_batch("SAVEPOINT asr_write")?;
     let result = (|| {
@@ -483,7 +483,7 @@ fn update_with(connection: &Connection, audio: &AudioDoc) -> Result<bool, AudioD
     let timeline = encode(audio.timelines())?;
     let metadata = serde_json::to_string(&audio.metadata)?;
     let duration = audio
-        .duration
+        .timeline_duration()
         .map(|duration| i64::try_from(duration.0).unwrap_or(i64::MAX));
 
     connection.execute_batch("SAVEPOINT asr_update")?;
@@ -669,11 +669,14 @@ fn decode_audio_row(row: &rusqlite::Row<'_>, schema_version: i64) -> rusqlite::R
     let mut timelines: BTreeMap<crate::AudioChannel, crate::Timeline> = timelines;
     for timeline in timelines.values_mut() {
         timeline.audio_id.clone_from(&audio_id);
-        timeline.duration = duration;
+        if timeline.duration == DurationMs(0)
+            && let Some(duration) = duration
+        {
+            timeline.duration = duration;
+        }
     }
     Ok(AudioDoc {
         id: audio_id,
-        duration,
         source,
         timelines,
         metadata,

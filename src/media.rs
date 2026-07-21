@@ -118,23 +118,21 @@ impl AudioSource {
         }
     }
 
-    pub fn load(&self) -> anyhow::Result<crate::Waveform> {
+    pub fn load(&self) -> anyhow::Result<crate::Audio> {
         crate::AudioLoader.load_raw(self)
     }
 
-    pub fn load_with(&self, loader: &crate::AudioLoader) -> anyhow::Result<crate::Waveform> {
+    pub fn load_with(&self, loader: &crate::AudioLoader) -> anyhow::Result<crate::Audio> {
         loader.load_raw(self)
     }
 
-    pub async fn aload(&self) -> anyhow::Result<crate::Waveform> {
+    pub async fn aload(&self) -> anyhow::Result<crate::Audio> {
         match self {
             Self::Url(url) if url.starts_with("http://") || url.starts_with("https://") => {
                 let bytes = crate::audio::decode::download_url_bytes(url).await?;
-                tokio::task::spawn_blocking(move || {
-                    crate::audio::decode::decode_bytes_waveform(bytes)
-                })
-                .await
-                .map_err(|error| anyhow::anyhow!("audio decoder worker failed: {error}"))?
+                tokio::task::spawn_blocking(move || crate::audio::decode::decode_bytes_audio(bytes))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("audio decoder worker failed: {error}"))?
             }
             source => {
                 let source = source.clone();

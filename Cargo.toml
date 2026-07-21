@@ -37,4 +37,4 @@ default = []
 python-bindings = ["dep:numpy", "dep:pyo3", "dep:pythonize"]
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"

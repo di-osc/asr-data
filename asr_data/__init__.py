@@ -14,7 +14,8 @@ from ._native import (
     Timeline,
     Transcript,
     AsrDataError,
-    Waveform,
+    Audio,
+    AudioChunk,
 )
 
 
@@ -42,8 +43,8 @@ async def _wf_aload_from_source(cls, source):
 for _cls in (AudioPath, AudioUrl, AudioBytes, AudioBase64, AudioPcm):
     _cls.aload = _source_aload
 
-Waveform.aload_from_path = classmethod(_wf_aload_from_path)
-Waveform.aload_from_source = classmethod(_wf_aload_from_source)
+Audio.aload_from_path = classmethod(_wf_aload_from_path)
+Audio.aload_from_source = classmethod(_wf_aload_from_source)
 
 __all__ = [
     "Annotation",
@@ -61,5 +62,6 @@ __all__ = [
     "Timeline",
     "Transcript",
     "AsrDataError",
-    "Waveform",
+    "Audio",
+    "AudioChunk",
 ]

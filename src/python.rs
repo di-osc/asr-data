@@ -3,12 +3,13 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crate::{
     Annotation as RustAnnotation, AnnotationPayload, AnnotationSource, AnnotationStatus,
-    AudioChannel as RustAudioChannel, AudioDb as RustAudioDb, AudioDbError as RustAudioDbError,
-    AudioDbMode, AudioDoc as RustAudio, AudioEncoding, AudioFormat as RustAudioFormat, AudioQuery,
-    AudioSource as RustAudioSource, DurationMs, TextSpan, TimeRange, Timeline as RustTimeline,
-    Transcript as RustTranscript, Waveform as RustWaveform,
+    Audio as RustAudio, AudioChannel as RustAudioChannel, AudioChunk as RustAudioChunk,
+    AudioChunks as RustAudioChunks, AudioDb as RustAudioDb, AudioDbError as RustAudioDbError,
+    AudioDbMode, AudioDoc as RustAudioDoc, AudioEncoding, AudioFormat as RustAudioFormat,
+    AudioQuery, AudioSource as RustAudioSource, DurationMs, TextSpan, TimeRange,
+    Timeline as RustTimeline, Transcript as RustTranscript,
 };
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
+use numpy::{IntoPyArray, PyArray1, PyArrayMethods, ndarray::ArrayView1};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -213,49 +214,97 @@ impl PyAudioFormat {
     }
 }
 
-#[pyclass(name = "Waveform")]
-#[derive(Clone)]
-struct PyWaveform {
-    inner: RustWaveform,
+#[pyclass(name = "Audio")]
+struct PyAudio {
+    inner: RustAudio,
+    numpy_owner: Option<Py<PyArray1<f32>>>,
+}
+
+impl PyAudio {
+    fn from_rust(inner: RustAudio) -> Self {
+        Self {
+            inner,
+            numpy_owner: None,
+        }
+    }
+
+    fn materialize(&self, py: Python<'_>) -> PyResult<RustAudio> {
+        let Some(owner) = &self.numpy_owner else {
+            return Ok(self.inner.clone());
+        };
+        let samples = owner.bind(py).readonly().as_slice()?.to_vec();
+        let mut audio =
+            RustAudio::try_new_with_channels(samples, self.inner.sample_rate, self.inner.channels)
+                .map_err(py_error)?;
+        audio.source_format = self.inner.source_format.clone();
+        audio.is_normalized = self.inner.is_normalized;
+        Ok(audio)
+    }
 }
 
 #[pymethods]
-impl PyWaveform {
+impl PyAudio {
     #[new]
     #[pyo3(signature = (samples, sample_rate, channels=1))]
-    fn new(samples: PyReadonlyArray1<'_, f32>, sample_rate: u32, channels: u16) -> PyResult<Self> {
-        let samples = samples.as_slice().map_err(py_error)?.to_vec();
-        let inner = RustWaveform::try_new_with_channels(samples, sample_rate, channels)
-            .map_err(py_error)?;
-        Ok(Self { inner })
+    fn new(samples: &Bound<'_, PyAny>, sample_rate: u32, channels: u16) -> PyResult<Self> {
+        let py = samples.py();
+        let numpy = py.import("numpy")?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dtype", numpy.getattr("float32")?)?;
+        kwargs.set_item("order", "C")?;
+        let samples = numpy
+            .getattr("asarray")?
+            .call((samples,), Some(&kwargs))?
+            .cast_into::<PyArray1<f32>>()?
+            .unbind();
+        {
+            let array = samples.bind(py).readonly();
+            let len = array
+                .as_slice()
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "samples must be a one-dimensional C-contiguous float32 array",
+                    )
+                })?
+                .len();
+            if channels == 0 || !len.is_multiple_of(usize::from(channels)) {
+                return Err(PyValueError::new_err(
+                    "samples must contain complete audio frames",
+                ));
+            }
+            Ok(Self {
+                inner: RustAudio::new_with_channels(Vec::new(), sample_rate, channels),
+                numpy_owner: Some(samples),
+            })
+        }
     }
 
     #[staticmethod]
     fn from_path(py: Python<'_>, path: String) -> PyResult<Self> {
-        py.detach(move || RustWaveform::from_path(path))
-            .map(|inner| Self { inner })
+        py.detach(move || RustAudio::from_path(path))
+            .map(Self::from_rust)
             .map_err(py_error)
     }
 
     #[staticmethod]
     fn from_url(py: Python<'_>, url: String) -> PyResult<Self> {
-        py.detach(move || RustWaveform::from_url(url))
-            .map(|inner| Self { inner })
+        py.detach(move || RustAudio::from_url(url))
+            .map(Self::from_rust)
             .map_err(py_error)
     }
 
     #[staticmethod]
     fn from_bytes(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<Self> {
         let bytes = data.as_bytes().to_vec();
-        py.detach(move || RustWaveform::from_encoded_bytes(bytes))
-            .map(|inner| Self { inner })
+        py.detach(move || RustAudio::from_encoded_bytes(bytes))
+            .map(Self::from_rust)
             .map_err(py_error)
     }
 
     #[staticmethod]
     fn from_base64(py: Python<'_>, data: String) -> PyResult<Self> {
-        py.detach(move || RustWaveform::from_base64(data))
-            .map(|inner| Self { inner })
+        py.detach(move || RustAudio::from_base64(data))
+            .map(Self::from_rust)
             .map_err(py_error)
     }
 
@@ -268,16 +317,16 @@ impl PyWaveform {
         channels: u16,
     ) -> PyResult<Self> {
         let bytes = data.as_bytes().to_vec();
-        py.detach(move || RustWaveform::from_pcm_s16le(bytes, sample_rate, channels))
-            .map(|inner| Self { inner })
+        py.detach(move || RustAudio::from_pcm_s16le(bytes, sample_rate, channels))
+            .map(Self::from_rust)
             .map_err(py_error)
     }
 
     #[staticmethod]
     fn from_source(py: Python<'_>, source: &Bound<'_, PyAny>) -> PyResult<Self> {
         let source = rust_source_from_py(source)?;
-        py.detach(move || RustWaveform::from_source(&source))
-            .map(|inner| Self { inner })
+        py.detach(move || RustAudio::from_source(&source))
+            .map(Self::from_rust)
             .map_err(py_error)
     }
 
@@ -307,13 +356,16 @@ impl PyWaveform {
     }
 
     #[getter]
-    fn frame_count(&self) -> usize {
-        self.inner.frame_count()
+    fn frame_count(&self, py: Python<'_>) -> usize {
+        self.numpy_owner.as_ref().map_or_else(
+            || self.inner.frame_count(),
+            |array| array.bind(py).len().unwrap_or(0) / usize::from(self.inner.channels),
+        )
     }
 
     #[getter]
-    fn duration_ms(&self) -> f64 {
-        self.inner.duration_ms()
+    fn duration_ms(&self, py: Python<'_>) -> f64 {
+        self.frame_count(py) as f64 * 1000.0 / f64::from(self.inner.sample_rate)
     }
 
     #[getter]
@@ -324,83 +376,130 @@ impl PyWaveform {
             .map(|inner| PyAudioFormat { inner })
     }
 
-    fn numpy<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f32>> {
-        self.inner.samples.clone().into_pyarray(py)
+    #[getter]
+    #[allow(unsafe_code)]
+    fn samples<'py>(this: Bound<'py, Self>) -> PyResult<Bound<'py, PyArray1<f32>>> {
+        let audio = this.borrow();
+        if let Some(owner) = &audio.numpy_owner {
+            let view = owner
+                .bind(this.py())
+                .call_method0("view")?
+                .cast_into::<PyArray1<f32>>()?;
+            view.call_method1("setflags", (false,))?;
+            return Ok(view);
+        }
+        let view = ArrayView1::from(&audio.inner.samples);
+        // SAFETY: the returned ndarray keeps `this` as its base owner. PyAudio is
+        // frozen from Python and none of its Rust methods mutate/reallocate samples.
+        let array = unsafe { PyArray1::borrow_from_array(&view, this.into_any()) };
+        array.call_method1("setflags", (false,))?;
+        Ok(array)
     }
 
-    /// Displays an IPython audio player in a notebook cell.
-    #[pyo3(signature = (autoplay=false))]
-    fn display(&self, py: Python<'_>, autoplay: bool) -> PyResult<()> {
+    /// Displays an IPython audio player for an optional millisecond range.
+    #[pyo3(signature = (start_ms=None, end_ms=None, autoplay=false))]
+    fn display(
+        &self,
+        py: Python<'_>,
+        start_ms: Option<u64>,
+        end_ms: Option<u64>,
+        autoplay: bool,
+    ) -> PyResult<()> {
+        if let (Some(start), Some(end)) = (start_ms, end_ms)
+            && end < start
+        {
+            return Err(PyValueError::new_err(
+                "end_ms must be greater than or equal to start_ms",
+            ));
+        }
         let ipython = py.import("IPython.display").map_err(|_| {
             AsrDataError::new_err(
-                "Waveform.display() requires IPython; install it with `pip install ipython`",
+                "Audio.display() requires IPython; install it with `pip install ipython`",
             )
         })?;
-        let samples = self.inner.samples.clone().into_pyarray(py);
-        let data: Bound<'_, PyAny> = if self.inner.channels == 1 {
+        let materialized = self.materialize(py)?;
+        let audio = match (start_ms, end_ms) {
+            (None, None) => materialized,
+            (start, end) => materialized.slice_ms(
+                start.unwrap_or(0),
+                end.unwrap_or_else(|| materialized.duration_ms().ceil() as u64),
+            ),
+        };
+        let samples = audio.samples.clone().into_pyarray(py);
+        let data: Bound<'_, PyAny> = if audio.channels == 1 {
             samples.into_any()
         } else {
             // Rust stores interleaved frames; IPython expects [channels, frames].
             samples
                 .call_method1(
                     "reshape",
-                    (self.inner.frame_count(), usize::from(self.inner.channels)),
+                    (audio.frame_count(), usize::from(audio.channels)),
                 )?
                 .getattr("T")?
         };
         let kwargs = PyDict::new(py);
         kwargs.set_item("data", data)?;
-        kwargs.set_item("rate", self.inner.sample_rate)?;
+        kwargs.set_item("rate", audio.sample_rate)?;
         kwargs.set_item("autoplay", autoplay)?;
         let player = ipython.getattr("Audio")?.call((), Some(&kwargs))?;
         ipython.getattr("display")?.call1((player,))?;
         Ok(())
     }
 
-    fn to_mono(&self) -> PyResult<Self> {
-        Ok(Self {
-            inner: self.inner.to_mono().map_err(py_error)?,
-        })
+    fn to_mono(&self, py: Python<'_>) -> PyResult<Self> {
+        Ok(Self::from_rust(
+            self.materialize(py)?.to_mono().map_err(py_error)?,
+        ))
     }
 
-    fn channel(&self, index: u16) -> PyResult<Self> {
-        Ok(Self {
-            inner: self.inner.channel(index).map_err(py_error)?,
-        })
+    fn channel(&self, py: Python<'_>, index: u16) -> PyResult<Self> {
+        Ok(Self::from_rust(
+            self.materialize(py)?.channel(index).map_err(py_error)?,
+        ))
     }
 
     fn resample(&self, py: Python<'_>, sample_rate: u32) -> PyResult<Self> {
-        let waveform = self.inner.clone();
+        let waveform = self.materialize(py)?;
         py.detach(move || waveform.resample(sample_rate))
-            .map(|inner| Self { inner })
+            .map(Self::from_rust)
             .map_err(py_error)
     }
 
-    fn normalize(&self) -> Self {
-        Self {
-            inner: self.inner.clone().normalize(),
-        }
+    fn normalize(&self, py: Python<'_>) -> PyResult<Self> {
+        let audio = self.materialize(py)?;
+        Ok(Self::from_rust(py.detach(move || audio.normalize())))
     }
 
-    fn slice_ms(&self, start_ms: u64, end_ms: u64) -> Self {
-        Self {
-            inner: self.inner.slice_ms(start_ms, end_ms),
-        }
+    fn slice_ms(&self, py: Python<'_>, start_ms: u64, end_ms: u64) -> PyResult<Self> {
+        Ok(Self::from_rust(
+            self.materialize(py)?.slice_ms(start_ms, end_ms),
+        ))
     }
 
-    fn __len__(&self) -> usize {
-        self.inner.samples.len()
+    fn split_at_low_energy(&self, py: Python<'_>, max_duration_ms: u64) -> PyResult<Vec<Self>> {
+        self.materialize(py)?
+            .split_at_low_energy(DurationMs(max_duration_ms))
+            .map(|chunks| chunks.into_iter().map(Self::from_rust).collect())
+            .map_err(py_error)
     }
 
-    fn __repr__(&self) -> String {
+    fn __len__(&self, py: Python<'_>) -> usize {
+        self.numpy_owner
+            .as_ref()
+            .map_or(self.inner.samples.len(), |array| {
+                array.bind(py).len().unwrap_or(0)
+            })
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
         let source_format = self.source_format().map_or_else(
             || "None".to_string(),
             |format| format!("{:?}", format.__str__()),
         );
         format!(
-            "Waveform(frames={}, duration={}, sample_rate={}, channels={}, is_normalized={}, source_format={})",
-            self.frame_count(),
-            format_duration_ms(self.duration_ms()),
+            "Audio(frames={}, duration={}, sample_rate={}, channels={}, is_normalized={}, source_format={})",
+            self.frame_count(py),
+            format_duration_ms(self.duration_ms(py)),
             self.sample_rate(),
             self.channels(),
             self.is_normalized(),
@@ -408,10 +507,10 @@ impl PyWaveform {
         )
     }
 
-    fn __str__(&self) -> String {
+    fn __str__(&self, py: Python<'_>) -> String {
         format!(
-            "Waveform({}, {}Hz, {}ch)",
-            format_duration_ms(self.duration_ms()),
+            "Audio({}, {}Hz, {}ch)",
+            format_duration_ms(self.duration_ms(py)),
             self.sample_rate(),
             self.channels()
         )
@@ -571,8 +670,8 @@ impl PyTranscript {
     }
 }
 
-type SharedAudio = Arc<RwLock<RustAudio>>;
-type AsyncLoadResult = Arc<Mutex<Option<Result<RustWaveform, String>>>>;
+type SharedAudio = Arc<RwLock<RustAudioDoc>>;
+type AsyncLoadResult = Arc<Mutex<Option<Result<RustAudio, String>>>>;
 
 fn async_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -613,16 +712,9 @@ impl PyTimeline {
     }
 
     #[getter]
-    fn duration_ms(&self) -> PyResult<Option<u64>> {
+    fn duration_ms(&self) -> PyResult<u64> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
-        Ok(self.selected(&audio)?.duration.map(|duration| duration.0))
-    }
-
-    #[setter]
-    fn set_duration_ms(&self, value: Option<u64>) -> PyResult<()> {
-        let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
-        audio.set_duration(value.map(DurationMs));
-        Ok(())
+        Ok(self.selected(&audio)?.duration.0)
     }
 
     #[getter]
@@ -794,10 +886,7 @@ impl PyTimeline {
     fn __repr__(&self) -> PyResult<String> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
         let timeline = self.selected(&audio)?;
-        let duration = timeline.duration.map_or_else(
-            || "None".to_string(),
-            |duration| format!("{:?}", format_duration_ms(duration.0 as f64)),
-        );
+        let duration = format!("{:?}", format_duration_ms(timeline.duration.0 as f64));
         Ok(format!(
             "Timeline(id={:?}, audio_id={:?}, duration={}, annotations={})",
             truncate(&timeline.id, 24),
@@ -810,10 +899,7 @@ impl PyTimeline {
     fn __str__(&self) -> PyResult<String> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
         let timeline = self.selected(&audio)?;
-        let duration = timeline.duration.map_or_else(
-            || "unknown duration".to_string(),
-            |duration| format_duration_ms(duration.0 as f64),
-        );
+        let duration = format_duration_ms(timeline.duration.0 as f64);
         Ok(format!(
             "Timeline({}, {} annotations)",
             duration,
@@ -823,15 +909,18 @@ impl PyTimeline {
 }
 
 impl PyTimeline {
-    fn selected<'a>(&self, audio: &'a RustAudio) -> PyResult<&'a RustTimeline> {
+    fn selected<'a>(&self, audio: &'a RustAudioDoc) -> PyResult<&'a RustTimeline> {
         audio
             .timeline(self.channel)
             .map_err(py_error)?
             .ok_or_else(|| PyRuntimeError::new_err("selected timeline does not exist"))
     }
 
-    fn selected_mut<'a>(&self, audio: &'a mut RustAudio) -> PyResult<&'a mut RustTimeline> {
-        audio.ensure_timeline(self.channel).map_err(py_error)
+    fn selected_mut<'a>(&self, audio: &'a mut RustAudioDoc) -> PyResult<&'a mut RustTimeline> {
+        audio
+            .timeline_mut(self.channel)
+            .map_err(py_error)?
+            .ok_or_else(|| PyRuntimeError::new_err("selected timeline does not exist"))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -882,7 +971,7 @@ impl PyAudioLoadTask {
             .is_some())
     }
 
-    fn result(&self) -> PyResult<PyWaveform> {
+    fn result(&self) -> PyResult<PyAudio> {
         let result = self
             .result
             .lock()
@@ -890,7 +979,7 @@ impl PyAudioLoadTask {
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("audio load has not completed"))?;
         result
-            .map(|inner| PyWaveform { inner })
+            .map(PyAudio::from_rust)
             .map_err(AsrDataError::new_err)
     }
 }
@@ -905,6 +994,174 @@ fn spawn_source_aload(source: RustAudioSource) -> PyResult<PyAudioLoadTask> {
         }
     });
     Ok(PyAudioLoadTask { result })
+}
+
+#[pyclass(name = "AudioIterator")]
+struct PyAudioIterator {
+    chunks: AudioChunkIterator,
+}
+
+enum AudioChunkIterator {
+    Decoded(crate::audio::decode::DecodedAudioChunks),
+    Pcm(RustAudioChunks),
+}
+
+impl Iterator for AudioChunkIterator {
+    type Item = anyhow::Result<RustAudioChunk>;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Decoded(chunks) => chunks.next(),
+            Self::Pcm(chunks) => chunks.next().map(Ok),
+        }
+    }
+}
+
+#[pyclass(name = "AudioChunk")]
+#[derive(Clone)]
+struct PyAudioChunk {
+    inner: RustAudioChunk,
+}
+
+#[pymethods]
+impl PyAudioChunk {
+    #[getter]
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate
+    }
+
+    #[getter]
+    fn channels(&self) -> u16 {
+        self.inner.channels
+    }
+
+    #[getter]
+    fn is_normalized(&self) -> bool {
+        self.inner.is_normalized
+    }
+
+    #[getter]
+    fn offset_ms(&self) -> u64 {
+        self.inner.offset_ms
+    }
+
+    #[getter]
+    fn is_final(&self) -> bool {
+        self.inner.is_final
+    }
+
+    #[getter]
+    fn frame_count(&self) -> usize {
+        self.inner.frame_count()
+    }
+
+    #[getter]
+    fn duration_ms(&self) -> f64 {
+        self.inner.duration_ms()
+    }
+
+    #[getter]
+    fn source_format(&self) -> Option<PyAudioFormat> {
+        self.inner
+            .source_format
+            .clone()
+            .map(|inner| PyAudioFormat { inner })
+    }
+
+    #[getter]
+    #[allow(unsafe_code)]
+    fn samples<'py>(this: Bound<'py, Self>) -> PyResult<Bound<'py, PyArray1<f32>>> {
+        let chunk = this.borrow();
+        let view = ArrayView1::from(&chunk.inner.samples);
+        // SAFETY: the ndarray owns a reference to `this`, whose samples are never
+        // mutated or reallocated after the view is created.
+        let array = unsafe { PyArray1::borrow_from_array(&view, this.into_any()) };
+        array.call_method1("setflags", (false,))?;
+        Ok(array)
+    }
+
+    fn to_mono(&self) -> PyResult<Self> {
+        self.inner
+            .to_mono()
+            .map(|inner| Self { inner })
+            .map_err(py_error)
+    }
+
+    fn channel(&self, index: u16) -> PyResult<Self> {
+        self.inner
+            .channel(index)
+            .map(|inner| Self { inner })
+            .map_err(py_error)
+    }
+
+    fn resample(&self, py: Python<'_>, sample_rate: u32) -> PyResult<Self> {
+        let chunk = self.inner.clone();
+        py.detach(move || chunk.resample(sample_rate))
+            .map(|inner| Self { inner })
+            .map_err(py_error)
+    }
+
+    fn normalize(&self) -> Self {
+        Self {
+            inner: self.inner.normalize(),
+        }
+    }
+
+    fn slice_ms(&self, start_ms: u64, end_ms: u64) -> Self {
+        Self {
+            inner: self.inner.slice_ms(start_ms, end_ms),
+        }
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.samples.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AudioChunk(frames={}, offset_ms={}, duration={}, sample_rate={}, channels={}, is_final={})",
+            self.frame_count(),
+            self.offset_ms(),
+            format_duration_ms(self.duration_ms()),
+            self.sample_rate(),
+            self.channels(),
+            self.is_final(),
+        )
+    }
+}
+
+#[pymethods]
+impl PyAudioIterator {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&mut self) -> PyResult<Option<PyAudioChunk>> {
+        self.chunks
+            .next()
+            .transpose()
+            .map(|chunk| chunk.map(|inner| PyAudioChunk { inner }))
+            .map_err(py_error)
+    }
+}
+
+fn stream_source(
+    py: Python<'_>,
+    source: RustAudioSource,
+    chunk_size_ms: u64,
+) -> PyResult<PyAudioIterator> {
+    let chunks = py
+        .detach(move || -> anyhow::Result<AudioChunkIterator> {
+            match &source {
+                RustAudioSource::PcmS16Le { .. } => Ok(AudioChunkIterator::Pcm(
+                    source.load()?.into_chunks_ms(chunk_size_ms)?,
+                )),
+                _ => Ok(AudioChunkIterator::Decoded(
+                    crate::audio::decode::stream_source(&source, chunk_size_ms)?,
+                )),
+            }
+        })
+        .map_err(py_error)?;
+    Ok(PyAudioIterator { chunks })
 }
 
 #[pyclass(name = "AudioPath", frozen)]
@@ -930,11 +1187,19 @@ impl PyAudioPath {
         self.path.clone()
     }
 
-    fn load(&self, py: Python<'_>) -> PyResult<PyWaveform> {
+    fn load(&self, py: Python<'_>) -> PyResult<PyAudio> {
         let source = RustAudioSource::from_path(self.path.clone());
         py.detach(move || source.load())
-            .map(|inner| PyWaveform { inner })
+            .map(PyAudio::from_rust)
             .map_err(py_error)
+    }
+
+    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
+        stream_source(
+            py,
+            RustAudioSource::from_path(self.path.clone()),
+            chunk_size_ms,
+        )
     }
 
     fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
@@ -969,11 +1234,19 @@ impl PyAudioUrl {
         self.url.clone()
     }
 
-    fn load(&self, py: Python<'_>) -> PyResult<PyWaveform> {
+    fn load(&self, py: Python<'_>) -> PyResult<PyAudio> {
         let source = RustAudioSource::from_url(self.url.clone());
         py.detach(move || source.load())
-            .map(|inner| PyWaveform { inner })
+            .map(PyAudio::from_rust)
             .map_err(py_error)
+    }
+
+    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
+        stream_source(
+            py,
+            RustAudioSource::from_url(self.url.clone()),
+            chunk_size_ms,
+        )
     }
 
     fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
@@ -1010,11 +1283,19 @@ impl PyAudioBytes {
         self.bytes.len()
     }
 
-    fn load(&self, py: Python<'_>) -> PyResult<PyWaveform> {
+    fn load(&self, py: Python<'_>) -> PyResult<PyAudio> {
         let source = RustAudioSource::from_encoded_bytes(self.bytes.clone());
         py.detach(move || source.load())
-            .map(|inner| PyWaveform { inner })
+            .map(PyAudio::from_rust)
             .map_err(py_error)
+    }
+
+    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
+        stream_source(
+            py,
+            RustAudioSource::from_encoded_bytes(self.bytes.clone()),
+            chunk_size_ms,
+        )
     }
 
     fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
@@ -1049,11 +1330,19 @@ impl PyAudioBase64 {
         self.data.clone()
     }
 
-    fn load(&self, py: Python<'_>) -> PyResult<PyWaveform> {
+    fn load(&self, py: Python<'_>) -> PyResult<PyAudio> {
         let source = RustAudioSource::from_base64(self.data.clone());
         py.detach(move || source.load())
-            .map(|inner| PyWaveform { inner })
+            .map(PyAudio::from_rust)
             .map_err(py_error)
+    }
+
+    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
+        stream_source(
+            py,
+            RustAudioSource::from_base64(self.data.clone()),
+            chunk_size_ms,
+        )
     }
 
     fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
@@ -1105,12 +1394,20 @@ impl PyAudioPcm {
         self.bytes.len()
     }
 
-    fn load(&self, py: Python<'_>) -> PyResult<PyWaveform> {
+    fn load(&self, py: Python<'_>) -> PyResult<PyAudio> {
         let source =
             RustAudioSource::from_pcm_s16le(self.bytes.clone(), self.sample_rate, self.channels);
         py.detach(move || source.load())
-            .map(|inner| PyWaveform { inner })
+            .map(PyAudio::from_rust)
             .map_err(py_error)
+    }
+
+    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
+        stream_source(
+            py,
+            RustAudioSource::from_pcm_s16le(self.bytes.clone(), self.sample_rate, self.channels),
+            chunk_size_ms,
+        )
     }
 
     fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
@@ -1193,7 +1490,7 @@ fn py_source_from_rust(py: Python<'_>, source: &RustAudioSource) -> PyResult<Py<
 }
 
 impl PyAudioDoc {
-    fn from_rust(py: Python<'_>, audio: RustAudio) -> PyResult<Self> {
+    fn from_rust(py: Python<'_>, audio: RustAudioDoc) -> PyResult<Self> {
         let metadata = PyDict::new(py);
         for (key, value) in &audio.metadata {
             metadata.set_item(key, pythonize::pythonize(py, value).map_err(py_error)?)?;
@@ -1206,13 +1503,13 @@ impl PyAudioDoc {
 
     fn build(py: Python<'_>, source: RustAudioSource, id: Option<String>) -> PyResult<Self> {
         let audio = match id {
-            Some(id) => RustAudio::with_id(id, source),
-            None => RustAudio::new(source),
+            Some(id) => RustAudioDoc::with_id(id, source),
+            None => RustAudioDoc::new(source),
         };
         Self::from_rust(py, audio)
     }
 
-    fn cloned_inner(&self, py: Python<'_>) -> PyResult<RustAudio> {
+    fn cloned_inner(&self, py: Python<'_>) -> PyResult<RustAudioDoc> {
         let mut audio = self.inner.read().map_err(|_| poisoned("audio"))?.clone();
         audio.metadata =
             pythonize::depythonize(self.metadata.bind(py).as_any()).map_err(py_error)?;
@@ -1237,13 +1534,7 @@ impl PyAudioDoc {
 
     #[getter]
     fn id(&self) -> PyResult<String> {
-        Ok(self
-            .inner
-            .read()
-            .map_err(|_| poisoned("audio"))?
-            .mono_timeline()
-            .audio_id
-            .clone())
+        Ok(self.inner.read().map_err(|_| poisoned("audio"))?.id.clone())
     }
 
     fn timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<Option<PyTimeline>> {
@@ -1261,12 +1552,17 @@ impl PyAudioDoc {
         }))
     }
 
-    fn ensure_timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<PyTimeline> {
+    #[pyo3(signature = (channel, duration_ms=None))]
+    fn ensure_timeline(
+        &self,
+        channel: &Bound<'_, PyAny>,
+        duration_ms: Option<u64>,
+    ) -> PyResult<PyTimeline> {
         let channel = audio_channel(channel)?;
         self.inner
             .write()
             .map_err(|_| poisoned("audio"))?
-            .ensure_timeline(channel)
+            .ensure_timeline(channel, duration_ms.map(DurationMs))
             .map_err(py_error)?;
         Ok(PyTimeline {
             audio: Arc::clone(&self.inner),
@@ -1283,25 +1579,6 @@ impl PyAudioDoc {
             .remove_timeline(channel)
             .map_err(py_error)?
             .is_some())
-    }
-
-    #[getter]
-    fn duration_ms(&self) -> PyResult<Option<u64>> {
-        Ok(self
-            .inner
-            .read()
-            .map_err(|_| poisoned("audio"))?
-            .duration
-            .map(|duration| duration.0))
-    }
-
-    #[setter]
-    fn set_duration_ms(&self, value: Option<u64>) -> PyResult<()> {
-        self.inner
-            .write()
-            .map_err(|_| poisoned("audio"))?
-            .set_duration(value.map(DurationMs));
-        Ok(())
     }
 
     fn validate(&self) -> PyResult<()> {
@@ -1349,7 +1626,7 @@ impl PyAudioDoc {
             format!("id={:?}", truncate(&audio.id, 40)),
             format_source_field(&audio.source),
         ];
-        if let Some(duration) = audio.duration {
+        if let Some(duration) = audio.timeline_duration() {
             fields.push(format!(
                 "duration={:?}",
                 format_duration_ms(duration.0 as f64)
@@ -1369,7 +1646,7 @@ impl PyAudioDoc {
     fn __str__(&self) -> PyResult<String> {
         let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
         let id = truncate(&audio.id, 40);
-        Ok(match audio.duration {
+        Ok(match audio.timeline_duration() {
             Some(duration) => {
                 format!(
                     "AudioDoc {:?} ({})",
@@ -1392,7 +1669,7 @@ struct PyAudioDb {
 #[pyclass(name = "AudioDBIterator")]
 struct PyAudioDbIterator {
     inner: Arc<Mutex<RustAudioDb>>,
-    audios: std::vec::IntoIter<RustAudio>,
+    audios: std::vec::IntoIter<RustAudioDoc>,
     after: Option<String>,
     exhausted: bool,
 }
@@ -1425,7 +1702,7 @@ impl PyAudioDbIterator {
                 self.exhausted = true;
                 return Ok(None);
             }
-            self.after = page.last().map(RustAudio::audio_id);
+            self.after = page.last().map(RustAudioDoc::audio_id);
             self.audios = page.into_iter();
         }
     }
@@ -1632,7 +1909,8 @@ fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = async_runtime();
     module.add("AsrDataError", py.get_type::<AsrDataError>())?;
     module.add_class::<PyAudioFormat>()?;
-    module.add_class::<PyWaveform>()?;
+    module.add_class::<PyAudio>()?;
+    module.add_class::<PyAudioChunk>()?;
     module.add_class::<PyAnnotation>()?;
     module.add_class::<PyTranscript>()?;
     module.add_class::<PyTimeline>()?;
@@ -1643,6 +1921,7 @@ fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAudioPcm>()?;
     module.add_class::<PyAudioDoc>()?;
     module.add_class::<PyAudioLoadTask>()?;
+    module.add_class::<PyAudioIterator>()?;
     module.add_class::<PyAudioDb>()?;
     module.add_class::<PyAudioDbIterator>()?;
     Ok(())

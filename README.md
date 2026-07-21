@@ -11,13 +11,13 @@
 
 - **统一的数据模型**：用 `AudioDoc` 表示一条音频记录，用 `Timeline` 管理语音段、转写、说话人、语言、热词、诊断信息等时间轴标注；音频来源由 `AudioPath`、`AudioUrl`、`AudioBytes`、`AudioBase64`、`AudioPcm` 等类型描述。
 - **SQLite 本地存储**：`AudioDB` 将数据保存为 `.sqlite` 文件，支持按 ID 查询、分页遍历、元数据过滤和时长过滤。
-- **音频加载与处理**：支持从文件、URL、字节流和 PCM 构造音频；可解码为 `Waveform`，并进行声道拆分、转单声道、重采样、归一化等操作。
+- **音频加载与处理**：支持从文件、URL、字节流和 PCM 构造音频；可解码为 `Audio`，并进行声道拆分、转单声道、重采样、归一化等操作。
 - **Rust 核心，Python 易用**：核心能力由 Rust 实现，同时提供 PyO3 Python 绑定，适合在脚本、Notebook 和数据处理流水线中使用。
 - **面向 ASR 流程**：可区分人工标注、模型输出、系统阶段产物等来源，便于保存参考文本、模型预测和后处理结果。
 
 ## Breaking change / Migration
 
-旧版 `Audio` 已重命名为 `AudioDoc`，音频来源改为显式类型；加载入口也拆分到 source 或 `Waveform` 工厂方法。
+旧版 `Audio` 已重命名为 `AudioDoc`，音频来源改为显式类型；加载入口也拆分到 source 或 `Audio` 工厂方法。
 
 | 旧 API | 新 API |
 | --- | --- |
@@ -26,7 +26,7 @@
 | `Audio.from_url(...)` | `AudioDoc(AudioUrl(...))` |
 | `Audio.from_bytes(...)` | `AudioDoc(AudioBytes(...))` |
 | `Audio.from_pcm(...)` | `AudioDoc(AudioPcm(...))` |
-| `audio.load()` | `doc.source.load()` 或 `Waveform.from_*` |
+| `audio.load()` | `doc.source.load()` 或 `Audio.from_*` |
 | `await audio.aload()` | `await doc.source.aload()` |
 
 ## 安装
@@ -50,7 +50,7 @@ cargo add asr-data
 ### 创建音频记录
 
 ```python
-from asr_data import AudioDoc, AudioPath, AudioPcm, Waveform
+from asr_data import AudioDoc, AudioPath, AudioPcm, Audio
 
 # 从本地文件创建
 doc = AudioDoc(AudioPath("audio.wav"), id="call-001")
@@ -69,18 +69,20 @@ doc_from_url = AudioDoc(AudioUrl("https://example.com/audio.wav"), id="remote-00
 doc_from_bytes = AudioDoc(AudioBytes(open("audio.wav", "rb").read()), id="bytes-001")
 doc_from_pcm = AudioDoc(AudioPcm(b"\0\0" * 16000, sample_rate=16000), id="pcm-001")
 
-# 音频 ID 和时长属于 AudioDoc，并同步到所有声道 Timeline。
-doc_from_pcm.duration_ms = 1_000
+# AudioDoc 初始化后不包含 Timeline。创建第一条 Timeline 时必须提供时长。
+mono = doc_from_pcm.ensure_timeline("mono", duration_ms=1_000)
 ```
 
 ### 添加时间轴标注
 
 ```python
+mono = doc.ensure_timeline("mono", duration_ms=1_200)
+
 # 语音段
-doc.timeline("mono").add_speech(0, 1200, confidence=0.98)
+mono.add_speech(0, 1200, confidence=0.98)
 
 # 转写文本
-doc.timeline("mono").add_transcription(
+mono.add_transcription(
     0,
     1200,
     "hello world",
@@ -91,7 +93,7 @@ doc.timeline("mono").add_transcription(
 )
 
 # 说话人
-doc.timeline("mono").add_speaker(0, 1200, "speaker-1")
+mono.add_speaker(0, 1200, "speaker-1")
 
 print(doc.timeline("mono").transcript_by_source("whisper-large").text)
 ```
@@ -104,47 +106,64 @@ caller_waveform = waveform.channel(0)
 agent_waveform = waveform.channel(1)
 
 # 识别器只处理提取后的 mono waveform；调用方把结果写回对应声道。
-doc.ensure_timeline("left").add_transcription(0, 1200, "caller text")
+# 第一条 Timeline 必须给出 duration_ms，后续 Timeline 自动继承相同时长。
+doc.ensure_timeline("left", duration_ms=1200).add_transcription(0, 1200, "caller text")
 doc.ensure_timeline("right").add_transcription(0, 1200, "agent text")
 ```
 
-`timeline()` 只查询，不会修改 AudioDoc；声道不存在时返回 `None`。需要创建时显式使用 `ensure_timeline()`：
+`timeline()` 只查询，不会修改 AudioDoc；声道不存在时返回 `None`。同一个 `AudioDoc` 的所有 Timeline 时长必须相同，且 `Timeline.duration_ms` 是只读的：
 
 ```python
 right = doc.timeline("right")
 if right is None:
-    right = doc.ensure_timeline("right")
+    right = doc.ensure_timeline("right", duration_ms=1200)  # 仅首条需要时长
 
 doc.remove_timeline("right")
 ```
 
 需要混音时仍显式调用 `waveform.to_mono()`，不会自动合并左右声道的 Timeline。
 
-### 加载和处理波形
+### 加载和处理音频
 
 ```python
-from asr_data import Waveform
+from asr_data import Audio
 
 # 从文件直接加载
-wf = Waveform.from_path("audio.wav")
+audio = Audio.from_path("audio.wav")
 
 # 或通过 source 对象加载
-wf = doc.source.load()
+audio = doc.source.load()
 # 或 AudioPath("audio.wav").load()
 
-wf = wf.resample(16000).normalize()
+# 按固定时长迭代 Audio；最后一块可能更短且不会补零
+for chunk in doc.source.stream(chunk_size_ms=100):
+    print(chunk.offset_ms, chunk.is_final)
+    process(chunk)
 
-print(wf.sample_rate)
-print(wf.channels)
+audio = audio.resample(16000).normalize()
 
-mono = wf.to_mono()
-left = wf.channel(0)
+print(audio.sample_rate)
+print(audio.channels)
+
+mono = audio.to_mono()
+left = audio.channel(0)
+
+# 在 notebook 中播放完整音频或指定的毫秒区间
+audio.display()
+audio.display(start_ms=1_000, end_ms=5_000, autoplay=True)
+
+# 将长音频限制在 30 秒以内，并尽量在低能量位置切分
+segments = audio.split_at_low_energy(max_duration_ms=30_000)
 ```
+
+`AudioPath`、`AudioUrl`、`AudioBytes`、`AudioBase64` 和 `AudioPcm` 的 `stream()` 返回 `AudioChunk`。它直接持有 samples，并提供 `offset_ms` 和 `is_final`；每块保持完整采样帧、采样率和声道数，顺序拼接所有块可还原 `load()` 的采样数据。
+
+`Audio.split_at_low_energy()` 面向长音频分段：每段不超过指定时长，在上限之前寻找低能量边界。切分不会补零或修改采样，拼接所有结果可还原原始 `Audio`。
 
 异步加载：
 
 ```python
-waveform = await doc.source.aload()
+audio = await doc.source.aload()
 ```
 
 ### 使用 AudioDB 持久化

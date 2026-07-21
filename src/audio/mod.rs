@@ -3,17 +3,11 @@
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
-use crate::{AudioSource, Waveform};
+use crate::AudioSource;
 
-pub mod chunking;
+mod data;
 pub mod decode;
-pub mod input;
-pub mod normalize;
-pub mod resample;
-pub mod waveform;
-
-pub use input::AudioInput;
-pub use normalize::normalize_audio_input;
+pub use data::{Audio, AudioChunk, AudioChunks, AudioError};
 
 /// Target ASR/VAD sample rate used by the offline pipeline.
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
@@ -39,36 +33,33 @@ impl Default for AudioLoadOptions {
 pub struct AudioLoader;
 
 impl AudioLoader {
-    pub fn load_raw(&self, source: &AudioSource) -> Result<Waveform> {
+    pub fn load_raw(&self, source: &AudioSource) -> Result<Audio> {
         let waveform = match source {
-            AudioSource::Path(path) => decode::decode_path_waveform(path)?,
+            AudioSource::Path(path) => decode::decode_path_audio(path)?,
             AudioSource::Url(url) => {
                 if let Some(path) = local_path_from_urlish(url) {
-                    decode::decode_path_waveform(&path)?
+                    decode::decode_path_audio(&path)?
                 } else {
-                    decode::decode_url_waveform(url)?
+                    decode::decode_url_audio(url)?
                 }
             }
-            AudioSource::Base64(b64) => decode::decode_base64_waveform(b64)?,
-            AudioSource::EncodedBytes(bytes) => decode::decode_bytes_waveform(bytes.clone())?,
+            AudioSource::Base64(b64) => decode::decode_base64_audio(b64)?,
+            AudioSource::EncodedBytes(bytes) => decode::decode_bytes_audio(bytes.clone())?,
             AudioSource::PcmS16Le {
                 bytes,
                 sample_rate,
                 channels,
-            } => Waveform::from_i16_pcm_bytes_with_channels(bytes, *sample_rate, *channels)?,
+            } => Audio::from_i16_pcm_bytes_with_channels(bytes, *sample_rate, *channels)?,
         };
         Ok(waveform)
     }
 
-    pub fn load(&self, source: &AudioSource, options: &AudioLoadOptions) -> Result<Waveform> {
+    pub fn load(&self, source: &AudioSource, options: &AudioLoadOptions) -> Result<Audio> {
         normalize_loaded_waveform(self.load_raw(source)?, options)
     }
 }
 
-fn normalize_loaded_waveform(
-    mut waveform: Waveform,
-    options: &AudioLoadOptions,
-) -> Result<Waveform> {
+fn normalize_loaded_waveform(mut waveform: Audio, options: &AudioLoadOptions) -> Result<Audio> {
     if waveform.channels == 0 {
         bail!("invalid channel count: 0");
     }

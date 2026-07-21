@@ -15,14 +15,15 @@ from ._native import AudioUrl as AudioUrl
 from ._native import Timeline as Timeline
 from ._native import Transcript as Transcript
 from ._native import AsrDataError as AsrDataError
-from ._native import Waveform as _Waveform
+from ._native import Audio as _Audio
+from ._native import AudioChunk as AudioChunk
 
-class Waveform(_Waveform):
+class Audio(_Audio):
     @staticmethod
-    def aload_from_path(path: str) -> Awaitable[Waveform]: ...
+    def aload_from_path(path: str) -> Awaitable[Audio]: ...
     @staticmethod
     def aload_from_source(
         source: AudioPath | AudioUrl | AudioBytes | AudioBase64 | AudioPcm,
-    ) -> Awaitable[Waveform]: ...
+    ) -> Awaitable[Audio]: ...
 
 __all__: list[str]

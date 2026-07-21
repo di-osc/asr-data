@@ -1,25 +1,37 @@
 use std::collections::BTreeMap;
 
 use asr_data::{
-    Annotation, AnnotationPayload, AnnotationSource, AnnotationStatus, AudioBytesStream,
-    AudioChannel, AudioDb, AudioDbError, AudioDbMode, AudioDoc, AudioEncoding, AudioFormat,
+    Annotation, AnnotationPayload, AnnotationSource, AnnotationStatus, Audio, AudioChannel,
+    AudioDb, AudioDbError, AudioDbMode, AudioDoc, AudioEncoding, AudioError, AudioFormat,
     AudioQuery, AudioSource, DurationMs, MAX_QUERY_LIMIT, TextSpan, TimeRange, Timeline, Token,
-    Waveform, WaveformError, import_legacy_msgpack_to_db, read_legacy_msgpack,
+    import_legacy_msgpack_to_db, read_legacy_msgpack,
 };
 
 #[test]
 fn waveform_round_trips_pcm16_samples() {
-    let waveform = Waveform::from_i16_pcm(&[0, 16_384, -16_384, 32_767], 16_000);
+    let waveform = Audio::from_i16_pcm(&[0, 16_384, -16_384, 32_767], 16_000);
 
     assert_eq!(waveform.sample_rate, 16_000);
     assert_eq!(waveform.channels, 1);
+    assert!(!waveform.is_normalized);
     assert_eq!(waveform.duration_ms(), 0.25);
     assert_eq!(waveform.to_i16_pcm(), vec![0, 16_384, -16_384, 32_767]);
 }
 
 #[test]
+fn waveform_normalize_scales_peak_to_one_and_marks_result() {
+    let waveform = Audio::new(vec![0.1, -0.25, 0.5, f32::NAN], 16_000);
+    assert!(!waveform.is_normalized);
+
+    let normalized = waveform.normalize();
+
+    assert!(normalized.is_normalized);
+    assert_eq!(normalized.samples, vec![0.2, -0.5, 1.0, 0.0]);
+}
+
+#[test]
 fn stereo_waveform_uses_interleaved_frames_for_duration_and_slicing() {
-    let waveform = Waveform::new_with_channels(
+    let waveform = Audio::new_with_channels(
         vec![
             1.0, 10.0, // frame 0
             2.0, 20.0, // frame 1
@@ -42,8 +54,8 @@ fn stereo_waveform_uses_interleaved_frames_for_duration_and_slicing() {
 #[test]
 fn stereo_waveform_rejects_incomplete_interleaved_frames() {
     assert_eq!(
-        Waveform::try_new_with_channels(vec![1.0, 2.0, 3.0], 16_000, 2),
-        Err(WaveformError::IncompleteFrame {
+        Audio::try_new_with_channels(vec![1.0, 2.0, 3.0], 16_000, 2),
+        Err(AudioError::IncompleteFrame {
             samples: 3,
             channels: 2,
         })
@@ -58,8 +70,8 @@ fn stereo_pcm_bytes_reject_incomplete_interleaved_frames() {
     }
 
     assert_eq!(
-        Waveform::from_i16_pcm_bytes_with_channels(&bytes, 16_000, 2),
-        Err(WaveformError::IncompleteFrame {
+        Audio::from_i16_pcm_bytes_with_channels(&bytes, 16_000, 2),
+        Err(AudioError::IncompleteFrame {
             samples: 3,
             channels: 2,
         })
@@ -67,8 +79,8 @@ fn stereo_pcm_bytes_reject_incomplete_interleaved_frames() {
 }
 
 #[test]
-fn stereo_waveform_can_extract_channels_and_downmix_to_mono() -> Result<(), WaveformError> {
-    let waveform = Waveform::new_with_channels(
+fn stereo_waveform_can_extract_channels_and_downmix_to_mono() -> Result<(), AudioError> {
+    let waveform = Audio::new_with_channels(
         vec![
             1.0, 3.0, // frame 0
             2.0, 4.0, // frame 1
@@ -93,13 +105,10 @@ fn stereo_waveform_can_extract_channels_and_downmix_to_mono() -> Result<(), Wave
 
 #[test]
 fn append_rejects_waveforms_with_different_channel_counts() {
-    let mut mono = Waveform::new(vec![0.0, 1.0], 16_000);
-    let stereo = Waveform::new_with_channels(vec![0.0, 0.0, 1.0, 1.0], 16_000, 2);
+    let mut mono = Audio::new(vec![0.0, 1.0], 16_000);
+    let stereo = Audio::new_with_channels(vec![0.0, 0.0, 1.0, 1.0], 16_000, 2);
 
-    assert_eq!(
-        mono.append(&stereo),
-        Err(WaveformError::InvalidChannelCount)
-    );
+    assert_eq!(mono.append(&stereo), Err(AudioError::InvalidChannelCount));
 }
 
 #[test]
@@ -113,7 +122,7 @@ fn time_range_reports_duration_and_overlap() {
 
 #[test]
 fn timeline_derives_transcript_from_final_text_annotations_only() {
-    let mut timeline = Timeline::new("audio_1");
+    let mut timeline = Timeline::new("audio_1", DurationMs(100));
     timeline.push(Annotation::new(
         TimeRange::new(DurationMs(0), DurationMs(100)),
         AnnotationPayload::Transcription(TextSpan {
@@ -168,11 +177,11 @@ fn audio_keeps_independent_channel_timelines() {
     };
 
     audio
-        .ensure_timeline(AudioChannel::Left)
+        .ensure_timeline(AudioChannel::Left, Some(DurationMs(100)))
         .expect("left timeline")
         .push(transcription("caller"));
     audio
-        .ensure_timeline(AudioChannel::Right)
+        .ensure_timeline(AudioChannel::Right, None)
         .expect("right timeline")
         .push(transcription("agent"));
 
@@ -194,29 +203,31 @@ fn audio_keeps_independent_channel_timelines() {
             .text,
         "agent"
     );
-    assert!(audio.mono_timeline().transcript().text.is_empty());
+    assert!(audio.mono_timeline().is_none());
     assert!(audio.timeline(AudioChannel::Channel(0)).is_err());
     assert!(audio.timeline(AudioChannel::Channel(1)).is_err());
 }
 
 #[test]
-fn audio_owns_identity_duration_and_channel_normalization() {
+fn audio_timelines_own_a_shared_duration_and_channel_normalization() {
     let mut audio = AudioDoc::with_id("call-1", AudioSource::from_encoded_bytes(vec![]));
-    audio.set_duration(Some(DurationMs(500)));
     audio
-        .ensure_timeline(AudioChannel::from_index(1))
+        .ensure_timeline(AudioChannel::from_index(1), Some(DurationMs(500)))
         .expect("right timeline");
 
     assert_eq!(audio.id, "call-1");
-    assert_eq!(audio.duration, Some(DurationMs(500)));
+    assert_eq!(audio.timeline_duration(), Some(DurationMs(500)));
     assert_eq!(AudioChannel::from_index(0), AudioChannel::Left);
     assert_eq!(AudioChannel::from_index(1), AudioChannel::Right);
     assert_eq!(AudioChannel::Right.index(), Some(1));
     assert_eq!(AudioChannel::Mono.index(), None);
     assert_eq!(AudioChannel::Right.name(), "right");
-    assert!(audio.timelines().values().all(
-        |timeline| timeline.audio_id == "call-1" && timeline.duration == Some(DurationMs(500))
-    ));
+    assert!(
+        audio
+            .timelines()
+            .values()
+            .all(|timeline| timeline.audio_id == "call-1" && timeline.duration == DurationMs(500))
+    );
     assert!(audio.validate().is_ok());
     assert!(
         audio
@@ -227,56 +238,40 @@ fn audio_owns_identity_duration_and_channel_normalization() {
 }
 
 #[test]
-fn audio_bytes_stream_emits_fixed_pcm_chunks_and_flushes_tail() -> Result<(), WaveformError> {
-    let mut stream = AudioBytesStream::new(16_000, 1, 100);
-    let mut frame = Vec::new();
-    for _ in 0..1600 {
-        frame.extend_from_slice(&0_i16.to_le_bytes());
+fn waveform_splits_stereo_at_low_energy_without_changing_samples() -> Result<(), AudioError> {
+    let mut samples = vec![1.0_f32; 62];
+    for frame in 25..28 {
+        samples[frame * 2] = 0.0;
+        samples[frame * 2 + 1] = 0.0;
     }
-    frame.extend_from_slice(&1000_i16.to_le_bytes());
-    frame.extend_from_slice(&(-1000_i16).to_le_bytes());
+    let waveform = Audio::new_with_channels(samples.clone(), 10, 2);
 
-    let chunks = stream.push(&frame)?;
-    assert_eq!(chunks.len(), 1);
-    assert!(chunks[0].is_start);
-    assert!(!chunks[0].is_last);
+    let chunks = waveform.split_at_low_energy(DurationMs(3_000))?;
+
+    assert_eq!(chunks.len(), 2);
+    assert!(chunks.iter().all(|chunk| chunk.frame_count() <= 30));
+    assert!(chunks.iter().all(|chunk| chunk.channels == 2));
     assert_eq!(
-        chunks[0].range,
-        TimeRange::new(DurationMs(0), DurationMs(100))
+        chunks
+            .iter()
+            .flat_map(|chunk| chunk.samples.iter().copied())
+            .collect::<Vec<_>>(),
+        samples
     );
-    assert_eq!(chunks[0].waveform.samples.len(), 1600);
-
-    let tail = stream.flush()?;
-    assert_eq!(tail.len(), 1);
-    assert!(tail[0].is_last);
-    assert_eq!(tail[0].range.start, DurationMs(100));
-    assert_eq!(tail[0].waveform.samples.len(), 2);
     Ok(())
 }
 
 #[test]
-fn audio_bytes_stream_preserves_stereo_channel_count() -> Result<(), WaveformError> {
-    let mut stream = AudioBytesStream::new(1_000, 2, 2);
-    let samples = [100_i16, 1000_i16, 200_i16, 2000_i16];
-    let mut bytes = Vec::new();
-    for sample in samples {
-        bytes.extend_from_slice(&sample.to_le_bytes());
-    }
-
-    let chunks = stream.push(&bytes)?;
-
-    assert_eq!(chunks.len(), 1);
-    assert_eq!(chunks[0].waveform.channels, 2);
-    assert_eq!(chunks[0].waveform.samples.len(), 4);
+fn waveform_low_energy_split_rejects_zero_duration() {
+    let waveform = Audio::new(vec![0.0], 16_000);
     assert_eq!(
-        chunks[0].range,
-        TimeRange::new(DurationMs(0), DurationMs(2))
+        waveform.split_at_low_energy(DurationMs(0)),
+        Err(AudioError::InvalidChunkSize)
     );
-    Ok(())
 }
 
 fn annotated_audio() -> AudioDoc {
-    let mut timeline = Timeline::new("audio_1");
+    let mut timeline = Timeline::new("audio_1", DurationMs(100));
     timeline.push(Annotation::new(
         TimeRange::new(DurationMs(0), DurationMs(100)),
         AnnotationPayload::Transcription(TextSpan::new("hello")),
@@ -295,7 +290,7 @@ fn waveform_from_pcm_matches_source_load() {
     let via_source = AudioSource::from_pcm_s16le(bytes.clone(), 8_000, 2)
         .load()
         .expect("source load");
-    let via_waveform = Waveform::from_pcm_s16le(bytes, 8_000, 2).expect("waveform from pcm");
+    let via_waveform = Audio::from_pcm_s16le(bytes, 8_000, 2).expect("waveform from pcm");
     assert_eq!(via_source, via_waveform);
 }
 
@@ -331,9 +326,8 @@ fn audio_db_crud_and_difference_update() {
     let path = std::env::temp_dir().join(format!("asr-db-{}.vasr", uuid::Uuid::new_v4().simple()));
     let mut db = AudioDb::open(&path, AudioDbMode::ReadWrite).expect("open AudioDb");
     let mut first = annotated_audio();
-    first.set_duration(Some(DurationMs(100)));
     first
-        .ensure_timeline(AudioChannel::Left)
+        .ensure_timeline(AudioChannel::Left, None)
         .expect("left timeline")
         .push(Annotation::new(
             TimeRange::new(DurationMs(0), DurationMs(100)),
@@ -342,7 +336,7 @@ fn audio_db_crud_and_difference_update() {
             AnnotationStatus::Final,
         ));
     first
-        .ensure_timeline(AudioChannel::Right)
+        .ensure_timeline(AudioChannel::Right, None)
         .expect("right timeline")
         .push(Annotation::new(
             TimeRange::new(DurationMs(0), DurationMs(100)),
@@ -351,7 +345,9 @@ fn audio_db_crud_and_difference_update() {
             AnnotationStatus::Final,
         ));
     let mut second = AudioDoc::with_id("second", AudioSource::from_encoded_bytes(vec![5, 6, 7]));
-    second.set_duration(Some(DurationMs(250)));
+    second
+        .ensure_timeline(AudioChannel::Mono, Some(DurationMs(250)))
+        .expect("mono timeline");
     db.insert(&first).expect("insert first");
     db.insert(&second).expect("insert second");
     db.set_metadata("dataset", &serde_json::json!("calls"))
@@ -446,7 +442,8 @@ fn audio_db_v1_is_migrated_to_channel_timeline_v4() {
     ));
     let audio = annotated_audio();
     let source = rmp_serde::to_vec_named(&audio.source).expect("encode source");
-    let timeline = rmp_serde::to_vec_named(audio.mono_timeline()).expect("encode timeline");
+    let timeline = rmp_serde::to_vec_named(audio.mono_timeline().expect("mono timeline"))
+        .expect("encode timeline");
     let metadata = serde_json::to_string(&audio.metadata).expect("encode metadata");
     {
         let connection = rusqlite::Connection::open(&path).expect("open v1 fixture");
@@ -479,7 +476,10 @@ fn audio_db_v1_is_migrated_to_channel_timeline_v4() {
     let db = AudioDb::open(&path, AudioDbMode::ReadWrite).expect("migrate v1 database");
     assert_eq!(AudioDb::SCHEMA_VERSION, 4);
     let migrated = db.query(&AudioQuery::default()).expect("query migrated");
-    assert_eq!(migrated[0].mono_timeline().transcript().text, "hello");
+    assert_eq!(
+        migrated[0].mono_timeline().unwrap().transcript().text,
+        "hello"
+    );
     drop(db);
 
     let connection = rusqlite::Connection::open(&path).expect("inspect v2 database");
@@ -513,7 +513,8 @@ fn audio_db_v2_is_decoded_read_only_as_mono_timeline() {
     ));
     let audio = annotated_audio();
     let source = rmp_serde::to_vec_named(&audio.source).expect("encode source");
-    let timeline = rmp_serde::to_vec_named(audio.mono_timeline()).expect("encode timeline");
+    let timeline = rmp_serde::to_vec_named(audio.mono_timeline().expect("mono timeline"))
+        .expect("encode timeline");
     let metadata = serde_json::to_string(&audio.metadata).expect("encode metadata");
     {
         let connection = rusqlite::Connection::open(&path).expect("open v2 fixture");
@@ -562,7 +563,10 @@ fn audio_db_v2_is_decoded_read_only_as_mono_timeline() {
 
     let db = AudioDb::open(&path, AudioDbMode::ReadOnly).expect("open v2 read-only");
     let loaded = db.query(&AudioQuery::default()).expect("query v2");
-    assert_eq!(loaded[0].mono_timeline().transcript().text, "hello");
+    assert_eq!(
+        loaded[0].mono_timeline().unwrap().transcript().text,
+        "hello"
+    );
     assert_eq!(loaded[0].timelines().len(), 1);
     drop(db);
     std::fs::remove_file(path).ok();
@@ -574,8 +578,7 @@ fn audio_db_v3_is_decoded_read_only_with_top_level_identity_and_duration() {
         "asr-db-v3-read-only-{}.sqlite",
         uuid::Uuid::new_v4().simple()
     ));
-    let mut audio = annotated_audio();
-    audio.set_duration(Some(DurationMs(100)));
+    let audio = annotated_audio();
     let source = rmp_serde::to_vec_named(&audio.source).expect("encode source");
     let timelines = rmp_serde::to_vec_named(audio.timelines()).expect("encode timelines");
     let metadata = serde_json::to_string(&audio.metadata).expect("encode metadata");
@@ -626,8 +629,11 @@ fn audio_db_v3_is_decoded_read_only_with_top_level_identity_and_duration() {
     let db = AudioDb::open(&path, AudioDbMode::ReadOnly).expect("open v3 read-only");
     let loaded = db.query(&AudioQuery::default()).expect("query v3");
     assert_eq!(loaded[0].id, "audio_1");
-    assert_eq!(loaded[0].duration, Some(DurationMs(100)));
-    assert_eq!(loaded[0].mono_timeline().transcript().text, "hello");
+    assert_eq!(loaded[0].timeline_duration(), Some(DurationMs(100)));
+    assert_eq!(
+        loaded[0].mono_timeline().unwrap().transcript().text,
+        "hello"
+    );
     loaded[0].validate().expect("valid migrated audio");
     drop(db);
     std::fs::remove_file(path).ok();
@@ -643,7 +649,8 @@ fn legacy_v1_record_list_is_migrated_when_read() {
     let audios = read_legacy_msgpack(&path).expect("read legacy v1 fixture");
     assert!(!audios.is_empty());
     assert!(audios.iter().all(|audio| {
-        !audio.mono_timeline().audio_id.is_empty() && !audio.mono_timeline().annotations.is_empty()
+        !audio.mono_timeline().unwrap().audio_id.is_empty()
+            && !audio.mono_timeline().unwrap().annotations.is_empty()
     }));
     let db_path =
         std::env::temp_dir().join(format!("legacy-{}.vasr", uuid::Uuid::new_v4().simple()));

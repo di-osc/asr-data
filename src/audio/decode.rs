@@ -1,17 +1,263 @@
 //! Decoding audio bytes into a waveform.
 
+use std::collections::VecDeque;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 
+pub struct DecodedAudioChunks {
+    format: Box<dyn symphonia::core::formats::FormatReader>,
+    decoder: Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
+    track_id: u32,
+    sample_rate: u32,
+    channels: u16,
+    source_format: crate::AudioFormat,
+    samples_per_chunk: usize,
+    buffered: VecDeque<f32>,
+    offset_frames: usize,
+    finished: bool,
+}
+
+impl DecodedAudioChunks {
+    fn new(
+        mss: symphonia::core::io::MediaSourceStream<'static>,
+        hint: symphonia::core::formats::probe::Hint,
+        encoding: crate::AudioEncoding,
+        chunk_size_ms: u64,
+    ) -> Result<Self> {
+        use symphonia::core::codecs::audio::AudioDecoderOptions;
+        use symphonia::core::formats::{FormatOptions, TrackType};
+        use symphonia::core::meta::MetadataOptions;
+        if chunk_size_ms == 0 {
+            bail!("chunk size must be greater than zero");
+        }
+        let format = symphonia::default::get_probe()
+            .probe(
+                &hint,
+                mss,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .map_err(|e| anyhow::anyhow!("failed to probe audio format: {e}"))?;
+        let track = format
+            .default_track(TrackType::Audio)
+            .ok_or_else(|| anyhow::anyhow!("no audio tracks found"))?;
+        let params = track
+            .codec_params
+            .as_ref()
+            .and_then(|p| p.audio())
+            .ok_or_else(|| anyhow::anyhow!("track has no audio codec parameters"))?;
+        let sample_rate = params
+            .sample_rate
+            .ok_or_else(|| anyhow::anyhow!("unknown sample rate"))?;
+        let channels = params.channels.as_ref().map(|c| c.count()).unwrap_or(1) as u16;
+        let decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(params, &AudioDecoderOptions::default())
+            .map_err(|e| anyhow::anyhow!("failed to create decoder: {e}"))?;
+        let track_id = track.id;
+        let frames = (u128::from(chunk_size_ms) * u128::from(sample_rate))
+            .div_ceil(1000)
+            .max(1) as usize;
+        Ok(Self {
+            format,
+            decoder,
+            track_id,
+            sample_rate,
+            channels,
+            source_format: crate::AudioFormat {
+                encoding,
+                sample_rate,
+                channels,
+            },
+            samples_per_chunk: frames.saturating_mul(usize::from(channels)),
+            buffered: VecDeque::new(),
+            offset_frames: 0,
+            finished: false,
+        })
+    }
+
+    fn decode_packet(&mut self) -> Result<()> {
+        use symphonia::core::errors::Error as SymphoniaError;
+        loop {
+            let packet = match self.format.next_packet() {
+                Ok(Some(packet)) => packet,
+                Ok(None) => {
+                    self.finished = true;
+                    return Ok(());
+                }
+                Err(error) => return Err(anyhow::anyhow!("failed to read audio packet: {error}")),
+            };
+            if packet.track_id != self.track_id {
+                continue;
+            }
+            match self.decoder.decode(&packet) {
+                Ok(decoded) => {
+                    let mut samples: Vec<f32> = Vec::new();
+                    decoded.copy_to_vec_interleaved(&mut samples);
+                    self.buffered.extend(samples);
+                    return Ok(());
+                }
+                Err(SymphoniaError::DecodeError(_)) => continue,
+                Err(error) => {
+                    return Err(anyhow::anyhow!("failed to decode audio packet: {error}"));
+                }
+            }
+        }
+    }
+}
+
+impl Iterator for DecodedAudioChunks {
+    type Item = Result<crate::AudioChunk>;
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.buffered.len() < self.samples_per_chunk && !self.finished {
+            if let Err(error) = self.decode_packet() {
+                self.finished = true;
+                return Some(Err(error));
+            }
+        }
+        if self.buffered.is_empty() {
+            return None;
+        }
+        let count = self.samples_per_chunk.min(self.buffered.len());
+        let samples = self.buffered.drain(..count).collect::<Vec<_>>();
+        let offset_ms = self.offset_frames as u64 * 1000 / u64::from(self.sample_rate);
+        self.offset_frames += count / usize::from(self.channels);
+        Some(Ok(crate::AudioChunk {
+            samples,
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+            source_format: Some(self.source_format.clone()),
+            is_normalized: false,
+            offset_ms,
+            is_final: self.finished && self.buffered.is_empty(),
+        }))
+    }
+}
+
+struct HttpMediaSource(reqwest::blocking::Response);
+impl Read for HttpMediaSource {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+impl Seek for HttpMediaSource {
+    fn seek(&mut self, _: SeekFrom) -> std::io::Result<u64> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "HTTP stream is not seekable",
+        ))
+    }
+}
+impl symphonia::core::io::MediaSource for HttpMediaSource {
+    fn is_seekable(&self) -> bool {
+        false
+    }
+    fn byte_len(&self) -> Option<u64> {
+        self.0.content_length()
+    }
+}
+
+pub fn stream_source(
+    source: &crate::AudioSource,
+    chunk_size_ms: u64,
+) -> Result<DecodedAudioChunks> {
+    use base64::Engine;
+    use std::fs::File;
+    use std::io::Cursor;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::io::MediaSourceStream;
+    let (media, hint, encoding): (
+        Box<dyn symphonia::core::io::MediaSource>,
+        Hint,
+        crate::AudioEncoding,
+    ) = match source {
+        crate::AudioSource::Path(path) => {
+            let mut hint = Hint::new();
+            if let Some(ext) = path.extension().and_then(|v| v.to_str()) {
+                hint.with_extension(ext);
+            }
+            (
+                Box::new(File::open(path)?),
+                hint,
+                path.extension()
+                    .and_then(|v| v.to_str())
+                    .map(encoding_from_extension)
+                    .unwrap_or(crate::AudioEncoding::Unknown),
+            )
+        }
+        crate::AudioSource::Url(url) => {
+            if let Ok(parsed) = reqwest::Url::parse(url)
+                && parsed.scheme() == "file"
+            {
+                let path = parsed
+                    .to_file_path()
+                    .map_err(|_| anyhow::anyhow!("invalid file URL {url:?}"))?;
+                let mut hint = Hint::new();
+                if let Some(ext) = path.extension().and_then(|v| v.to_str()) {
+                    hint.with_extension(ext);
+                }
+                let encoding = path
+                    .extension()
+                    .and_then(|v| v.to_str())
+                    .map(encoding_from_extension)
+                    .unwrap_or(crate::AudioEncoding::Unknown);
+                return DecodedAudioChunks::new(
+                    MediaSourceStream::new(Box::new(File::open(path)?), Default::default()),
+                    hint,
+                    encoding,
+                    chunk_size_ms,
+                );
+            }
+            let response = reqwest::blocking::get(url)?;
+            if !response.status().is_success() {
+                bail!("HTTP error fetching {url:?}: {}", response.status());
+            }
+            (
+                Box::new(HttpMediaSource(response)),
+                Hint::new(),
+                encoding_from_extension(
+                    url.split(['?', '#'])
+                        .next()
+                        .unwrap_or(url)
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(""),
+                ),
+            )
+        }
+        crate::AudioSource::EncodedBytes(bytes) => (
+            Box::new(Cursor::new(bytes.clone())),
+            Hint::new(),
+            detect_encoding(bytes),
+        ),
+        crate::AudioSource::Base64(data) => {
+            let raw = data
+                .strip_prefix("data:")
+                .and_then(|v| v.split_once(',').map(|v| v.1))
+                .unwrap_or(data);
+            let bytes = base64::engine::general_purpose::STANDARD.decode(raw)?;
+            let encoding = detect_encoding(&bytes);
+            (Box::new(Cursor::new(bytes)), Hint::new(), encoding)
+        }
+        crate::AudioSource::PcmS16Le { .. } => bail!("raw PCM uses the direct chunk iterator"),
+    };
+    DecodedAudioChunks::new(
+        MediaSourceStream::new(media, Default::default()),
+        hint,
+        encoding,
+        chunk_size_ms,
+    )
+}
+
 pub fn decode_path(path: &Path) -> Result<(Vec<f32>, u32)> {
-    let waveform = decode_path_waveform(path)?;
+    let waveform = decode_path_audio(path)?;
     let mono = waveform.to_mono()?;
     Ok((mono.samples, mono.sample_rate))
 }
 
-pub fn decode_path_waveform(path: &Path) -> Result<crate::Waveform> {
+pub fn decode_path_audio(path: &Path) -> Result<crate::Audio> {
     use std::fs::File;
 
     use symphonia::core::formats::probe::Hint;
@@ -32,7 +278,7 @@ pub fn decode_path_waveform(path: &Path) -> Result<crate::Waveform> {
         .unwrap_or(crate::AudioEncoding::Unknown);
     let (samples, sr, channels) = decode_audio_stream(mss, hint)?;
     Ok(
-        crate::Waveform::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
+        crate::Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
             crate::AudioFormat {
                 encoding,
                 sample_rate: sr,
@@ -43,12 +289,12 @@ pub fn decode_path_waveform(path: &Path) -> Result<crate::Waveform> {
 }
 
 pub fn decode_url(url: &str) -> Result<(Vec<f32>, u32)> {
-    let waveform = decode_url_waveform(url)?;
+    let waveform = decode_url_audio(url)?;
     let mono = waveform.to_mono()?;
     Ok((mono.samples, mono.sample_rate))
 }
 
-pub fn decode_url_waveform(url: &str) -> Result<crate::Waveform> {
+pub fn decode_url_audio(url: &str) -> Result<crate::Audio> {
     use std::io::Cursor;
 
     use symphonia::core::formats::probe::Hint;
@@ -78,7 +324,7 @@ pub fn decode_url_waveform(url: &str) -> Result<crate::Waveform> {
 
     let (samples, sr, channels) = decode_audio_stream(mss, hint)?;
     Ok(
-        crate::Waveform::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
+        crate::Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
             crate::AudioFormat {
                 encoding,
                 sample_rate: sr,
@@ -120,12 +366,12 @@ pub async fn download_url_bytes(url: &str) -> Result<Vec<u8>> {
 }
 
 pub fn decode_base64(b64: &str) -> Result<(Vec<f32>, u32)> {
-    let waveform = decode_base64_waveform(b64)?;
+    let waveform = decode_base64_audio(b64)?;
     let mono = waveform.to_mono()?;
     Ok((mono.samples, mono.sample_rate))
 }
 
-pub fn decode_base64_waveform(b64: &str) -> Result<crate::Waveform> {
+pub fn decode_base64_audio(b64: &str) -> Result<crate::Audio> {
     use base64::Engine;
 
     let data = if b64.contains(',') && b64.trim().starts_with("data:") {
@@ -140,10 +386,10 @@ pub fn decode_base64_waveform(b64: &str) -> Result<crate::Waveform> {
         .decode(data)
         .map_err(|e| anyhow::anyhow!("base64 decode error: {e}"))?;
 
-    decode_bytes_waveform(bytes)
+    decode_bytes_audio(bytes)
 }
 
-pub fn decode_bytes_waveform(bytes: impl Into<Vec<u8>>) -> Result<crate::Waveform> {
+pub fn decode_bytes_audio(bytes: impl Into<Vec<u8>>) -> Result<crate::Audio> {
     use std::io::Cursor;
 
     use symphonia::core::formats::probe::Hint;
@@ -155,7 +401,7 @@ pub fn decode_bytes_waveform(bytes: impl Into<Vec<u8>>) -> Result<crate::Wavefor
     let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
     let (samples, sr, channels) = decode_audio_stream(mss, Hint::new())?;
     Ok(
-        crate::Waveform::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
+        crate::Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
             crate::AudioFormat {
                 encoding,
                 sample_rate: sr,
@@ -282,8 +528,8 @@ fn decode_audio_stream(
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_bytes_waveform, decode_path, decode_path_waveform};
-    use crate::Waveform;
+    use super::{decode_bytes_audio, decode_path, decode_path_audio};
+    use crate::Audio;
     use std::io::Write;
 
     #[test]
@@ -316,7 +562,7 @@ mod tests {
 
     #[test]
     fn stereo_samples_are_downmixed_by_averaging_channels() -> anyhow::Result<()> {
-        let stereo = Waveform::new_with_channels(
+        let stereo = Audio::new_with_channels(
             vec![
                 1.0, 3.0, // frame 0
                 2.0, 4.0, // frame 1
@@ -348,7 +594,7 @@ mod tests {
         )?;
 
         let (samples, sample_rate) = decode_path(&path)?;
-        let waveform = decode_path_waveform(&path)?;
+        let waveform = decode_path_audio(&path)?;
         std::fs::remove_file(&path).ok();
 
         assert_eq!(sample_rate, 16_000);
@@ -360,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_bytes_waveform_decodes_encoded_audio_bytes() -> anyhow::Result<()> {
+    fn decode_bytes_audio_decodes_encoded_audio_bytes() -> anyhow::Result<()> {
         let path = std::env::temp_dir().join(format!(
             "asr-encoded-bytes-{}.wav",
             uuid::Uuid::new_v4().simple()
@@ -369,7 +615,7 @@ mod tests {
         let bytes = std::fs::read(&path)?;
         std::fs::remove_file(&path).ok();
 
-        let waveform = decode_bytes_waveform(bytes)?;
+        let waveform = decode_bytes_audio(bytes)?;
 
         assert_eq!(waveform.sample_rate, 16_000);
         assert_eq!(waveform.channels, 1);

@@ -95,17 +95,25 @@ impl Annotation {
 pub struct Timeline {
     pub id: TimelineId,
     pub audio_id: AudioId,
-    pub duration: Option<crate::DurationMs>,
+    #[serde(default, deserialize_with = "deserialize_duration")]
+    pub duration: crate::DurationMs,
     #[serde(default)]
     pub annotations: Vec<Annotation>,
 }
 
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<crate::DurationMs, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<crate::DurationMs>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 impl Timeline {
-    pub fn new(audio_id: impl Into<AudioId>) -> Self {
+    pub fn new(audio_id: impl Into<AudioId>, duration: crate::DurationMs) -> Self {
         Self {
             id: format!("tl_{}", Uuid::new_v4().simple()),
             audio_id: audio_id.into(),
-            duration: None,
+            duration,
             annotations: Vec::new(),
         }
     }
@@ -200,6 +208,6 @@ fn transcript_from_annotations<'a>(
 
 impl Default for Timeline {
     fn default() -> Self {
-        Self::new(String::new())
+        Self::new(String::new(), crate::DurationMs(0))
     }
 }
