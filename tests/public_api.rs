@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use asr_data::audio::{self, decode};
 use asr_data::{
@@ -46,7 +46,14 @@ fn stable_public_paths_compile() {
     let _: fn(&Path) -> anyhow::Result<Audio> = decode::decode_path_audio;
     let _: usize = DEFAULT_QUERY_LIMIT;
     let _: usize = MAX_QUERY_LIMIT;
-    let _ = |input: &Path, output: &Path| import_legacy_msgpack_to_db(input, output);
-    let _ = |path: &Path| read_audio_db_info(path);
-    let _ = |path: &Path| read_legacy_msgpack(path);
+    let _ = || {
+        let path = Path::new("unused");
+        let path_buf = PathBuf::from("unused");
+        let _ = import_legacy_msgpack_to_db(path, path);
+        let _ = import_legacy_msgpack_to_db(path_buf.clone(), path_buf.clone());
+        let _ = read_audio_db_info(path);
+        let _ = read_audio_db_info(path_buf.clone());
+        let _ = read_legacy_msgpack(path);
+        let _ = read_legacy_msgpack(path_buf);
+    };
 }
