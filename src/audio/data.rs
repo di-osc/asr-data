@@ -1,4 +1,3 @@
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -30,8 +29,6 @@ pub struct Audio {
     pub channels: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_format: Option<AudioFormat>,
-    #[serde(default)]
-    pub is_normalized: bool,
 }
 
 /// A frame-aligned piece of streamed audio with its position in the source.
@@ -42,8 +39,6 @@ pub struct AudioChunk {
     pub channels: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_format: Option<AudioFormat>,
-    #[serde(default)]
-    pub is_normalized: bool,
     pub offset_ms: u64,
     pub is_final: bool,
 }
@@ -53,7 +48,6 @@ pub struct AudioChunks {
     sample_rate: u32,
     channels: u16,
     source_format: Option<AudioFormat>,
-    is_normalized: bool,
     frames_per_chunk: usize,
     next_frame: usize,
 }
@@ -70,7 +64,6 @@ impl Audio {
             sample_rate,
             channels,
             source_format: None,
-            is_normalized: false,
         }
     }
 
@@ -229,7 +222,6 @@ impl Audio {
             sample_rate: self.sample_rate,
             channels: self.channels,
             source_format: self.source_format,
-            is_normalized: self.is_normalized,
             frames_per_chunk,
             next_frame: 0,
         })
@@ -290,7 +282,6 @@ impl Audio {
             self.channels,
         );
         waveform.source_format = self.source_format.clone();
-        waveform.is_normalized = self.is_normalized;
         waveform
     }
 
@@ -396,71 +387,25 @@ impl Audio {
         if self.sample_rate == target_sample_rate {
             return Ok(self.clone());
         }
-
-        if self.channels == 1 {
-            let samples = resample_mono_f32(&self.samples, self.sample_rate, target_sample_rate)?;
-            let mut audio = Self::new(samples, target_sample_rate);
-            audio.source_format = self.source_format.clone();
-            audio.is_normalized = self.is_normalized;
-            return Ok(audio);
-        }
-
-        let channels = usize::from(self.channels);
-        let mut deinterleaved = (0..channels)
-            .map(|_| Vec::with_capacity(self.frame_count()))
-            .collect::<Vec<_>>();
-        for frame in self.samples.chunks_exact(channels) {
-            for (channel, sample) in deinterleaved.iter_mut().zip(frame) {
-                channel.push(*sample);
-            }
-        }
-        let channel_samples = deinterleaved
-            .iter()
-            .map(|samples| resample_mono_f32(samples, self.sample_rate, target_sample_rate))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let frames = channel_samples
-            .iter()
-            .map(Vec::len)
-            .min()
-            .unwrap_or_default();
-        let mut samples = Vec::with_capacity(frames * channel_samples.len());
-        for frame in 0..frames {
-            for channel in &channel_samples {
-                samples.push(channel[frame]);
-            }
-        }
+        let samples = super::stream::resample_interleaved(
+            &self.samples,
+            self.sample_rate,
+            target_sample_rate,
+            self.channels,
+        )?;
         let mut waveform = Self::new_with_channels(samples, target_sample_rate, self.channels);
         waveform.source_format = self.source_format.clone();
-        waveform.is_normalized = self.is_normalized;
         Ok(waveform)
-    }
-
-    pub fn normalize(mut self) -> Self {
-        self.normalize_in_place();
-        self
-    }
-
-    pub fn normalize_in_place(&mut self) {
-        normalize_samples_in_place(&mut self.samples);
-        self.is_normalized = true;
     }
 }
 
-fn normalize_samples_in_place(samples: &mut [f32]) {
-    let mut peak = 0.0_f32;
-    for sample in &mut *samples {
-        if !sample.is_finite() {
-            *sample = 0.0;
-        }
-        peak = peak.max(sample.abs());
-    }
-    if peak > 0.0 {
-        let scale = peak.recip();
-        for sample in &mut *samples {
-            *sample = (*sample * scale).clamp(-1.0, 1.0);
-        }
-    } else {
-        samples.fill(0.0);
+pub(crate) fn sanitize_samples(samples: &mut [f32]) {
+    for sample in samples {
+        *sample = if sample.is_finite() {
+            sample.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
     }
 }
 
@@ -504,56 +449,6 @@ fn lowest_energy_boundary(
         .map(|(offset, _)| best_start + offset)
 }
 
-fn resample_mono_f32(samples: &[f32], from_hz: u32, to_hz: u32) -> anyhow::Result<Vec<f32>> {
-    use rubato::audioadapter_buffers::direct::InterleavedSlice;
-    use rubato::{
-        Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
-        WindowFunction,
-    };
-
-    if from_hz == 0 || to_hz == 0 {
-        anyhow::bail!("invalid sample rates: from_hz={from_hz} to_hz={to_hz}");
-    }
-    if from_hz == to_hz {
-        return Ok(samples.to_vec());
-    }
-    if samples.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let params = SincInterpolationParameters {
-        sinc_len: 256,
-        f_cutoff: 0.95,
-        interpolation: SincInterpolationType::Linear,
-        oversampling_factor: 256,
-        window: WindowFunction::BlackmanHarris2,
-    };
-    let ratio = f64::from(to_hz) / f64::from(from_hz);
-    let chunk_size = 1024.min(samples.len().max(1));
-    let mut resampler =
-        Async::<f32>::new_sinc(ratio, 2.0, &params, chunk_size, 1, FixedAsync::Input).map_err(
-            |error| {
-                anyhow::anyhow!(
-                    "resampler creation failed for from_hz={from_hz} to_hz={to_hz}: {error}"
-                )
-            },
-        )?;
-
-    let input_frames = samples.len();
-    let input = InterleavedSlice::new(samples, 1, input_frames)
-        .map_err(|error| anyhow::anyhow!("failed to create resampler input buffer: {error}"))?;
-    let output_len = resampler.process_all_needed_output_len(input_frames);
-    let mut output_samples = vec![0.0_f32; output_len];
-    let mut output = InterleavedSlice::new_mut(&mut output_samples, 1, output_len)
-        .map_err(|error| anyhow::anyhow!("failed to create resampler output buffer: {error}"))?;
-    let (_, produced) = resampler
-        .process_all_into_buffer(&input, &mut output, input_frames, None)
-        .context("resampling failed")?;
-
-    output_samples.truncate(produced);
-    Ok(output_samples)
-}
-
 impl Default for Audio {
     fn default() -> Self {
         Self::new(Vec::new(), 16_000)
@@ -581,7 +476,6 @@ impl Iterator for AudioChunks {
             sample_rate: self.sample_rate,
             channels: self.channels,
             source_format: self.source_format.clone(),
-            is_normalized: self.is_normalized,
             offset_ms,
             is_final: self.samples.len() == 0,
         })
@@ -605,7 +499,6 @@ impl AudioChunk {
             sample_rate,
             channels,
             source_format: self.source_format.clone(),
-            is_normalized: self.is_normalized,
             offset_ms: self.offset_ms,
             is_final: self.is_final,
         }
@@ -683,34 +576,13 @@ impl AudioChunk {
         if self.sample_rate == sample_rate {
             return Ok(self.clone());
         }
-        let channels = usize::from(self.channels);
-        let mut deinterleaved = (0..channels)
-            .map(|_| Vec::with_capacity(self.frame_count()))
-            .collect::<Vec<_>>();
-        for frame in self.samples.chunks_exact(channels) {
-            for (channel, sample) in deinterleaved.iter_mut().zip(frame) {
-                channel.push(*sample);
-            }
-        }
-        let channel_samples = deinterleaved
-            .iter()
-            .map(|samples| resample_mono_f32(samples, self.sample_rate, sample_rate))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let frames = channel_samples.iter().map(Vec::len).min().unwrap_or(0);
-        let mut samples = Vec::with_capacity(frames.saturating_mul(channels));
-        for frame in 0..frames {
-            for channel in &channel_samples {
-                samples.push(channel[frame]);
-            }
-        }
+        let samples = super::stream::resample_interleaved(
+            &self.samples,
+            self.sample_rate,
+            sample_rate,
+            self.channels,
+        )?;
         Ok(self.with_samples(samples, sample_rate, self.channels))
-    }
-
-    pub fn normalize(&self) -> Self {
-        let mut chunk = self.clone();
-        normalize_samples_in_place(&mut chunk.samples);
-        chunk.is_normalized = true;
-        chunk
     }
 
     pub fn slice_ms(&self, start_ms: u64, end_ms: u64) -> Self {
@@ -733,5 +605,19 @@ impl AudioChunk {
         chunk.offset_ms = self.offset_ms.saturating_add(effective_start);
         chunk.is_final = self.is_final && end_ms >= duration_ms;
         chunk
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_samples;
+
+    #[test]
+    fn waveform_samples_are_sanitized() {
+        let mut samples = vec![f32::NAN, f32::NEG_INFINITY, -1.5, 0.5, 1.5, f32::INFINITY];
+
+        sanitize_samples(&mut samples);
+
+        assert_eq!(samples, vec![0.0, 0.0, -1.0, 0.5, 1.0, 0.0]);
     }
 }

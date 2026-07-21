@@ -68,7 +68,6 @@ def test_audio_waveform_timeline_and_db(tmp_path):
     waveform = audio.source.load()
     assert waveform.sample_rate == 8000
     assert waveform.channels == 2
-    assert waveform.is_normalized is False
     assert waveform.source_format.encoding == "pcm_s16le"
     assert waveform.samples.dtype == np.float32
     assert waveform.samples.shape == (4,)
@@ -251,6 +250,25 @@ def test_waveform_from_pcm_matches_source_load():
     np.testing.assert_allclose(via_waveform.samples, via_source.samples)
 
 
+def test_source_load_options():
+    pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
+    source = AudioPcm(pcm, sample_rate=8000, channels=2)
+
+    transformed = source.load(sample_rate=16000, mono=True)
+    assert transformed.sample_rate == 16000
+    assert transformed.channels == 1
+    assert transformed.samples.dtype == np.float32
+    assert np.isfinite(transformed.samples).all()
+    assert np.abs(transformed.samples).max(initial=0.0) <= 1.0
+
+    preserved = source.load(mono=False)
+    assert preserved.sample_rate == 8000
+    assert preserved.channels == 2
+
+    with pytest.raises(Exception, match="sample rate"):
+        source.load(sample_rate=0)
+
+
 def test_all_audio_sources_stream_waveforms_without_padding(tmp_path):
     samples = (100, 1000, 200, 2000, 300, 3000, 400, 4000, 500, 5000)
     pcm = struct.pack("<" + "h" * len(samples), *samples)
@@ -298,6 +316,61 @@ def test_all_audio_sources_stream_waveforms_without_padding(tmp_path):
         list(sources[0].stream(chunk_size_ms=0))
 
 
+def test_source_stream_options(tmp_path):
+    samples = (100, 1000, 200, 2000, 300, 3000, 400, 4000, 500, 5000)
+    pcm = struct.pack("<" + "h" * len(samples), *samples)
+    encoded = io.BytesIO()
+    with wave.open(encoded, "wb") as wav:
+        wav.setnchannels(2)
+        wav.setsampwidth(2)
+        wav.setframerate(1000)
+        wav.writeframes(pcm)
+    wav_bytes = encoded.getvalue()
+    path = tmp_path / "stream-options.wav"
+    path.write_bytes(wav_bytes)
+    sources = [
+        AudioPath(str(path)),
+        AudioUrl(path.as_uri()),
+        AudioBytes(wav_bytes),
+        AudioBase64(base64.b64encode(wav_bytes).decode()),
+        AudioPcm(pcm, sample_rate=1000, channels=2),
+    ]
+
+    for source in sources:
+        full = source.load(sample_rate=2000, mono=True)
+        chunks = list(
+            source.stream(chunk_size_ms=2, sample_rate=2000, mono=True)
+        )
+
+        assert chunks
+        assert all(chunk.sample_rate == 2000 for chunk in chunks)
+        assert all(chunk.channels == 1 for chunk in chunks)
+        assert [chunk.offset_ms for chunk in chunks] == sorted(
+            chunk.offset_ms for chunk in chunks
+        )
+        assert [chunk.is_final for chunk in chunks[:-1]] == [False] * (
+            len(chunks) - 1
+        )
+        assert chunks[-1].is_final is True
+        streamed = np.concatenate([chunk.samples for chunk in chunks])
+        np.testing.assert_allclose(streamed, full.samples, atol=1e-6)
+        assert np.isfinite(streamed).all()
+        assert np.abs(streamed).max(initial=0.0) <= 1.0
+
+    with pytest.raises(Exception, match="sample rate"):
+        list(sources[0].stream(sample_rate=0))
+
+
+def test_source_stream_default_chunk():
+    pcm = struct.pack("<" + "h" * 250, *range(250))
+
+    chunks = list(AudioPcm(pcm, sample_rate=1000).stream())
+
+    assert [chunk.frame_count for chunk in chunks] == [100, 100, 50]
+    assert [chunk.offset_ms for chunk in chunks] == [0, 100, 200]
+    assert [chunk.is_final for chunk in chunks] == [False, False, True]
+
+
 def test_waveform_split_at_low_energy_is_lossless_and_frame_aligned():
     samples = np.ones(62, dtype=np.float32)
     samples[50:56] = 0.0
@@ -329,21 +402,14 @@ def test_audio_numpy_constructor_and_output_share_memory():
     assert view[0] == 42.0
 
 
-def test_waveform_normalize_scales_peak_and_sets_state():
-    waveform = Audio(
-        np.array([0.1, -0.25, 0.5, np.nan], dtype=np.float32),
-        sample_rate=16000,
-    )
-    assert waveform.is_normalized is False
+def test_normalization_api_is_removed():
+    audio = Audio(np.array([0.1, -0.25, 0.5], dtype=np.float32), sample_rate=16000)
+    chunk = next(AudioPcm(b"\0\0", sample_rate=16000).stream(chunk_size_ms=100))
 
-    normalized = waveform.normalize()
-
-    assert normalized.is_normalized is True
-    assert waveform.is_normalized is False
-    np.testing.assert_allclose(
-        normalized.samples,
-        np.array([0.2, -0.5, 1.0, 0.0], dtype=np.float32),
-    )
+    assert not hasattr(audio, "normalize")
+    assert not hasattr(audio, "is_normalized")
+    assert not hasattr(chunk, "normalize")
+    assert not hasattr(chunk, "is_normalized")
 
 
 def test_waveform_from_base64_decodes_wav_bytes():
@@ -404,6 +470,98 @@ def test_audio_aload_returns_waveform_without_blocking_api_changes():
 
     assert waveform.sample_rate == 8000
     assert waveform.channels == 2
+
+
+def test_source_aload_options_match_sync_load():
+    pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
+    source = AudioPcm(pcm, sample_rate=8000, channels=2)
+
+    async def load():
+        return await source.aload(sample_rate=16000, mono=True)
+
+    asynchronous = asyncio.run(load())
+    synchronous = source.load(sample_rate=16000, mono=True)
+
+    assert asynchronous.sample_rate == 16000
+    assert asynchronous.channels == 1
+    np.testing.assert_array_equal(asynchronous.samples, synchronous.samples)
+
+
+def test_source_astream_is_async_and_matches_sync_stream():
+    pcm = struct.pack("<" + "h" * 800, *[index % 1000 for index in range(800)])
+    source = AudioPcm(pcm, sample_rate=8000)
+
+    async def collect():
+        chunks = []
+        async for chunk in source.astream(
+            chunk_size_ms=20,
+            sample_rate=16000,
+            mono=True,
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    asynchronous = asyncio.run(collect())
+    synchronous = list(
+        source.stream(chunk_size_ms=20, sample_rate=16000, mono=True)
+    )
+
+    assert [chunk.offset_ms for chunk in asynchronous] == [
+        chunk.offset_ms for chunk in synchronous
+    ]
+    assert [chunk.is_final for chunk in asynchronous] == [
+        chunk.is_final for chunk in synchronous
+    ]
+    np.testing.assert_array_equal(
+        np.concatenate([chunk.samples for chunk in asynchronous]),
+        np.concatenate([chunk.samples for chunk in synchronous]),
+    )
+
+
+def test_url_astream_does_not_block_the_event_loop():
+    wav = io.BytesIO()
+    with wave.open(wav, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(8000)
+        writer.writeframes(struct.pack("<" + "h" * 800, *([100] * 800)))
+    payload = wav.getvalue()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            time.sleep(0.2)
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    source = AudioUrl(f"http://127.0.0.1:{server.server_port}/audio.wav")
+
+    async def collect_and_probe():
+        async def collect():
+            return [chunk async for chunk in source.astream(chunk_size_ms=20)]
+
+        task = asyncio.create_task(collect())
+        await asyncio.sleep(0.03)
+        assert not task.done()
+        return await task
+
+    try:
+        chunks = asyncio.run(collect_and_probe())
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+
+    assert chunks
+    assert chunks[-1].is_final is True
 
 
 def test_url_aload_uses_async_download_and_blocking_decode():

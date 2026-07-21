@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use asr_data::{
     Annotation, AnnotationPayload, AnnotationSource, AnnotationStatus, Audio, AudioChannel,
     AudioDb, AudioDbError, AudioDbMode, AudioDoc, AudioEncoding, AudioError, AudioFormat,
-    AudioQuery, AudioSource, DurationMs, MAX_QUERY_LIMIT, TextSpan, TimeRange, Timeline, Token,
-    import_legacy_msgpack_to_db, read_legacy_msgpack,
+    AudioLoadOptions, AudioLoader, AudioQuery, AudioSource, DurationMs, MAX_QUERY_LIMIT, TextSpan,
+    TimeRange, Timeline, Token, import_legacy_msgpack_to_db, read_legacy_msgpack,
 };
 
 #[test]
@@ -13,20 +13,26 @@ fn waveform_round_trips_pcm16_samples() {
 
     assert_eq!(waveform.sample_rate, 16_000);
     assert_eq!(waveform.channels, 1);
-    assert!(!waveform.is_normalized);
     assert_eq!(waveform.duration_ms(), 0.25);
     assert_eq!(waveform.to_i16_pcm(), vec![0, 16_384, -16_384, 32_767]);
 }
 
 #[test]
-fn waveform_normalize_scales_peak_to_one_and_marks_result() {
-    let waveform = Audio::new(vec![0.1, -0.25, 0.5, f32::NAN], 16_000);
-    assert!(!waveform.is_normalized);
+fn audio_ignores_legacy_normalization_state_and_no_longer_serializes_it() {
+    let legacy = serde_json::json!({
+        "samples": [0.25, -0.5],
+        "sample_rate": 16_000,
+        "channels": 1,
+        "source_format": null,
+        "is_normalized": true
+    });
+    let encoded = rmp_serde::to_vec_named(&legacy).expect("encode legacy audio");
 
-    let normalized = waveform.normalize();
+    let audio: Audio = rmp_serde::from_slice(&encoded).expect("decode legacy audio");
 
-    assert!(normalized.is_normalized);
-    assert_eq!(normalized.samples, vec![0.2, -0.5, 1.0, 0.0]);
+    assert_eq!(audio.samples, vec![0.25, -0.5]);
+    let current = rmp_serde::to_vec_named(&audio).expect("encode current audio");
+    assert!(!String::from_utf8_lossy(&current).contains("is_normalized"));
 }
 
 #[test]
@@ -292,6 +298,47 @@ fn waveform_from_pcm_matches_source_load() {
         .expect("source load");
     let via_waveform = Audio::from_pcm_s16le(bytes, 8_000, 2).expect("waveform from pcm");
     assert_eq!(via_source, via_waveform);
+}
+
+#[test]
+fn audio_loader_applies_optional_sample_rate_and_mono() {
+    let bytes = [0_i16, 1000, -1000, 2000]
+        .into_iter()
+        .flat_map(i16::to_le_bytes)
+        .collect::<Vec<_>>();
+    let source = AudioSource::from_pcm_s16le(bytes, 8_000, 2);
+
+    let transformed = AudioLoader
+        .load(
+            &source,
+            &AudioLoadOptions {
+                sample_rate: Some(16_000),
+                mono: Some(true),
+            },
+        )
+        .expect("transform source");
+
+    assert_eq!(transformed.sample_rate, 16_000);
+    assert_eq!(transformed.channels, 1);
+    assert!(transformed.samples.iter().all(|sample| sample.is_finite()));
+    assert!(
+        transformed
+            .samples
+            .iter()
+            .all(|sample| (-1.0..=1.0).contains(sample))
+    );
+
+    let preserved = AudioLoader
+        .load(
+            &source,
+            &AudioLoadOptions {
+                sample_rate: None,
+                mono: Some(false),
+            },
+        )
+        .expect("preserve source format");
+    assert_eq!(preserved.sample_rate, 8_000);
+    assert_eq!(preserved.channels, 2);
 }
 
 #[test]

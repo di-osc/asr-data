@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
+use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crate::{
     Annotation as RustAnnotation, AnnotationPayload, AnnotationSource, AnnotationStatus,
     Audio as RustAudio, AudioChannel as RustAudioChannel, AudioChunk as RustAudioChunk,
-    AudioChunks as RustAudioChunks, AudioDb as RustAudioDb, AudioDbError as RustAudioDbError,
-    AudioDbMode, AudioDoc as RustAudioDoc, AudioEncoding, AudioFormat as RustAudioFormat,
-    AudioQuery, AudioSource as RustAudioSource, DurationMs, TextSpan, TimeRange,
-    Timeline as RustTimeline, Transcript as RustTranscript,
+    AudioDb as RustAudioDb, AudioDbError as RustAudioDbError, AudioDbMode,
+    AudioDoc as RustAudioDoc, AudioEncoding, AudioFormat as RustAudioFormat,
+    AudioLoadOptions as RustAudioLoadOptions, AudioQuery, AudioSource as RustAudioSource,
+    DurationMs, TextSpan, TimeRange, Timeline as RustTimeline, Transcript as RustTranscript,
 };
 use numpy::{IntoPyArray, PyArray1, PyArrayMethods, ndarray::ArrayView1};
 use pyo3::create_exception;
@@ -237,7 +238,6 @@ impl PyAudio {
             RustAudio::try_new_with_channels(samples, self.inner.sample_rate, self.inner.channels)
                 .map_err(py_error)?;
         audio.source_format = self.inner.source_format.clone();
-        audio.is_normalized = self.inner.is_normalized;
         Ok(audio)
     }
 }
@@ -332,12 +332,18 @@ impl PyAudio {
 
     #[staticmethod]
     fn _start_aload_from_path(path: String) -> PyResult<PyAudioLoadTask> {
-        spawn_source_aload(RustAudioSource::from_path(path))
+        spawn_source_aload(
+            RustAudioSource::from_path(path),
+            RustAudioLoadOptions::default(),
+        )
     }
 
     #[staticmethod]
     fn _start_aload_from_source(source: &Bound<'_, PyAny>) -> PyResult<PyAudioLoadTask> {
-        spawn_source_aload(rust_source_from_py(source)?)
+        spawn_source_aload(
+            rust_source_from_py(source)?,
+            RustAudioLoadOptions::default(),
+        )
     }
 
     #[getter]
@@ -348,11 +354,6 @@ impl PyAudio {
     #[getter]
     fn channels(&self) -> u16 {
         self.inner.channels
-    }
-
-    #[getter]
-    fn is_normalized(&self) -> bool {
-        self.inner.is_normalized
     }
 
     #[getter]
@@ -465,11 +466,6 @@ impl PyAudio {
             .map_err(py_error)
     }
 
-    fn normalize(&self, py: Python<'_>) -> PyResult<Self> {
-        let audio = self.materialize(py)?;
-        Ok(Self::from_rust(py.detach(move || audio.normalize())))
-    }
-
     fn slice_ms(&self, py: Python<'_>, start_ms: u64, end_ms: u64) -> PyResult<Self> {
         Ok(Self::from_rust(
             self.materialize(py)?.slice_ms(start_ms, end_ms),
@@ -497,12 +493,11 @@ impl PyAudio {
             |format| format!("{:?}", format.__str__()),
         );
         format!(
-            "Audio(frames={}, duration={}, sample_rate={}, channels={}, is_normalized={}, source_format={})",
+            "Audio(frames={}, duration={}, sample_rate={}, channels={}, source_format={})",
             self.frame_count(py),
             format_duration_ms(self.duration_ms(py)),
             self.sample_rate(),
             self.channels(),
-            self.is_normalized(),
             source_format,
         )
     }
@@ -984,11 +979,17 @@ impl PyAudioLoadTask {
     }
 }
 
-fn spawn_source_aload(source: RustAudioSource) -> PyResult<PyAudioLoadTask> {
+fn spawn_source_aload(
+    source: RustAudioSource,
+    options: RustAudioLoadOptions,
+) -> PyResult<PyAudioLoadTask> {
     let result: AsyncLoadResult = Arc::new(Mutex::new(None));
     let task_result = Arc::clone(&result);
     async_runtime().spawn(async move {
-        let loaded = source.aload().await.map_err(|error| format!("{error:#}"));
+        let loaded = source
+            .aload_with_options(&options)
+            .await
+            .map_err(|error| format!("{error:#}"));
         if let Ok(mut slot) = task_result.lock() {
             *slot = Some(loaded);
         }
@@ -996,24 +997,98 @@ fn spawn_source_aload(source: RustAudioSource) -> PyResult<PyAudioLoadTask> {
     Ok(PyAudioLoadTask { result })
 }
 
-#[pyclass(name = "AudioIterator")]
-struct PyAudioIterator {
-    chunks: AudioChunkIterator,
+struct AsyncStreamState {
+    receiver: Receiver<Result<RustAudioChunk, String>>,
+    pending: Option<Result<RustAudioChunk, String>>,
+    finished: bool,
 }
 
-enum AudioChunkIterator {
-    Decoded(crate::audio::decode::DecodedAudioChunks),
-    Pcm(RustAudioChunks),
-}
-
-impl Iterator for AudioChunkIterator {
-    type Item = anyhow::Result<RustAudioChunk>;
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Decoded(chunks) => chunks.next(),
-            Self::Pcm(chunks) => chunks.next().map(Ok),
+impl AsyncStreamState {
+    fn poll(&mut self) {
+        if self.pending.is_some() || self.finished {
+            return;
+        }
+        match self.receiver.try_recv() {
+            Ok(item) => self.pending = Some(item),
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => self.finished = true,
         }
     }
+}
+
+#[pyclass(name = "_AudioStreamTask")]
+struct PyAudioStreamTask {
+    state: Mutex<AsyncStreamState>,
+}
+
+#[pymethods]
+impl PyAudioStreamTask {
+    fn next_result(&self) -> PyResult<Option<PyAudioChunk>> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| poisoned("audio stream task"))?;
+        state.poll();
+        state
+            .pending
+            .take()
+            .transpose()
+            .map(|chunk| chunk.map(|inner| PyAudioChunk { inner }))
+            .map_err(AsrDataError::new_err)
+    }
+
+    fn done(&self) -> PyResult<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| poisoned("audio stream task"))?;
+        state.poll();
+        Ok(state.finished && state.pending.is_none())
+    }
+}
+
+fn spawn_source_astream(
+    source: RustAudioSource,
+    chunk_size_ms: u64,
+    options: RustAudioLoadOptions,
+) -> PyResult<PyAudioStreamTask> {
+    if chunk_size_ms == 0 {
+        return Err(py_error("chunk size must be greater than zero"));
+    }
+    if options.sample_rate == Some(0) {
+        return Err(py_error("sample rate must be greater than zero"));
+    }
+    let (sender, receiver) = sync_channel(2);
+    async_runtime().spawn_blocking(move || {
+        let stream = crate::audio::stream::SourceAudioStream::new(source, chunk_size_ms, options);
+        let mut stream = match stream {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = sender.send(Err(format!("{error:#}")));
+                return;
+            }
+        };
+        for chunk in &mut stream {
+            if sender
+                .send(chunk.map_err(|error| format!("{error:#}")))
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    Ok(PyAudioStreamTask {
+        state: Mutex::new(AsyncStreamState {
+            receiver,
+            pending: None,
+            finished: false,
+        }),
+    })
+}
+
+#[pyclass(name = "AudioIterator", unsendable)]
+struct PyAudioIterator {
+    chunks: crate::audio::stream::SourceAudioStream,
 }
 
 #[pyclass(name = "AudioChunk")]
@@ -1032,11 +1107,6 @@ impl PyAudioChunk {
     #[getter]
     fn channels(&self) -> u16 {
         self.inner.channels
-    }
-
-    #[getter]
-    fn is_normalized(&self) -> bool {
-        self.inner.is_normalized
     }
 
     #[getter]
@@ -1100,12 +1170,6 @@ impl PyAudioChunk {
             .map_err(py_error)
     }
 
-    fn normalize(&self) -> Self {
-        Self {
-            inner: self.inner.normalize(),
-        }
-    }
-
     fn slice_ms(&self, start_ms: u64, end_ms: u64) -> Self {
         Self {
             inner: self.inner.slice_ms(start_ms, end_ms),
@@ -1148,20 +1212,31 @@ fn stream_source(
     py: Python<'_>,
     source: RustAudioSource,
     chunk_size_ms: u64,
+    sample_rate: Option<u32>,
+    mono: Option<bool>,
 ) -> PyResult<PyAudioIterator> {
     let chunks = py
-        .detach(move || -> anyhow::Result<AudioChunkIterator> {
-            match &source {
-                RustAudioSource::PcmS16Le { .. } => Ok(AudioChunkIterator::Pcm(
-                    source.load()?.into_chunks_ms(chunk_size_ms)?,
-                )),
-                _ => Ok(AudioChunkIterator::Decoded(
-                    crate::audio::decode::stream_source(&source, chunk_size_ms)?,
-                )),
-            }
+        .detach(move || {
+            crate::audio::stream::SourceAudioStream::new(
+                source,
+                chunk_size_ms,
+                RustAudioLoadOptions { sample_rate, mono },
+            )
         })
         .map_err(py_error)?;
     Ok(PyAudioIterator { chunks })
+}
+
+fn load_source(
+    py: Python<'_>,
+    source: RustAudioSource,
+    sample_rate: Option<u32>,
+    mono: Option<bool>,
+) -> PyResult<PyAudio> {
+    let options = RustAudioLoadOptions { sample_rate, mono };
+    py.detach(move || crate::AudioLoader.load(&source, &options))
+        .map(PyAudio::from_rust)
+        .map_err(py_error)
 }
 
 #[pyclass(name = "AudioPath", frozen)]
@@ -1187,23 +1262,62 @@ impl PyAudioPath {
         self.path.clone()
     }
 
-    fn load(&self, py: Python<'_>) -> PyResult<PyAudio> {
-        let source = RustAudioSource::from_path(self.path.clone());
-        py.detach(move || source.load())
-            .map(PyAudio::from_rust)
-            .map_err(py_error)
+    #[pyo3(signature = (*, sample_rate=None, mono=None))]
+    fn load(
+        &self,
+        py: Python<'_>,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudio> {
+        load_source(
+            py,
+            RustAudioSource::from_path(self.path.clone()),
+            sample_rate,
+            mono,
+        )
     }
 
-    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
+    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
+    fn stream(
+        &self,
+        py: Python<'_>,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioIterator> {
         stream_source(
             py,
             RustAudioSource::from_path(self.path.clone()),
             chunk_size_ms,
+            sample_rate,
+            mono,
         )
     }
 
-    fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
-        spawn_source_aload(RustAudioSource::from_path(self.path.clone()))
+    #[pyo3(signature = (*, sample_rate=None, mono=None))]
+    fn _start_aload(
+        &self,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioLoadTask> {
+        spawn_source_aload(
+            RustAudioSource::from_path(self.path.clone()),
+            RustAudioLoadOptions { sample_rate, mono },
+        )
+    }
+
+    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
+    fn _start_astream(
+        &self,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioStreamTask> {
+        spawn_source_astream(
+            RustAudioSource::from_path(self.path.clone()),
+            chunk_size_ms,
+            RustAudioLoadOptions { sample_rate, mono },
+        )
     }
 
     fn __repr__(&self) -> String {
@@ -1234,23 +1348,62 @@ impl PyAudioUrl {
         self.url.clone()
     }
 
-    fn load(&self, py: Python<'_>) -> PyResult<PyAudio> {
-        let source = RustAudioSource::from_url(self.url.clone());
-        py.detach(move || source.load())
-            .map(PyAudio::from_rust)
-            .map_err(py_error)
+    #[pyo3(signature = (*, sample_rate=None, mono=None))]
+    fn load(
+        &self,
+        py: Python<'_>,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudio> {
+        load_source(
+            py,
+            RustAudioSource::from_url(self.url.clone()),
+            sample_rate,
+            mono,
+        )
     }
 
-    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
+    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
+    fn stream(
+        &self,
+        py: Python<'_>,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioIterator> {
         stream_source(
             py,
             RustAudioSource::from_url(self.url.clone()),
             chunk_size_ms,
+            sample_rate,
+            mono,
         )
     }
 
-    fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
-        spawn_source_aload(RustAudioSource::from_url(self.url.clone()))
+    #[pyo3(signature = (*, sample_rate=None, mono=None))]
+    fn _start_aload(
+        &self,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioLoadTask> {
+        spawn_source_aload(
+            RustAudioSource::from_url(self.url.clone()),
+            RustAudioLoadOptions { sample_rate, mono },
+        )
+    }
+
+    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
+    fn _start_astream(
+        &self,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioStreamTask> {
+        spawn_source_astream(
+            RustAudioSource::from_url(self.url.clone()),
+            chunk_size_ms,
+            RustAudioLoadOptions { sample_rate, mono },
+        )
     }
 
     fn __repr__(&self) -> String {
@@ -1283,23 +1436,62 @@ impl PyAudioBytes {
         self.bytes.len()
     }
 
-    fn load(&self, py: Python<'_>) -> PyResult<PyAudio> {
-        let source = RustAudioSource::from_encoded_bytes(self.bytes.clone());
-        py.detach(move || source.load())
-            .map(PyAudio::from_rust)
-            .map_err(py_error)
+    #[pyo3(signature = (*, sample_rate=None, mono=None))]
+    fn load(
+        &self,
+        py: Python<'_>,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudio> {
+        load_source(
+            py,
+            RustAudioSource::from_encoded_bytes(self.bytes.clone()),
+            sample_rate,
+            mono,
+        )
     }
 
-    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
+    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
+    fn stream(
+        &self,
+        py: Python<'_>,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioIterator> {
         stream_source(
             py,
             RustAudioSource::from_encoded_bytes(self.bytes.clone()),
             chunk_size_ms,
+            sample_rate,
+            mono,
         )
     }
 
-    fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
-        spawn_source_aload(RustAudioSource::from_encoded_bytes(self.bytes.clone()))
+    #[pyo3(signature = (*, sample_rate=None, mono=None))]
+    fn _start_aload(
+        &self,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioLoadTask> {
+        spawn_source_aload(
+            RustAudioSource::from_encoded_bytes(self.bytes.clone()),
+            RustAudioLoadOptions { sample_rate, mono },
+        )
+    }
+
+    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
+    fn _start_astream(
+        &self,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioStreamTask> {
+        spawn_source_astream(
+            RustAudioSource::from_encoded_bytes(self.bytes.clone()),
+            chunk_size_ms,
+            RustAudioLoadOptions { sample_rate, mono },
+        )
     }
 
     fn __repr__(&self) -> String {
@@ -1330,23 +1522,62 @@ impl PyAudioBase64 {
         self.data.clone()
     }
 
-    fn load(&self, py: Python<'_>) -> PyResult<PyAudio> {
-        let source = RustAudioSource::from_base64(self.data.clone());
-        py.detach(move || source.load())
-            .map(PyAudio::from_rust)
-            .map_err(py_error)
+    #[pyo3(signature = (*, sample_rate=None, mono=None))]
+    fn load(
+        &self,
+        py: Python<'_>,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudio> {
+        load_source(
+            py,
+            RustAudioSource::from_base64(self.data.clone()),
+            sample_rate,
+            mono,
+        )
     }
 
-    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
+    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
+    fn stream(
+        &self,
+        py: Python<'_>,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioIterator> {
         stream_source(
             py,
             RustAudioSource::from_base64(self.data.clone()),
             chunk_size_ms,
+            sample_rate,
+            mono,
         )
     }
 
-    fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
-        spawn_source_aload(RustAudioSource::from_base64(self.data.clone()))
+    #[pyo3(signature = (*, sample_rate=None, mono=None))]
+    fn _start_aload(
+        &self,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioLoadTask> {
+        spawn_source_aload(
+            RustAudioSource::from_base64(self.data.clone()),
+            RustAudioLoadOptions { sample_rate, mono },
+        )
+    }
+
+    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
+    fn _start_astream(
+        &self,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioStreamTask> {
+        spawn_source_astream(
+            RustAudioSource::from_base64(self.data.clone()),
+            chunk_size_ms,
+            RustAudioLoadOptions { sample_rate, mono },
+        )
     }
 
     fn __repr__(&self) -> String {
@@ -1394,28 +1625,62 @@ impl PyAudioPcm {
         self.bytes.len()
     }
 
-    fn load(&self, py: Python<'_>) -> PyResult<PyAudio> {
-        let source =
-            RustAudioSource::from_pcm_s16le(self.bytes.clone(), self.sample_rate, self.channels);
-        py.detach(move || source.load())
-            .map(PyAudio::from_rust)
-            .map_err(py_error)
+    #[pyo3(signature = (*, sample_rate=None, mono=None))]
+    fn load(
+        &self,
+        py: Python<'_>,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudio> {
+        load_source(
+            py,
+            RustAudioSource::from_pcm_s16le(self.bytes.clone(), self.sample_rate, self.channels),
+            sample_rate,
+            mono,
+        )
     }
 
-    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
+    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
+    fn stream(
+        &self,
+        py: Python<'_>,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioIterator> {
         stream_source(
             py,
             RustAudioSource::from_pcm_s16le(self.bytes.clone(), self.sample_rate, self.channels),
             chunk_size_ms,
+            sample_rate,
+            mono,
         )
     }
 
-    fn _start_aload(&self) -> PyResult<PyAudioLoadTask> {
-        spawn_source_aload(RustAudioSource::from_pcm_s16le(
-            self.bytes.clone(),
-            self.sample_rate,
-            self.channels,
-        ))
+    #[pyo3(signature = (*, sample_rate=None, mono=None))]
+    fn _start_aload(
+        &self,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioLoadTask> {
+        spawn_source_aload(
+            RustAudioSource::from_pcm_s16le(self.bytes.clone(), self.sample_rate, self.channels),
+            RustAudioLoadOptions { sample_rate, mono },
+        )
+    }
+
+    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
+    fn _start_astream(
+        &self,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<PyAudioStreamTask> {
+        spawn_source_astream(
+            RustAudioSource::from_pcm_s16le(self.bytes.clone(), self.sample_rate, self.channels),
+            chunk_size_ms,
+            RustAudioLoadOptions { sample_rate, mono },
+        )
     }
 
     fn __repr__(&self) -> String {
@@ -1921,6 +2186,7 @@ fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAudioPcm>()?;
     module.add_class::<PyAudioDoc>()?;
     module.add_class::<PyAudioLoadTask>()?;
+    module.add_class::<PyAudioStreamTask>()?;
     module.add_class::<PyAudioIterator>()?;
     module.add_class::<PyAudioDb>()?;
     module.add_class::<PyAudioDbIterator>()?;

@@ -127,7 +127,15 @@ impl AudioSource {
     }
 
     pub async fn aload(&self) -> anyhow::Result<crate::Audio> {
-        match self {
+        self.aload_with_options(&crate::AudioLoadOptions::default())
+            .await
+    }
+
+    pub async fn aload_with_options(
+        &self,
+        options: &crate::AudioLoadOptions,
+    ) -> anyhow::Result<crate::Audio> {
+        let waveform = match self {
             Self::Url(url) if url.starts_with("http://") || url.starts_with("https://") => {
                 let bytes = crate::audio::decode::download_url_bytes(url).await?;
                 tokio::task::spawn_blocking(move || crate::audio::decode::decode_bytes_audio(bytes))
@@ -140,7 +148,8 @@ impl AudioSource {
                     .await
                     .map_err(|error| anyhow::anyhow!("audio loader worker failed: {error}"))?
             }
-        }
+        }?;
+        crate::audio::transform_loaded_audio(waveform, options)
     }
 }
 

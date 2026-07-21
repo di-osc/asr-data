@@ -96,6 +96,7 @@ impl DecodedAudioChunks {
                 Ok(decoded) => {
                     let mut samples: Vec<f32> = Vec::new();
                     decoded.copy_to_vec_interleaved(&mut samples);
+                    crate::audio::data::sanitize_samples(&mut samples);
                     self.buffered.extend(samples);
                     return Ok(());
                 }
@@ -129,7 +130,6 @@ impl Iterator for DecodedAudioChunks {
             sample_rate: self.sample_rate,
             channels: self.channels,
             source_format: Some(self.source_format.clone()),
-            is_normalized: false,
             offset_ms,
             is_final: self.finished && self.buffered.is_empty(),
         }))
@@ -523,6 +523,7 @@ fn decode_audio_stream(
         samples.extend_from_slice(&chunk);
     }
 
+    crate::audio::data::sanitize_samples(&mut samples);
     Ok((samples, sample_rate, channels))
 }
 

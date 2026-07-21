@@ -5,28 +5,18 @@ use std::path::{Path, PathBuf};
 
 use crate::AudioSource;
 
-mod data;
+pub(crate) mod data;
 pub mod decode;
+pub(crate) mod stream;
 pub use data::{Audio, AudioChunk, AudioChunks, AudioError};
 
 /// Target ASR/VAD sample rate used by the offline pipeline.
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AudioLoadOptions {
-    pub target_sample_rate: u32,
-    pub target_channels: u16,
-    pub normalize: bool,
-}
-
-impl Default for AudioLoadOptions {
-    fn default() -> Self {
-        Self {
-            target_sample_rate: SAMPLE_RATE_HZ,
-            target_channels: 1,
-            normalize: true,
-        }
-    }
+    pub sample_rate: Option<u32>,
+    pub mono: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -51,38 +41,35 @@ impl AudioLoader {
                 channels,
             } => Audio::from_i16_pcm_bytes_with_channels(bytes, *sample_rate, *channels)?,
         };
+        let mut waveform = waveform;
+        data::sanitize_samples(&mut waveform.samples);
         Ok(waveform)
     }
 
     pub fn load(&self, source: &AudioSource, options: &AudioLoadOptions) -> Result<Audio> {
-        normalize_loaded_waveform(self.load_raw(source)?, options)
+        transform_loaded_audio(self.load_raw(source)?, options)
     }
 }
 
-fn normalize_loaded_waveform(mut waveform: Audio, options: &AudioLoadOptions) -> Result<Audio> {
+pub(crate) fn transform_loaded_audio(
+    mut waveform: Audio,
+    options: &AudioLoadOptions,
+) -> Result<Audio> {
     if waveform.channels == 0 {
         bail!("invalid channel count: 0");
     }
-    if options.target_channels == 0 {
-        bail!("invalid target channel count: 0");
+    if options.mono == Some(true) && waveform.channels != 1 {
+        waveform = waveform.to_mono()?;
     }
-    if waveform.channels != options.target_channels {
-        if options.target_channels == 1 {
-            waveform = waveform.to_mono()?;
-        } else {
-            bail!(
-                "unsupported channel conversion: {} -> {}",
-                waveform.channels,
-                options.target_channels
-            );
+    if let Some(sample_rate) = options.sample_rate {
+        if sample_rate == 0 {
+            bail!("sample rate must be greater than zero");
+        }
+        if waveform.sample_rate != sample_rate {
+            waveform = waveform.resample(sample_rate)?;
         }
     }
-    if waveform.sample_rate != options.target_sample_rate {
-        waveform = waveform.resample(options.target_sample_rate)?;
-    }
-    if options.normalize {
-        waveform.normalize_in_place();
-    }
+    data::sanitize_samples(&mut waveform.samples);
     Ok(waveform)
 }
 
