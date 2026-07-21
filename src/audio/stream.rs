@@ -8,7 +8,7 @@ use rubato::{
 };
 
 #[cfg(feature = "python-bindings")]
-use crate::{AudioChunk, AudioChunks, AudioLoadOptions, AudioSource};
+use super::{AudioChunk, AudioChunks, AudioLoadOptions, AudioSource};
 
 #[cfg(feature = "python-bindings")]
 enum RawAudioStream {

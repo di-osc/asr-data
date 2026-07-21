@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{AudioEncoding, AudioFormat, AudioSource, DurationMs};
+use super::{AudioEncoding, AudioFormat, AudioSource};
+use crate::utils::DurationMs;
 
 const LOW_ENERGY_SEARCH_WINDOW_MS: u64 = 5_000;
 const LOW_ENERGY_MIN_WINDOW_MS: u64 = 100;

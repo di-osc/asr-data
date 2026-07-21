@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::{Audio, AudioLoadOptions, AudioLoader, decode, transform_loaded_audio};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum AudioChannel {
     Mono,
@@ -118,27 +120,23 @@ impl AudioSource {
         }
     }
 
-    pub fn load(&self) -> anyhow::Result<crate::Audio> {
-        crate::AudioLoader.load_raw(self)
+    pub fn load(&self) -> anyhow::Result<Audio> {
+        AudioLoader.load_raw(self)
     }
 
-    pub fn load_with(&self, loader: &crate::AudioLoader) -> anyhow::Result<crate::Audio> {
+    pub fn load_with(&self, loader: &AudioLoader) -> anyhow::Result<Audio> {
         loader.load_raw(self)
     }
 
-    pub async fn aload(&self) -> anyhow::Result<crate::Audio> {
-        self.aload_with_options(&crate::AudioLoadOptions::default())
-            .await
+    pub async fn aload(&self) -> anyhow::Result<Audio> {
+        self.aload_with_options(&AudioLoadOptions::default()).await
     }
 
-    pub async fn aload_with_options(
-        &self,
-        options: &crate::AudioLoadOptions,
-    ) -> anyhow::Result<crate::Audio> {
+    pub async fn aload_with_options(&self, options: &AudioLoadOptions) -> anyhow::Result<Audio> {
         let waveform = match self {
             Self::Url(url) if url.starts_with("http://") || url.starts_with("https://") => {
-                let bytes = crate::audio::decode::download_url_bytes(url).await?;
-                tokio::task::spawn_blocking(move || crate::audio::decode::decode_bytes_audio(bytes))
+                let bytes = decode::download_url_bytes(url).await?;
+                tokio::task::spawn_blocking(move || decode::decode_bytes_audio(bytes))
                     .await
                     .map_err(|error| anyhow::anyhow!("audio decoder worker failed: {error}"))?
             }
@@ -149,7 +147,7 @@ impl AudioSource {
                     .map_err(|error| anyhow::anyhow!("audio loader worker failed: {error}"))?
             }
         }?;
-        crate::audio::transform_loaded_audio(waveform, options)
+        transform_loaded_audio(waveform, options)
     }
 }
 

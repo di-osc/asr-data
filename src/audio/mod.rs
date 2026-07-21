@@ -3,12 +3,12 @@
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
-use crate::AudioSource;
-
 pub(crate) mod data;
 pub mod decode;
+mod source;
 pub(crate) mod stream;
 pub use data::{Audio, AudioChunk, AudioChunks, AudioError};
+pub use source::{AudioChannel, AudioEncoding, AudioFormat, AudioSource};
 
 /// Target ASR/VAD sample rate used by the offline pipeline.
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
