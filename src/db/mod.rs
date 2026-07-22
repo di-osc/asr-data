@@ -11,7 +11,8 @@ mod schema;
 
 pub use query::{import_legacy_msgpack_to_db, read_audio_db_info};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
+const FLAT_ANNOTATION_SCHEMA_VERSION: i64 = 4;
 const CHANNEL_TIMELINE_SCHEMA_VERSION: i64 = 3;
 const SPLIT_TABLE_SCHEMA_VERSION: i64 = 2;
 const LEGACY_SCHEMA_VERSION: i64 = 1;

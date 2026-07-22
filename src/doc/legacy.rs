@@ -154,11 +154,21 @@ impl<'de> Deserialize<'de> for LegacyAudio {
             (None, None) => return Err(serde::de::Error::missing_field("source")),
         };
 
+        for annotation in &mut timeline.annotations {
+            if annotation
+                .source
+                .as_deref()
+                .is_none_or(|source| source.trim().is_empty())
+            {
+                annotation.source = Some("import".to_string());
+            }
+        }
         let timeline = Timeline {
             id: timeline.id,
             audio_id: timeline.audio_id,
             duration: timeline.duration.unwrap_or_default(),
-            annotations: timeline.annotations,
+            reference: Vec::new(),
+            prediction: timeline.annotations,
         };
         Ok(Self(AudioDoc {
             id: timeline.audio_id.clone(),

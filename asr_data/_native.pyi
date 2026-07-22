@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any, Awaitable, Literal
 import numpy as np
 import numpy.typing as npt
-from ._types import AnnotationKind, AnnotationSourceKind, AnnotationStatus
+from ._types import AnnotationKind, AnnotationStatus
 
 class AsrDataError(Exception): ...
 
@@ -138,6 +138,54 @@ class AudioChunk:
     def resample(self, sample_rate: int) -> AudioChunk: ...
     def slice_ms(self, start_ms: int, end_ms: int) -> AudioChunk: ...
 
+class Token:
+    def __init__(
+        self,
+        text: str,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        confidence: float | None = None,
+    ) -> None: ...
+    @property
+    def text(self) -> str: ...
+    @property
+    def start_ms(self) -> int | None: ...
+    @property
+    def end_ms(self) -> int | None: ...
+    @property
+    def confidence(self) -> float | None: ...
+
+class Transcription:
+    def __init__(
+        self,
+        text: str,
+        *,
+        tokens: list[Token] | None = None,
+        language: str | None = None,
+        confidence: float | None = None,
+    ) -> None: ...
+    @property
+    def text(self) -> str: ...
+    @property
+    def tokens(self) -> list[Token]: ...
+    @property
+    def language(self) -> str | None: ...
+    @property
+    def confidence(self) -> float | None: ...
+
+class Speaker:
+    def __init__(
+        self,
+        name: str,
+        *,
+        transcription: Transcription | None = None,
+    ) -> None: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def transcription(self) -> Transcription | None: ...
+
 class Annotation:
     @property
     def id(self) -> str: ...
@@ -154,11 +202,13 @@ class Annotation:
     @property
     def confidence(self) -> float | None: ...
     @property
-    def source_kind(self) -> AnnotationSourceKind: ...
-    @property
     def source(self) -> str | None: ...
     @property
-    def speaker(self) -> str | None: ...
+    def name(self) -> str | None: ...
+    @property
+    def transcription(self) -> Transcription | None: ...
+    @transcription.setter
+    def transcription(self, value: Transcription | None) -> None: ...
     @property
     def language(self) -> str | None: ...
 
@@ -167,6 +217,73 @@ class Transcript:
     def text(self) -> str: ...
     @property
     def language(self) -> str | None: ...
+
+class ReferenceAnnotations:
+    @property
+    def annotations(self) -> list[Annotation]: ...
+    def add_speech(
+        self,
+        start_ms: int,
+        end_ms: int,
+        confidence: float | None = None,
+    ) -> Annotation: ...
+    def add_transcription(
+        self,
+        start_ms: int,
+        end_ms: int,
+        transcription: Transcription,
+        confidence: float | None = None,
+        status: AnnotationStatus = "final",
+    ) -> Annotation: ...
+    def add_speaker(
+        self,
+        start_ms: int,
+        end_ms: int,
+        speaker: Speaker,
+        confidence: float | None = None,
+        status: AnnotationStatus = "final",
+    ) -> Annotation: ...
+    def transcript(self) -> Transcript: ...
+    def __len__(self) -> int: ...
+
+class PredictionAnnotations:
+    @property
+    def annotations(self) -> list[Annotation]: ...
+    @property
+    def sources(self) -> list[str]: ...
+    def add_speech(
+        self,
+        start_ms: int,
+        end_ms: int,
+        *,
+        source: str,
+        confidence: float | None = None,
+    ) -> Annotation: ...
+    def add_transcription(
+        self,
+        start_ms: int,
+        end_ms: int,
+        transcription: Transcription,
+        *,
+        source: str,
+        confidence: float | None = None,
+        status: AnnotationStatus = "final",
+    ) -> Annotation: ...
+    def add_speaker(
+        self,
+        start_ms: int,
+        end_ms: int,
+        speaker: Speaker,
+        *,
+        source: str,
+        confidence: float | None = None,
+        status: AnnotationStatus = "final",
+    ) -> Annotation: ...
+    def by_source(self, source: str) -> list[Annotation]: ...
+    def transcript(self, source: str) -> Transcript: ...
+    def remove_by_source(self, source: str) -> int: ...
+    def relabel_source(self, from_source: str, to_source: str) -> int: ...
+    def __len__(self) -> int: ...
 
 class Timeline:
     @property
@@ -178,61 +295,9 @@ class Timeline:
     @property
     def duration_ms(self) -> int: ...
     @property
-    def annotations(self) -> list[Annotation]: ...
-    def add_speech(
-        self,
-        start_ms: int,
-        end_ms: int,
-        source: str = "vad",
-        confidence: float | None = None,
-        source_kind: AnnotationSourceKind = "stage",
-    ) -> Annotation: ...
-    def add_silence(
-        self,
-        start_ms: int,
-        end_ms: int,
-        source: str = "vad",
-        confidence: float | None = None,
-        source_kind: AnnotationSourceKind = "stage",
-    ) -> Annotation: ...
-    def add_transcription(
-        self,
-        start_ms: int,
-        end_ms: int,
-        text: str,
-        source: str = "asr",
-        language: str | None = None,
-        confidence: float | None = None,
-        status: AnnotationStatus = "final",
-        source_kind: AnnotationSourceKind = "stage",
-    ) -> Annotation: ...
-    def add_speaker(
-        self,
-        start_ms: int,
-        end_ms: int,
-        speaker: str,
-        source: str = "diarization",
-        confidence: float | None = None,
-        status: AnnotationStatus = "final",
-        source_kind: AnnotationSourceKind = "stage",
-    ) -> Annotation: ...
-    def annotations_by_source(
-        self, source: str, source_kind: AnnotationSourceKind = "model"
-    ) -> list[Annotation]: ...
-    def transcript_by_source(
-        self, source: str, source_kind: AnnotationSourceKind = "model"
-    ) -> Transcript: ...
-    def remove_annotations_by_source(
-        self, source: str, source_kind: AnnotationSourceKind = "model"
-    ) -> int: ...
-    def relabel_annotations_source(
-        self,
-        from_source: str,
-        to_source: str,
-        from_source_kind: AnnotationSourceKind = "stage",
-        to_source_kind: AnnotationSourceKind = "model",
-    ) -> int: ...
-    def transcript(self) -> Transcript: ...
+    def reference(self) -> ReferenceAnnotations: ...
+    @property
+    def prediction(self) -> PredictionAnnotations: ...
 
 class AudioDoc:
     def __init__(
@@ -246,7 +311,7 @@ class AudioDoc:
     def source(self) -> AudioSource: ...
     def timeline(self, channel: str | int) -> Timeline | None: ...
     def ensure_timeline(
-        self, channel: str | int, duration_ms: int | None = None
+        self, channel: str | int, duration_ms: int | float | None = None
     ) -> Timeline: ...
     def remove_timeline(self, channel: str | int) -> bool: ...
     @property

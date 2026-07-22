@@ -7,8 +7,8 @@ use crate::timeline::Timeline;
 
 use super::query::{decode, encode};
 use super::{
-    APPLICATION_ID, AudioDbError, CHANNEL_TIMELINE_SCHEMA_VERSION, LEGACY_SCHEMA_VERSION,
-    SCHEMA_VERSION, SPLIT_TABLE_SCHEMA_VERSION,
+    APPLICATION_ID, AudioDbError, CHANNEL_TIMELINE_SCHEMA_VERSION, FLAT_ANNOTATION_SCHEMA_VERSION,
+    LEGACY_SCHEMA_VERSION, SCHEMA_VERSION, SPLIT_TABLE_SCHEMA_VERSION,
 };
 
 pub(super) fn initialize(connection: &Connection) -> Result<(), AudioDbError> {
@@ -62,7 +62,11 @@ fn migrate(connection: &Connection) -> Result<(), AudioDbError> {
         version = CHANNEL_TIMELINE_SCHEMA_VERSION;
     }
     if version == CHANNEL_TIMELINE_SCHEMA_VERSION {
-        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        connection.pragma_update(None, "user_version", FLAT_ANNOTATION_SCHEMA_VERSION)?;
+        version = FLAT_ANNOTATION_SCHEMA_VERSION;
+    }
+    if version == FLAT_ANNOTATION_SCHEMA_VERSION {
+        migrate_v4_to_v5(connection)?;
     }
     Ok(())
 }
@@ -137,6 +141,39 @@ fn migrate_v2_to_v3(connection: &Connection) -> Result<(), AudioDbError> {
                 params![timelines, audio_id],
             )?;
         }
+        connection.pragma_update(None, "user_version", CHANNEL_TIMELINE_SCHEMA_VERSION)?;
+        connection.execute_batch("COMMIT;")?;
+        Ok::<(), AudioDbError>(())
+    })();
+    if result.is_err() {
+        let _ = connection.execute_batch("ROLLBACK;");
+    }
+    result
+}
+
+fn migrate_v4_to_v5(connection: &Connection) -> Result<(), AudioDbError> {
+    let encoded_timelines = {
+        let mut statement = connection.prepare("SELECT audio_id, timeline FROM timelines")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut encoded = Vec::new();
+        for row in rows {
+            let (audio_id, bytes) = row?;
+            let timelines: BTreeMap<AudioChannel, Timeline> = decode(&bytes)?;
+            encoded.push((audio_id, encode(&timelines)?));
+        }
+        encoded
+    };
+
+    connection.execute_batch("BEGIN IMMEDIATE;")?;
+    let result = (|| {
+        for (audio_id, timelines) in encoded_timelines {
+            connection.execute(
+                "UPDATE timelines SET timeline = ?1 WHERE audio_id = ?2",
+                params![timelines, audio_id],
+            )?;
+        }
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         connection.execute_batch("COMMIT;")?;
         Ok::<(), AudioDbError>(())
@@ -159,6 +196,7 @@ pub(super) fn validate(connection: &Connection) -> Result<i64, AudioDbError> {
     if version != SCHEMA_VERSION
         && version != SPLIT_TABLE_SCHEMA_VERSION
         && version != CHANNEL_TIMELINE_SCHEMA_VERSION
+        && version != FLAT_ANNOTATION_SCHEMA_VERSION
         && version != LEGACY_SCHEMA_VERSION
     {
         return Err(AudioDbError::UnsupportedSchema {
