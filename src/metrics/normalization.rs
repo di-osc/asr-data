@@ -142,7 +142,7 @@ impl ChineseTn {
 }
 
 /// Normalize Chinese written text to its spoken form with the embedded WeText FSTs.
-pub fn normalize_zh_tn(text: &str) -> Result<String, TextNormalizationError> {
+pub fn normalize_zh(text: &str) -> Result<String, TextNormalizationError> {
     static NORMALIZER: OnceLock<Result<ChineseTn, TextNormalizationError>> = OnceLock::new();
     match NORMALIZER.get_or_init(ChineseTn::embedded) {
         Ok(normalizer) => normalizer.normalize(text),
@@ -299,7 +299,7 @@ fn parse_quoted_value(chars: &[char], index: &mut usize) -> Result<String, TextN
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_zh_tn, reorder_zh_tn_tokens};
+    use super::{normalize_zh, reorder_zh_tn_tokens};
 
     #[test]
     fn reorders_chinese_tn_token_fields() {
@@ -317,6 +317,6 @@ mod tests {
 
     #[test]
     fn normalizes_chinese_numbers_from_embedded_fsts() {
-        assert_eq!(normalize_zh_tn("2024年"), Ok("二零二四年".to_owned()));
+        assert_eq!(normalize_zh("2024年"), Ok("二零二四年".to_owned()));
     }
 }

@@ -19,9 +19,7 @@ pub use doc::{
     AudioChannelError, AudioDoc, AudioTimelineError, AudioValidationError, LegacyImportError,
     read_legacy_msgpack,
 };
-pub use metrics::{
-    CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh_tn,
-};
+pub use metrics::{CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh};
 pub use timeline::{
     AcousticEvent, Annotation, AnnotationId, AnnotationPayload, AnnotationStatus, AudioId,
     LanguageTag, SpeakerId, SpeakerPayload, SpeechEvaluation, TextSpan, Timeline,

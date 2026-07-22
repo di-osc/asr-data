@@ -8,8 +8,8 @@ use asr_data::{
     MAX_QUERY_LIMIT, SampleIndex, SpeakerPayload, SpeechEvaluation, TextNormalizationError,
     TextSpan, TimeRange, Timeline, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation,
     Token, Transcript, Transcription, TranscriptionEvaluation, TranscriptionNormalization,
-    compute_cer, import_legacy_msgpack_to_db, normalize_for_cer, normalize_zh_tn,
-    read_audio_db_info, read_legacy_msgpack,
+    compute_cer, import_legacy_msgpack_to_db, normalize_for_cer, normalize_zh, read_audio_db_info,
+    read_legacy_msgpack,
 };
 
 #[test]
@@ -51,7 +51,7 @@ fn stable_public_paths_compile() {
     let _: Option<TextNormalizationError> = None;
     let _: fn(&str, &str) -> CerStats = compute_cer;
     let _: fn(&str, bool) -> String = normalize_for_cer;
-    let _ = normalize_zh_tn("2026");
+    let _ = normalize_zh("2026");
     let timeline = Timeline::new("mono", DurationMs(1_000));
     let _ = timeline.eval(&TimelineEvalConfig::new().with_transcription("asr"));
     let _: fn(&Path) -> anyhow::Result<Audio> = decode::decode_path_audio;

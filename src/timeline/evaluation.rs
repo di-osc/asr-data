@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use super::{Annotation, AnnotationPayload, AnnotationStatus, Timeline};
 use crate::metrics::{
-    CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh_tn,
+    CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh,
 };
 use crate::utils::TimeRange;
 
@@ -198,7 +198,7 @@ impl Timeline {
             match normalization {
                 TranscriptionNormalization::None => Ok(text.to_owned()),
                 TranscriptionNormalization::ChineseTn => {
-                    normalize_zh_tn(text).map(|text| normalize_for_cer(&text, true))
+                    normalize_zh(text).map(|text| normalize_for_cer(&text, true))
                 }
             }
         };
