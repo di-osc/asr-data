@@ -37,9 +37,9 @@ cargo add asr-data
 ## 快速开始
 
 ```python
-from asr_data import AudioDB, AudioDoc, AudioPath
+from asr_data import AudioDB, AudioDoc, AudioSource
 
-doc = AudioDoc(AudioPath("audio.wav"), id="call-001")
+doc = AudioDoc(AudioSource.from_path("audio.wav"), id="call-001")
 timeline = doc.ensure_timeline("mono", duration_ms=1_200)
 timeline.add_transcription(0, 1_200, "hello world", language="en")
 

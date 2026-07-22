@@ -9,6 +9,7 @@ import typing
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import asr_data
 import numpy as np
 import pytest
 
@@ -16,15 +17,49 @@ from asr_data import (
     AnnotationKind,
     AnnotationSourceKind,
     AnnotationStatus,
-    AudioBase64,
-    AudioBytes,
     AudioDB,
     AudioDoc,
-    AudioPath,
-    AudioPcm,
-    AudioUrl,
+    AudioSource,
     Audio,
 )
+
+
+def test_audio_source_factories_and_variant_properties():
+    source_type = asr_data.AudioSource
+
+    path = source_type.from_path("audio.wav")
+    assert path.kind == "path"
+    assert path.path == "audio.wav"
+    assert path.url is None
+    assert path.bytes is None
+    assert path.base64 is None
+    assert path.pcm is None
+    assert path.sample_rate is None
+    assert path.channels is None
+
+    url = source_type.from_url("https://example.com/audio.wav")
+    assert url.kind == "url"
+    assert url.url == "https://example.com/audio.wav"
+
+    encoded = source_type.from_bytes(b"encoded")
+    assert encoded.kind == "bytes"
+    assert encoded.bytes == b"encoded"
+
+    base64_source = source_type.from_base64("ZW5jb2RlZA==")
+    assert base64_source.kind == "base64"
+    assert base64_source.base64 == "ZW5jb2RlZA=="
+
+    pcm = source_type.from_pcm(b"\0\0", sample_rate=16000)
+    assert pcm.kind == "pcm"
+    assert pcm.pcm == b"\0\0"
+    assert pcm.sample_rate == 16000
+    assert pcm.channels == 1
+
+    with pytest.raises(TypeError):
+        source_type()
+
+    for old_name in ("AudioPath", "AudioUrl", "AudioBytes", "AudioBase64", "AudioPcm"):
+        assert not hasattr(asr_data, old_name)
 
 
 def test_annotation_literal_types_are_public_and_complete():
@@ -56,8 +91,8 @@ def test_annotation_literal_types_are_public_and_complete():
 
 def test_audio_waveform_timeline_and_db(tmp_path):
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    audio = AudioDoc(AudioPcm(pcm, sample_rate=8000, channels=2), id="call-1")
-    assert isinstance(audio.source, AudioPcm)
+    audio = AudioDoc(AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1")
+    assert isinstance(audio.source, AudioSource)
     assert audio.timelines == {}
     assert audio.timeline("mono") is None
     audio.metadata["speaker"] = {"name": "alice", "age": 30}
@@ -118,7 +153,7 @@ def test_audio_waveform_timeline_and_db(tmp_path):
     loaded = db["call-1"]
     assert loaded.id == "call-1"
     assert isinstance(loaded, AudioDoc)
-    assert isinstance(loaded.source, AudioPcm)
+    assert isinstance(loaded.source, AudioSource)
     assert loaded.metadata["speaker"]["name"] == "alice"
     assert loaded.timeline("mono").transcript().text == "hello"
     loaded.metadata["speaker"]["name"] = "bob"
@@ -134,7 +169,7 @@ def test_audio_waveform_timeline_and_db(tmp_path):
 def test_audio_db_query_filters_cursor_and_lazy_iteration(tmp_path):
     db = AudioDB(str(tmp_path / "query.vasr"))
     for index in range(105):
-        audio = AudioDoc(AudioPcm(b"\0\0", sample_rate=8000), id=f"audio-{index:03}")
+        audio = AudioDoc(AudioSource.from_pcm(b"\0\0", sample_rate=8000), id=f"audio-{index:03}")
         audio.ensure_timeline("mono", duration_ms=index * 10)
         audio.metadata["split"] = "train" if index % 2 == 0 else "test"
         db.insert(audio)
@@ -174,7 +209,7 @@ def test_audio_db_query_filters_cursor_and_lazy_iteration(tmp_path):
 
 def test_audio_channel_timelines_round_trip(tmp_path):
     audio = AudioDoc(
-        AudioPcm(b"\0\0" * 4, sample_rate=8000, channels=2), id="call-stereo"
+        AudioSource.from_pcm(b"\0\0" * 4, sample_rate=8000, channels=2), id="call-stereo"
     )
 
     audio.ensure_timeline("left", duration_ms=100).add_transcription(0, 100, "caller")
@@ -202,7 +237,7 @@ def test_audio_channel_timelines_round_trip(tmp_path):
 
 
 def test_setting_timeline_audio_id_updates_the_whole_audio():
-    audio = AudioDoc(AudioPcm(b"\0\0" * 4, sample_rate=8000, channels=2), id="old-id")
+    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 4, sample_rate=8000, channels=2), id="old-id")
     audio.ensure_timeline("left", duration_ms=100)
     audio.ensure_timeline("right")
 
@@ -214,7 +249,7 @@ def test_setting_timeline_audio_id_updates_the_whole_audio():
 
 
 def test_timeline_duration_is_required_shared_and_read_only():
-    audio = AudioDoc(AudioPcm(b"\0\0" * 4000, sample_rate=8000), id="duration")
+    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 4000, sample_rate=8000), id="duration")
     assert not hasattr(audio, "duration_ms")
     with pytest.raises(Exception, match="duration is required"):
         audio.ensure_timeline("right")
@@ -242,7 +277,7 @@ def test_audio_from_numpy_shares_input():
 
 def test_waveform_from_pcm_matches_source_load():
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    source = AudioPcm(pcm, sample_rate=8000, channels=2)
+    source = AudioSource.from_pcm(pcm, sample_rate=8000, channels=2)
     via_source = source.load()
     via_waveform = Audio.from_pcm(pcm, sample_rate=8000, channels=2)
     assert via_waveform.sample_rate == via_source.sample_rate
@@ -252,7 +287,7 @@ def test_waveform_from_pcm_matches_source_load():
 
 def test_source_load_options():
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    source = AudioPcm(pcm, sample_rate=8000, channels=2)
+    source = AudioSource.from_pcm(pcm, sample_rate=8000, channels=2)
 
     transformed = source.load(sample_rate=16000, mono=True)
     assert transformed.sample_rate == 16000
@@ -283,11 +318,11 @@ def test_all_audio_sources_stream_waveforms_without_padding(tmp_path):
     path.write_bytes(wav_bytes)
 
     sources = [
-        AudioPath(str(path)),
-        AudioUrl(path.as_uri()),
-        AudioBytes(wav_bytes),
-        AudioBase64(base64.b64encode(wav_bytes).decode()),
-        AudioPcm(pcm, sample_rate=1000, channels=2),
+        AudioSource.from_path(str(path)),
+        AudioSource.from_url(path.as_uri()),
+        AudioSource.from_bytes(wav_bytes),
+        AudioSource.from_base64(base64.b64encode(wav_bytes).decode()),
+        AudioSource.from_pcm(pcm, sample_rate=1000, channels=2),
     ]
 
     for source in sources:
@@ -329,11 +364,11 @@ def test_source_stream_options(tmp_path):
     path = tmp_path / "stream-options.wav"
     path.write_bytes(wav_bytes)
     sources = [
-        AudioPath(str(path)),
-        AudioUrl(path.as_uri()),
-        AudioBytes(wav_bytes),
-        AudioBase64(base64.b64encode(wav_bytes).decode()),
-        AudioPcm(pcm, sample_rate=1000, channels=2),
+        AudioSource.from_path(str(path)),
+        AudioSource.from_url(path.as_uri()),
+        AudioSource.from_bytes(wav_bytes),
+        AudioSource.from_base64(base64.b64encode(wav_bytes).decode()),
+        AudioSource.from_pcm(pcm, sample_rate=1000, channels=2),
     ]
 
     for source in sources:
@@ -364,7 +399,7 @@ def test_source_stream_options(tmp_path):
 def test_source_stream_default_chunk():
     pcm = struct.pack("<" + "h" * 250, *range(250))
 
-    chunks = list(AudioPcm(pcm, sample_rate=1000).stream())
+    chunks = list(AudioSource.from_pcm(pcm, sample_rate=1000).stream())
 
     assert [chunk.frame_count for chunk in chunks] == [100, 100, 50]
     assert [chunk.offset_ms for chunk in chunks] == [0, 100, 200]
@@ -404,7 +439,7 @@ def test_audio_numpy_constructor_and_output_share_memory():
 
 def test_normalization_api_is_removed():
     audio = Audio(np.array([0.1, -0.25, 0.5], dtype=np.float32), sample_rate=16000)
-    chunk = next(AudioPcm(b"\0\0", sample_rate=16000).stream(chunk_size_ms=100))
+    chunk = next(AudioSource.from_pcm(b"\0\0", sample_rate=16000).stream(chunk_size_ms=100))
 
     assert not hasattr(audio, "normalize")
     assert not hasattr(audio, "is_normalized")
@@ -430,7 +465,7 @@ def test_waveform_from_base64_decodes_wav_bytes():
 
 def test_waveform_aload_from_source_returns_pcm_waveform():
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    source = AudioPcm(pcm, sample_rate=8000, channels=2)
+    source = AudioSource.from_pcm(pcm, sample_rate=8000, channels=2)
 
     async def load():
         return await Audio.aload_from_source(source)
@@ -461,7 +496,7 @@ def test_waveform_aload_from_path_returns_waveform(tmp_path):
 
 def test_audio_aload_returns_waveform_without_blocking_api_changes():
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    source = AudioPcm(pcm, sample_rate=8000, channels=2)
+    source = AudioSource.from_pcm(pcm, sample_rate=8000, channels=2)
 
     async def load():
         return await source.aload()
@@ -474,7 +509,7 @@ def test_audio_aload_returns_waveform_without_blocking_api_changes():
 
 def test_source_aload_options_match_sync_load():
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    source = AudioPcm(pcm, sample_rate=8000, channels=2)
+    source = AudioSource.from_pcm(pcm, sample_rate=8000, channels=2)
 
     async def load():
         return await source.aload(sample_rate=16000, mono=True)
@@ -489,7 +524,7 @@ def test_source_aload_options_match_sync_load():
 
 def test_source_astream_is_async_and_matches_sync_stream():
     pcm = struct.pack("<" + "h" * 800, *[index % 1000 for index in range(800)])
-    source = AudioPcm(pcm, sample_rate=8000)
+    source = AudioSource.from_pcm(pcm, sample_rate=8000)
 
     async def collect():
         chunks = []
@@ -542,7 +577,7 @@ def test_url_astream_does_not_block_the_event_loop():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    source = AudioUrl(f"http://127.0.0.1:{server.server_port}/audio.wav")
+    source = AudioSource.from_url(f"http://127.0.0.1:{server.server_port}/audio.wav")
 
     async def collect_and_probe():
         async def collect():
@@ -588,7 +623,7 @@ def test_url_aload_uses_async_download_and_blocking_decode():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    source = AudioUrl(f"http://127.0.0.1:{server.server_port}/audio.wav")
+    source = AudioSource.from_url(f"http://127.0.0.1:{server.server_port}/audio.wav")
 
     async def load_and_probe_loop():
         task = asyncio.create_task(source.aload())
@@ -647,7 +682,7 @@ def test_existing_db_can_be_opened_read_only():
 
 def test_public_types_have_informative_repr(tmp_path):
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    audio = AudioDoc(AudioPcm(pcm, sample_rate=8000, channels=2), id="call-1")
+    audio = AudioDoc(AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1")
     audio.ensure_timeline("mono", duration_ms=3250)
     annotation = audio.timeline("mono").add_transcription(
         100,
@@ -673,7 +708,7 @@ def test_public_types_have_informative_repr(tmp_path):
 
 
 def test_model_annotations_can_be_written_queried_and_removed():
-    audio = AudioDoc(AudioPcm(b"\0\0" * 8000, sample_rate=8000), id="sources")
+    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="sources")
     audio.ensure_timeline("mono", duration_ms=1000)
     reference = audio.timeline("mono").add_transcription(
         0, 1000, "reference", source="xlsx_import", language="zh"
@@ -725,7 +760,7 @@ def test_model_annotations_can_be_written_queried_and_removed():
 
 def test_database_update_detects_changes(tmp_path):
     path = tmp_path / "timeline-only.vasr"
-    audio = AudioDoc(AudioPcm(b"\0\0" * 8000, sample_rate=8000), id="timeline-only")
+    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="timeline-only")
     audio.ensure_timeline("mono", duration_ms=1000)
     audio.metadata["preserved"] = True
     db = AudioDB(str(path))
@@ -736,7 +771,7 @@ def test_database_update_detects_changes(tmp_path):
     )
     assert db.update(audio) is True
     assert db.update(audio) is False
-    missing = AudioDoc(AudioPcm(b"\0\0", sample_rate=8000), id="missing")
+    missing = AudioDoc(AudioSource.from_pcm(b"\0\0", sample_rate=8000), id="missing")
     with pytest.raises(KeyError, match="missing"):
         db.update(missing)
     loaded = db["timeline-only"]
@@ -783,10 +818,10 @@ def test_audiodoc_has_no_legacy_load_factories(tmp_path):
         writer.setframerate(8000)
         writer.writeframes(struct.pack("<hh", 0, 1000))
 
-    from_file = AudioDoc(AudioPath(str(wav_path)), id="file")
-    from_bytes = AudioDoc(AudioBytes(wav_path.read_bytes()), id="bytes")
-    assert isinstance(from_file.source, AudioPath)
-    assert isinstance(from_bytes.source, AudioBytes)
+    from_file = AudioDoc(AudioSource.from_path(str(wav_path)), id="file")
+    from_bytes = AudioDoc(AudioSource.from_bytes(wav_path.read_bytes()), id="bytes")
+    assert isinstance(from_file.source, AudioSource)
+    assert isinstance(from_bytes.source, AudioSource)
     assert from_file.source.load().channels == 1
     assert from_bytes.source.load().channels == 1
     assert Audio.from_path(str(wav_path)).channels == 1
