@@ -1,12 +1,15 @@
 mod annotation;
 mod data;
+mod evaluation;
 mod segment;
-mod token;
 
 pub use annotation::{
     AcousticEvent, Annotation, AnnotationId, AnnotationPayload, AnnotationStatus, AudioId,
-    Diagnostic, HotwordMatch, LanguageTag, SpeakerId, SpeakerPayload, TimelineId, Transcription,
+    LanguageTag, SpeakerId, SpeakerPayload, TimelineId, Token, Transcription,
 };
 pub use data::Timeline;
+pub use evaluation::{
+    SpeechEvaluation, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation,
+    TranscriptionEvaluation, TranscriptionNormalization,
+};
 pub use segment::{TextSpan, Transcript};
-pub use token::Token;

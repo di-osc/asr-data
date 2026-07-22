@@ -2,211 +2,19 @@ use crate::audio::AudioChannel as RustAudioChannel;
 use crate::doc::AudioDoc as RustAudioDoc;
 use crate::timeline::{
     Annotation as RustAnnotation, AnnotationPayload, AnnotationStatus, SpeakerPayload,
-    Timeline as RustTimeline, Token as RustToken, Transcript as RustTranscript,
-    Transcription as RustTranscription,
+    SpeechEvaluation as RustSpeechEvaluation, Timeline as RustTimeline, TimelineEvalConfig,
+    TimelineEvaluation as RustTimelineEvaluation, Transcript as RustTranscript,
+    Transcription as RustTranscription, TranscriptionEvaluation as RustTranscriptionEvaluation,
+    TranscriptionNormalization,
 };
 use crate::utils::{DurationMs, TimeRange};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
+use super::annotation::{PySpeaker, PyToken, PyTranscription};
 use super::common::{
     SharedAudio, annotation_status, format_duration_ms, poisoned, py_error, status_name, truncate,
 };
-
-#[pyclass(name = "Token", frozen)]
-#[derive(Clone)]
-struct PyToken {
-    inner: RustToken,
-}
-
-#[pymethods]
-impl PyToken {
-    #[new]
-    #[pyo3(signature = (text, *, start_ms=None, end_ms=None, confidence=None))]
-    fn new(
-        text: String,
-        start_ms: Option<u64>,
-        end_ms: Option<u64>,
-        confidence: Option<f32>,
-    ) -> PyResult<Self> {
-        let range = match (start_ms, end_ms) {
-            (None, None) => None,
-            (Some(start), Some(end)) if end >= start => {
-                Some(TimeRange::new(DurationMs(start), DurationMs(end)))
-            }
-            (Some(_), Some(_)) => {
-                return Err(PyValueError::new_err("end_ms must be >= start_ms"));
-            }
-            _ => {
-                return Err(PyValueError::new_err(
-                    "start_ms and end_ms must be provided together",
-                ));
-            }
-        };
-        Ok(Self {
-            inner: RustToken {
-                text,
-                range,
-                confidence,
-            },
-        })
-    }
-
-    #[getter]
-    fn text(&self) -> String {
-        self.inner.text.clone()
-    }
-
-    #[getter]
-    fn start_ms(&self) -> Option<u64> {
-        self.inner.range.map(|range| range.start.0)
-    }
-
-    #[getter]
-    fn end_ms(&self) -> Option<u64> {
-        self.inner.range.map(|range| range.end.0)
-    }
-
-    #[getter]
-    fn confidence(&self) -> Option<f32> {
-        self.inner.confidence
-    }
-
-    fn __repr__(&self) -> String {
-        let range = match self.inner.range {
-            Some(range) => format!(", range={}..{}ms", range.start.0, range.end.0),
-            None => String::new(),
-        };
-        let confidence = self
-            .inner
-            .confidence
-            .map(|value| format!(", confidence={value:.3}"))
-            .unwrap_or_default();
-        format!(
-            "Token(text={:?}{range}{confidence})",
-            truncate(&self.inner.text, 40)
-        )
-    }
-}
-
-#[pyclass(name = "Transcription", frozen)]
-#[derive(Clone)]
-struct PyTranscription {
-    inner: RustTranscription,
-}
-
-#[pymethods]
-impl PyTranscription {
-    #[new]
-    #[pyo3(signature = (text, *, tokens=None, language=None, confidence=None))]
-    fn new(
-        text: String,
-        tokens: Option<Vec<PyRef<'_, PyToken>>>,
-        language: Option<String>,
-        confidence: Option<f32>,
-    ) -> Self {
-        Self {
-            inner: RustTranscription {
-                text,
-                tokens: tokens
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|token| token.inner.clone())
-                    .collect(),
-                language,
-                confidence,
-            },
-        }
-    }
-
-    #[getter]
-    fn text(&self) -> String {
-        self.inner.text.clone()
-    }
-
-    #[getter]
-    fn tokens(&self) -> Vec<PyToken> {
-        self.inner
-            .tokens
-            .iter()
-            .cloned()
-            .map(|inner| PyToken { inner })
-            .collect()
-    }
-
-    #[getter]
-    fn language(&self) -> Option<String> {
-        self.inner.language.clone()
-    }
-
-    #[getter]
-    fn confidence(&self) -> Option<f32> {
-        self.inner.confidence
-    }
-
-    fn __repr__(&self) -> String {
-        let mut fields = vec![format!("text={:?}", truncate(&self.inner.text, 60))];
-        if let Some(language) = &self.inner.language {
-            fields.push(format!("language={language:?}"));
-        }
-        if !self.inner.tokens.is_empty() {
-            fields.push(format!("tokens={}", self.inner.tokens.len()));
-        }
-        if let Some(confidence) = self.inner.confidence {
-            fields.push(format!("confidence={confidence:.3}"));
-        }
-        format!("Transcription({})", fields.join(", "))
-    }
-}
-
-#[pyclass(name = "Speaker", frozen)]
-#[derive(Clone)]
-struct PySpeaker {
-    inner: SpeakerPayload,
-}
-
-#[pymethods]
-impl PySpeaker {
-    #[new]
-    #[pyo3(signature = (name, *, transcription=None))]
-    fn new(name: String, transcription: Option<PyRef<'_, PyTranscription>>) -> Self {
-        Self {
-            inner: SpeakerPayload {
-                name,
-                transcription: transcription.map(|value| value.inner.clone()),
-            },
-        }
-    }
-
-    #[getter]
-    fn name(&self) -> String {
-        self.inner.name.clone()
-    }
-
-    #[getter]
-    fn transcription(&self) -> Option<PyTranscription> {
-        self.inner
-            .transcription
-            .clone()
-            .map(|inner| PyTranscription { inner })
-    }
-
-    fn __repr__(&self) -> String {
-        let transcription = self
-            .inner
-            .transcription
-            .as_ref()
-            .map(|value| {
-                format!(
-                    ", transcription=Transcription(text={:?}, tokens={})",
-                    truncate(&value.text, 40),
-                    value.tokens.len()
-                )
-            })
-            .unwrap_or_default();
-        format!("Speaker(name={:?}{transcription})", self.inner.name)
-    }
-}
 
 #[pyclass(name = "Annotation")]
 #[derive(Clone)]
@@ -261,40 +69,24 @@ impl PyAnnotation {
     }
 
     #[getter]
-    fn text(&self) -> PyResult<Option<String>> {
-        Ok(match &self.snapshot()?.payload {
-            AnnotationPayload::Transcription(transcription) => Some(transcription.text.clone()),
-            AnnotationPayload::Sentence(span) => Some(span.text.clone()),
-            AnnotationPayload::Token(token) => Some(token.text.clone()),
-            _ => None,
-        })
-    }
-
-    #[getter]
-    fn name(&self) -> PyResult<Option<String>> {
-        Ok(match &self.snapshot()?.payload {
-            AnnotationPayload::Speaker(speaker) => Some(speaker.name.clone()),
-            _ => None,
-        })
-    }
-
-    #[getter]
-    fn transcription(&self) -> PyResult<Option<PyTranscription>> {
-        Ok(match &self.snapshot()?.payload {
-            AnnotationPayload::Transcription(transcription) => Some(PyTranscription {
-                inner: transcription.clone(),
-            }),
-            AnnotationPayload::Speaker(speaker) => speaker
-                .transcription
-                .clone()
-                .map(|inner| PyTranscription { inner }),
-            _ => None,
+    fn payload(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Ok(match self.snapshot()?.payload {
+            AnnotationPayload::Speech => py.None(),
+            AnnotationPayload::Token(inner) => Py::new(py, PyToken { inner })?.into_any(),
+            AnnotationPayload::Transcription(inner) => {
+                Py::new(py, PyTranscription { inner })?.into_any()
+            }
+            AnnotationPayload::Speaker(inner) => Py::new(py, PySpeaker { inner })?.into_any(),
+            payload @ (AnnotationPayload::Sentence(_)
+            | AnnotationPayload::Language(_)
+            | AnnotationPayload::AcousticEvent(_)) => pythonize::pythonize(py, &payload)
+                .map_err(py_error)?
+                .unbind(),
         })
     }
 
     #[setter]
-    fn set_transcription(&self, transcription: Option<PyRef<'_, PyTranscription>>) -> PyResult<()> {
-        let transcription = transcription.map(|value| value.inner.clone());
+    fn set_payload(&self, payload: &Bound<'_, PyAny>) -> PyResult<()> {
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
         let timeline = audio
             .timeline_mut(self.channel)
@@ -307,26 +99,54 @@ impl PyAnnotation {
             .ok_or_else(|| PyRuntimeError::new_err("annotation no longer exists"))?;
         let annotation_range = annotations[index].range;
         match &mut annotations[index].payload {
-            AnnotationPayload::Speaker(speaker) => {
-                validate_speaker_transcription(annotation_range, &transcription)?;
-                speaker.transcription = transcription;
+            AnnotationPayload::Speech => {
+                if !payload.is_none() {
+                    return Err(PyValueError::new_err(
+                        "a speech annotation payload must be None",
+                    ));
+                }
+            }
+            AnnotationPayload::Token(current) => {
+                let token = payload.extract::<PyRef<'_, PyToken>>().map_err(|_| {
+                    PyValueError::new_err("a token annotation payload must be Token")
+                })?;
+                if let Some(range) = token.inner.range
+                    && (range.start < annotation_range.start || range.end > annotation_range.end)
+                {
+                    return Err(PyValueError::new_err(
+                        "token range must be within the token annotation range",
+                    ));
+                }
+                *current = token.inner.clone();
             }
             AnnotationPayload::Transcription(current) => {
-                let transcription = transcription.ok_or_else(|| {
-                    PyValueError::new_err(
-                        "a transcription annotation cannot have an empty transcription",
-                    )
-                })?;
+                let transcription =
+                    payload
+                        .extract::<PyRef<'_, PyTranscription>>()
+                        .map_err(|_| {
+                            PyValueError::new_err(
+                                "a transcription annotation payload must be Transcription",
+                            )
+                        })?;
                 validate_transcription_range(
                     annotation_range,
-                    &transcription,
+                    &transcription.inner,
                     "transcription annotation",
                 )?;
-                *current = transcription;
+                *current = transcription.inner.clone();
             }
-            _ => {
+            AnnotationPayload::Speaker(current) => {
+                let speaker = payload.extract::<PyRef<'_, PySpeaker>>().map_err(|_| {
+                    PyValueError::new_err("a speaker annotation payload must be Speaker")
+                })?;
+                validate_speaker_transcription(annotation_range, &speaker.inner.transcription)?;
+                *current = speaker.inner.clone();
+            }
+            AnnotationPayload::Sentence(_)
+            | AnnotationPayload::Language(_)
+            | AnnotationPayload::AcousticEvent(_) => {
                 return Err(PyValueError::new_err(
-                    "transcription can only be set on a speaker or transcription annotation",
+                    "this annotation payload type cannot be replaced from Python",
                 ));
             }
         }
@@ -335,16 +155,6 @@ impl PyAnnotation {
         annotations
             .retain(|annotation| annotation.id == updated.id || !annotation.content_eq(&updated));
         Ok(())
-    }
-
-    #[getter]
-    fn language(&self) -> PyResult<Option<String>> {
-        Ok(match &self.snapshot()?.payload {
-            AnnotationPayload::Transcription(transcription) => transcription.language.clone(),
-            AnnotationPayload::Sentence(span) => span.language.clone(),
-            AnnotationPayload::Language(language) => Some(language.clone()),
-            _ => None,
-        })
     }
 
     fn __repr__(&self) -> PyResult<String> {
@@ -451,9 +261,7 @@ fn annotation_kind(payload: &AnnotationPayload) -> &'static str {
         AnnotationPayload::Sentence(_) => "sentence",
         AnnotationPayload::Speaker(_) => "speaker",
         AnnotationPayload::Language(_) => "language",
-        AnnotationPayload::Hotword(_) => "hotword",
         AnnotationPayload::AcousticEvent(_) => "acoustic_event",
-        AnnotationPayload::Diagnostic(_) => "diagnostic",
     }
 }
 
@@ -515,6 +323,223 @@ impl PyTranscript {
     }
 }
 
+#[pyclass(name = "TranscriptionEvaluation", frozen)]
+#[derive(Clone)]
+struct PyTranscriptionEvaluation {
+    inner: RustTranscriptionEvaluation,
+}
+
+#[pymethods]
+impl PyTranscriptionEvaluation {
+    #[getter]
+    fn source(&self) -> String {
+        self.inner.source.clone()
+    }
+
+    #[getter]
+    fn reference(&self) -> String {
+        self.inner.reference.clone()
+    }
+
+    #[getter]
+    fn hypothesis(&self) -> String {
+        self.inner.hypothesis.clone()
+    }
+
+    #[getter]
+    fn normalized_reference(&self) -> String {
+        self.inner.normalized_reference.clone()
+    }
+
+    #[getter]
+    fn normalized_hypothesis(&self) -> String {
+        self.inner.normalized_hypothesis.clone()
+    }
+
+    #[getter]
+    fn normalization(&self) -> &'static str {
+        match self.inner.normalization {
+            TranscriptionNormalization::None => "none",
+            TranscriptionNormalization::ChineseTn => "zh_tn",
+        }
+    }
+
+    #[getter]
+    fn matches(&self) -> usize {
+        self.inner.matches()
+    }
+
+    #[getter]
+    fn substitutions(&self) -> usize {
+        self.inner.stats.substitutions
+    }
+
+    #[getter]
+    fn deletions(&self) -> usize {
+        self.inner.stats.deletions
+    }
+
+    #[getter]
+    fn insertions(&self) -> usize {
+        self.inner.stats.insertions
+    }
+
+    #[getter]
+    fn reference_chars(&self) -> usize {
+        self.inner.stats.reference_chars
+    }
+
+    #[getter]
+    fn hypothesis_chars(&self) -> usize {
+        self.inner.hypothesis_chars
+    }
+
+    #[getter]
+    fn cer(&self) -> f64 {
+        self.inner.stats.cer()
+    }
+
+    #[getter]
+    fn precision(&self) -> f64 {
+        self.inner.precision()
+    }
+
+    #[getter]
+    fn recall(&self) -> f64 {
+        self.inner.recall()
+    }
+
+    #[getter]
+    fn f1(&self) -> f64 {
+        self.inner.f1()
+    }
+
+    #[getter]
+    fn exact_match(&self) -> bool {
+        self.inner.exact_match()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TranscriptionEvaluation(source={:?}, cer={:.4}, matches={}, substitutions={}, deletions={}, insertions={})",
+            self.inner.source,
+            self.inner.stats.cer(),
+            self.inner.matches(),
+            self.inner.stats.substitutions,
+            self.inner.stats.deletions,
+            self.inner.stats.insertions,
+        )
+    }
+}
+
+#[pyclass(name = "SpeechEvaluation", frozen)]
+#[derive(Clone)]
+struct PySpeechEvaluation {
+    inner: RustSpeechEvaluation,
+}
+
+#[pymethods]
+impl PySpeechEvaluation {
+    #[getter]
+    fn source(&self) -> String {
+        self.inner.source.clone()
+    }
+
+    #[getter]
+    fn reference_ms(&self) -> u64 {
+        self.inner.reference_ms
+    }
+
+    #[getter]
+    fn predicted_ms(&self) -> u64 {
+        self.inner.predicted_ms
+    }
+
+    #[getter]
+    fn true_positive_ms(&self) -> u64 {
+        self.inner.true_positive_ms
+    }
+
+    #[getter]
+    fn true_negative_ms(&self) -> u64 {
+        self.inner.true_negative_ms
+    }
+
+    #[getter]
+    fn false_positive_ms(&self) -> u64 {
+        self.inner.false_positive_ms
+    }
+
+    #[getter]
+    fn false_negative_ms(&self) -> u64 {
+        self.inner.false_negative_ms
+    }
+
+    #[getter]
+    fn precision(&self) -> f64 {
+        self.inner.precision()
+    }
+
+    #[getter]
+    fn recall(&self) -> f64 {
+        self.inner.recall()
+    }
+
+    #[getter]
+    fn f1(&self) -> f64 {
+        self.inner.f1()
+    }
+
+    #[getter]
+    fn iou(&self) -> f64 {
+        self.inner.iou()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SpeechEvaluation(source={:?}, precision={:.4}, recall={:.4}, f1={:.4}, iou={:.4})",
+            self.inner.source,
+            self.inner.precision(),
+            self.inner.recall(),
+            self.inner.f1(),
+            self.inner.iou(),
+        )
+    }
+}
+
+#[pyclass(name = "TimelineEvaluation", frozen)]
+#[derive(Clone)]
+struct PyTimelineEvaluation {
+    inner: RustTimelineEvaluation,
+}
+
+#[pymethods]
+impl PyTimelineEvaluation {
+    #[getter]
+    fn transcription(&self) -> Option<PyTranscriptionEvaluation> {
+        self.inner
+            .transcription
+            .clone()
+            .map(|inner| PyTranscriptionEvaluation { inner })
+    }
+
+    #[getter]
+    fn speech(&self) -> Option<PySpeechEvaluation> {
+        self.inner
+            .speech
+            .clone()
+            .map(|inner| PySpeechEvaluation { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TimelineEvaluation(transcription={}, speech={})",
+            self.inner.transcription.is_some(),
+            self.inner.speech.is_some(),
+        )
+    }
+}
+
 #[pyclass(name = "Timeline")]
 #[derive(Clone)]
 pub(super) struct PyTimeline {
@@ -561,6 +586,28 @@ impl PyTimeline {
         PyPredictionAnnotations {
             core: AnnotationCollectionCore::new(self, AnnotationGroup::Prediction),
         }
+    }
+
+    #[pyo3(signature = (*, transcription=None, speech=None, normalize=true))]
+    fn eval(
+        &self,
+        transcription: Option<String>,
+        speech: Option<String>,
+        normalize: bool,
+    ) -> PyResult<PyTimelineEvaluation> {
+        let normalization = if normalize {
+            TranscriptionNormalization::ChineseTn
+        } else {
+            TranscriptionNormalization::None
+        };
+        let config = TimelineEvalConfig {
+            transcription_source: transcription,
+            speech_source: speech,
+            transcription_normalization: normalization,
+        };
+        let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
+        let inner = self.selected(&audio)?.eval(&config).map_err(py_error)?;
+        Ok(PyTimelineEvaluation { inner })
     }
 
     fn __repr__(&self) -> PyResult<String> {
@@ -961,11 +1008,11 @@ fn validate_source(source: &str) -> PyResult<()> {
 }
 
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyToken>()?;
-    module.add_class::<PyTranscription>()?;
-    module.add_class::<PySpeaker>()?;
     module.add_class::<PyAnnotation>()?;
     module.add_class::<PyTranscript>()?;
+    module.add_class::<PyTranscriptionEvaluation>()?;
+    module.add_class::<PySpeechEvaluation>()?;
+    module.add_class::<PyTimelineEvaluation>()?;
     module.add_class::<PyReferenceAnnotations>()?;
     module.add_class::<PyPredictionAnnotations>()?;
     module.add_class::<PyTimeline>()?;

@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::segment::TextSpan;
-use super::token::Token;
 use crate::utils::TimeRange;
 
 pub type AudioId = String;
@@ -20,21 +19,35 @@ pub enum AnnotationStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct HotwordMatch {
-    pub text: String,
-    pub normalized: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AcousticEvent {
     pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Diagnostic {
-    pub code: String,
-    pub message: String,
-    pub component: Option<String>,
+pub struct Token {
+    pub text: String,
+    pub range: Option<TimeRange>,
+    pub confidence: Option<f32>,
+}
+
+impl Token {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            range: None,
+            confidence: None,
+        }
+    }
+
+    pub fn with_range(mut self, range: TimeRange) -> Self {
+        self.range = Some(range);
+        self
+    }
+
+    pub fn with_confidence(mut self, confidence: f32) -> Self {
+        self.confidence = Some(confidence);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,9 +126,7 @@ pub enum AnnotationPayload {
     Sentence(TextSpan),
     Speaker(SpeakerPayload),
     Language(LanguageTag),
-    Hotword(HotwordMatch),
     AcousticEvent(AcousticEvent),
-    Diagnostic(Diagnostic),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

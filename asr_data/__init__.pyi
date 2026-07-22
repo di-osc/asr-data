@@ -1,19 +1,23 @@
 from collections.abc import Awaitable
 
-from ._types import AnnotationKind as AnnotationKind
-from ._types import AnnotationStatus as AnnotationStatus
-from ._native import Annotation as Annotation
+from .annotation import Annotation as Annotation
+from .annotation import AnnotationKind as AnnotationKind
+from .annotation import AnnotationPayload as AnnotationPayload
+from .annotation import AnnotationStatus as AnnotationStatus
+from .annotation import Speaker as Speaker
+from .annotation import Token as Token
+from .annotation import Transcription as Transcription
 from ._native import AudioDB as AudioDB
 from ._native import AudioDoc as AudioDoc
 from ._native import AudioFormat as AudioFormat
 from ._native import AudioSource as AudioSource
 from ._native import PredictionAnnotations as PredictionAnnotations
 from ._native import ReferenceAnnotations as ReferenceAnnotations
-from ._native import Speaker as Speaker
 from ._native import Timeline as Timeline
-from ._native import Token as Token
+from ._native import TimelineEvaluation as TimelineEvaluation
+from ._native import TranscriptionEvaluation as TranscriptionEvaluation
+from ._native import SpeechEvaluation as SpeechEvaluation
 from ._native import Transcript as Transcript
-from ._native import Transcription as Transcription
 from ._native import AsrDataError as AsrDataError
 from ._native import Audio as _Audio
 from ._native import AudioChunk as AudioChunk

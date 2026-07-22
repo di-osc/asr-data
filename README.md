@@ -15,7 +15,7 @@
 ## 特点
 
 - **统一数据模型**：集中管理音频、转写、说话人、语言和模型预测等信息。
-- **SQLite 本地存储**：数据保存为易于管理和迁移的 `.sqlite` 文件。
+- **SQLite 本地存储**：数据保存为易于管理和迁移的 `.db` 文件。
 - **音频处理**：支持从文件、URL、字节流和 PCM 加载音频，并提供声道与重采样等操作。
 - **Rust 核心，Python 易用**：兼顾 Rust 性能与 Python 脚本、Notebook 的使用体验。
 - **面向 ASR 工作流**：适用于数据集构建、人工标注、模型输出和评测结果管理。
@@ -37,7 +37,8 @@ cargo add asr-data
 ## 快速开始
 
 ```python
-from asr_data import AudioDB, AudioDoc, AudioSource, Speaker, Token, Transcription
+from asr_data import AudioDB, AudioDoc, AudioSource
+from asr_data.annotation import Speaker, Token, Transcription
 
 doc = AudioDoc(AudioSource.from_path("audio.wav"), id="call-001")
 timeline = doc.ensure_timeline("mono", duration_ms=1_200)
@@ -58,8 +59,31 @@ timeline.reference.add_speaker(
     ),
 )
 
-db = AudioDB("dataset.sqlite")
+db = AudioDB("dataset.db")
 db.insert(doc)
+```
+
+## 评估
+
+`Timeline.eval()` 使用 reference 评估指定来源的 prediction。转写评估默认使用内嵌的
+中文 TN 资源完成文本标准化，再计算 CER：
+
+```python
+result = timeline.eval(
+    transcription="qwen-asr",
+    speech="silero-vad",
+)
+
+print(result.transcription.cer)
+print(result.transcription.normalized_reference)
+print(result.speech.f1)
+print(result.speech.iou)
+```
+
+如需要按原文计算 CER，可以关闭 TN：
+
+```python
+result = timeline.eval(transcription="qwen-asr", normalize=False)
 ```
 
 ## 文档

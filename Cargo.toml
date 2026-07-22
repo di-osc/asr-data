@@ -1,6 +1,6 @@
 [package]
 name = "asr-data"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "ASR audio/transcript data model with SQLite storage and optional Python bindings"
 license = "MIT"
@@ -21,6 +21,7 @@ pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
 pythonize = { version = "0.27", optional = true }
 reqwest = { version = "0.13", features = ["blocking", "rustls"], default-features = false }
 rmp-serde = "1"
+rustfst = "1"
 rusqlite = { version = "0.38", features = ["bundled"] }
 rubato = "3"
 serde = { version = "1", features = ["derive"] }

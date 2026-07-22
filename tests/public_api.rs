@@ -5,9 +5,11 @@ use asr_data::{
     Annotation, AnnotationPayload, AnnotationStatus, Audio, AudioChannel, AudioChunk, AudioChunks,
     AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioDoc, AudioEncoding, AudioError,
     AudioFormat, AudioQuery, AudioSource, CerStats, DEFAULT_QUERY_LIMIT, DurationMs,
-    MAX_QUERY_LIMIT, SampleIndex, SpeakerPayload, TextSpan, TimeRange, Timeline, Token, Transcript,
-    Transcription, compute_cer, import_legacy_msgpack_to_db, normalize_for_cer, read_audio_db_info,
-    read_legacy_msgpack,
+    MAX_QUERY_LIMIT, SampleIndex, SpeakerPayload, SpeechEvaluation, TextNormalizationError,
+    TextSpan, TimeRange, Timeline, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation,
+    Token, Transcript, Transcription, TranscriptionEvaluation, TranscriptionNormalization,
+    compute_cer, import_legacy_msgpack_to_db, normalize_for_cer, normalize_zh_tn,
+    read_audio_db_info, read_legacy_msgpack,
 };
 
 #[test]
@@ -40,8 +42,18 @@ fn stable_public_paths_compile() {
     let _: Option<Token> = None;
     let _: Option<Transcript> = None;
     let _: Option<Transcription> = None;
+    let _: Option<TimelineEvalConfig> = None;
+    let _: Option<TimelineEvalError> = None;
+    let _: Option<TimelineEvaluation> = None;
+    let _: Option<TranscriptionEvaluation> = None;
+    let _: Option<SpeechEvaluation> = None;
+    let _: Option<TranscriptionNormalization> = None;
+    let _: Option<TextNormalizationError> = None;
     let _: fn(&str, &str) -> CerStats = compute_cer;
     let _: fn(&str, bool) -> String = normalize_for_cer;
+    let _ = normalize_zh_tn("2026");
+    let timeline = Timeline::new("mono", DurationMs(1_000));
+    let _ = timeline.eval(&TimelineEvalConfig::new().with_transcription("asr"));
     let _: fn(&Path) -> anyhow::Result<Audio> = decode::decode_path_audio;
     let _: usize = DEFAULT_QUERY_LIMIT;
     let _: usize = MAX_QUERY_LIMIT;

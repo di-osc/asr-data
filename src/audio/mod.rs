@@ -10,9 +10,6 @@ pub(crate) mod stream;
 pub use data::{Audio, AudioChunk, AudioChunks, AudioError};
 pub use source::{AudioChannel, AudioEncoding, AudioFormat, AudioSource};
 
-/// Target ASR/VAD sample rate used by the offline pipeline.
-pub const SAMPLE_RATE_HZ: u32 = 16_000;
-
 pub(crate) fn transform_loaded_audio(
     mut waveform: Audio,
     sample_rate: Option<u32>,

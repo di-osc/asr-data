@@ -7,9 +7,7 @@ AnnotationKind: TypeAlias = Literal[
     "sentence",
     "speaker",
     "language",
-    "hotword",
     "acoustic_event",
-    "diagnostic",
 ]
 
 AnnotationStatus: TypeAlias = Literal[

@@ -9,7 +9,6 @@ mod python;
 mod timeline;
 mod utils;
 
-pub use audio::SAMPLE_RATE_HZ;
 pub use audio::{Audio, AudioChunk, AudioChunks, AudioError};
 pub use audio::{AudioChannel, AudioEncoding, AudioFormat, AudioSource};
 pub use db::{
@@ -20,10 +19,13 @@ pub use doc::{
     AudioChannelError, AudioDoc, AudioTimelineError, AudioValidationError, LegacyImportError,
     read_legacy_msgpack,
 };
-pub use metrics::{CerStats, compute_cer, normalize_for_cer};
+pub use metrics::{
+    CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh_tn,
+};
 pub use timeline::{
     AcousticEvent, Annotation, AnnotationId, AnnotationPayload, AnnotationStatus, AudioId,
-    Diagnostic, HotwordMatch, LanguageTag, SpeakerId, SpeakerPayload, TextSpan, Timeline,
-    TimelineId, Token, Transcript, Transcription,
+    LanguageTag, SpeakerId, SpeakerPayload, SpeechEvaluation, TextSpan, Timeline,
+    TimelineEvalConfig, TimelineEvalError, TimelineEvaluation, TimelineId, Token, Transcript,
+    Transcription, TranscriptionEvaluation, TranscriptionNormalization,
 };
 pub use utils::{DurationMs, SampleIndex, TimeRange};

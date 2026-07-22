@@ -14,12 +14,14 @@ import numpy as np
 import pytest
 
 from asr_data import (
-    AnnotationKind,
-    AnnotationStatus,
     AudioDB,
     AudioDoc,
     AudioSource,
     Audio,
+)
+from asr_data.annotation import (
+    AnnotationKind,
+    AnnotationStatus,
     Speaker,
     Token,
     Transcription,
@@ -65,6 +67,12 @@ def test_audio_source_factories_and_variant_properties():
 
 
 def test_annotation_literal_types_are_public_and_complete():
+    assert asr_data.annotation.Speaker is Speaker
+    assert asr_data.annotation.Token is Token
+    assert asr_data.annotation.Transcription is Transcription
+    assert Speaker.__module__ == "asr_data.annotation"
+    assert Token.__module__ == "asr_data.annotation"
+    assert Transcription.__module__ == "asr_data.annotation"
     assert set(typing.get_args(AnnotationKind)) == {
         "speech",
         "token",
@@ -72,9 +80,7 @@ def test_annotation_literal_types_are_public_and_complete():
         "sentence",
         "speaker",
         "language",
-        "hotword",
         "acoustic_event",
-        "diagnostic",
     }
     assert set(typing.get_args(AnnotationStatus)) == {
         "partial",
@@ -775,18 +781,21 @@ def test_model_annotations_can_be_written_queried_and_removed():
 
     assert reference.source is None
     assert prediction.source == "tegasr"
-    assert prediction.language == "zh"
+    assert prediction.payload.language == "zh"
     assert prediction.confidence == pytest.approx(0.8)
-    assert prediction.transcription.confidence == pytest.approx(0.88)
-    assert prediction.transcription.tokens[0].text == "prediction"
+    assert prediction.payload.confidence == pytest.approx(0.88)
+    assert prediction.payload.tokens[0].text == "prediction"
     assert speaker.kind == "speaker"
-    assert speaker.name == "user"
-    assert speaker.text is None
-    assert speaker.transcription.text == "speaker text"
-    assert speaker.transcription.language == "zh"
-    assert speaker.transcription.confidence == pytest.approx(0.9)
-    assert [token.text for token in speaker.transcription.tokens] == ["speaker", "text"]
-    assert speaker.transcription.tokens[0].start_ms == 0
+    assert speaker.payload.name == "user"
+    assert speaker.payload.transcription.text == "speaker text"
+    assert speaker.payload.transcription.language == "zh"
+    assert speaker.payload.transcription.confidence == pytest.approx(0.9)
+    assert [token.text for token in speaker.payload.transcription.tokens] == ["speaker", "text"]
+    assert speaker.payload.transcription.tokens[0].start_ms == 0
+    assert not hasattr(speaker, "text")
+    assert not hasattr(speaker, "name")
+    assert not hasattr(speaker, "language")
+    assert not hasattr(speaker, "transcription")
     assert [item.id for item in timeline.prediction.by_source("tegasr")] == [prediction.id]
     assert timeline.reference.transcript().text == "reference"
     assert timeline.prediction.transcript("tegasr").text == "prediction"
@@ -821,9 +830,9 @@ def test_speaker_transcription_round_trips_through_database(tmp_path):
     loaded = db["speaker"].timeline("mono")
     speaker = loaded.reference.annotations[0]
 
-    assert speaker.name == "agent"
-    assert speaker.transcription.text == "hello"
-    assert speaker.transcription.tokens[0].end_ms == 900
+    assert speaker.payload.name == "agent"
+    assert speaker.payload.transcription.text == "hello"
+    assert speaker.payload.transcription.tokens[0].end_ms == 900
     assert loaded.reference.transcript().text == "hello"
 
 
@@ -932,20 +941,23 @@ def test_speaker_transcription_can_be_attached_after_creation():
     speaker = timeline.reference.add_speaker(100, 900, Speaker("agent"))
     original_id = speaker.id
 
-    speaker.transcription = Transcription(
-        "hello",
-        tokens=[Token("hello", start_ms=100, end_ms=900)],
+    speaker.payload = Speaker(
+        "agent",
+        transcription=Transcription(
+            "hello",
+            tokens=[Token("hello", start_ms=100, end_ms=900)],
+        ),
     )
 
     assert speaker.id == original_id
-    assert speaker.transcription.text == "hello"
+    assert speaker.payload.transcription.text == "hello"
     assert timeline.reference.annotations[0].id == original_id
-    assert timeline.reference.annotations[0].transcription.text == "hello"
+    assert timeline.reference.annotations[0].payload.transcription.text == "hello"
     assert timeline.reference.transcript().text == "hello"
 
-    speaker.transcription = None
-    assert speaker.transcription is None
-    assert timeline.reference.annotations[0].transcription is None
+    speaker.payload = Speaker("agent")
+    assert speaker.payload.transcription is None
+    assert timeline.reference.annotations[0].payload.transcription is None
 
 
 def test_transcription_assignment_validates_target_and_token_range():
@@ -953,15 +965,107 @@ def test_transcription_assignment_validates_target_and_token_range():
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     speaker = timeline.reference.add_speaker(100, 900, Speaker("agent"))
     speech = timeline.reference.add_speech(0, 1000)
+    assert speech.payload is None
     outside = Transcription(
         "outside",
         tokens=[Token("outside", start_ms=0, end_ms=1000)],
     )
 
     with pytest.raises(ValueError, match="token range must be within"):
-        speaker.transcription = outside
-    with pytest.raises(ValueError, match="only be set on a speaker"):
-        speech.transcription = Transcription("not allowed")
+        speaker.payload = Speaker("agent", transcription=outside)
+    with pytest.raises(ValueError, match="speech annotation payload must be None"):
+        speech.payload = Transcription("not allowed")
+
+
+def test_timeline_eval_reports_transcription_metrics_without_normalization():
+    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-text")
+    timeline = audio.ensure_timeline("mono", duration_ms=1000)
+    timeline.reference.add_transcription(0, 1000, Transcription("交易停滞"))
+    timeline.prediction.add_transcription(
+        0,
+        1000,
+        Transcription("交易停止"),
+        source="qwen-asr",
+    )
+
+    evaluation = timeline.eval(transcription="qwen-asr", normalize=False)
+    result = evaluation.transcription
+
+    assert evaluation.speech is None
+    assert result.source == "qwen-asr"
+    assert result.normalization == "none"
+    assert result.reference == "交易停滞"
+    assert result.hypothesis == "交易停止"
+    assert result.normalized_reference == "交易停滞"
+    assert result.normalized_hypothesis == "交易停止"
+    assert result.matches == 3
+    assert result.substitutions == 1
+    assert result.deletions == 0
+    assert result.insertions == 0
+    assert result.reference_chars == 4
+    assert result.hypothesis_chars == 4
+    assert result.cer == 0.25
+    assert result.precision == 0.75
+    assert result.recall == 0.75
+    assert result.f1 == 0.75
+    assert result.exact_match is False
+
+
+def test_timeline_eval_uses_embedded_chinese_tn_by_default():
+    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-tn")
+    timeline = audio.ensure_timeline("mono", duration_ms=1000)
+    timeline.reference.add_transcription(0, 1000, Transcription("2024年交易"))
+    timeline.prediction.add_transcription(
+        0,
+        1000,
+        Transcription("二零二四年交易"),
+        source="qwen-asr",
+    )
+
+    result = timeline.eval(transcription="qwen-asr").transcription
+
+    assert result.normalization == "zh_tn"
+    assert result.normalized_reference == "二零二四年交易"
+    assert result.normalized_hypothesis == "二零二四年交易"
+    assert result.cer == 0.0
+    assert result.exact_match is True
+
+
+def test_timeline_eval_reports_speech_duration_confusion_matrix():
+    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-vad")
+    timeline = audio.ensure_timeline("mono", duration_ms=1000)
+    timeline.reference.add_speech(100, 500)
+    timeline.reference.add_speech(400, 600)
+    timeline.prediction.add_speech(200, 700, source="silero-vad")
+
+    evaluation = timeline.eval(speech="silero-vad")
+    result = evaluation.speech
+
+    assert evaluation.transcription is None
+    assert result.reference_ms == 500
+    assert result.predicted_ms == 500
+    assert result.true_positive_ms == 400
+    assert result.true_negative_ms == 400
+    assert result.false_positive_ms == 100
+    assert result.false_negative_ms == 100
+    assert result.precision == 0.8
+    assert result.recall == 0.8
+    assert result.f1 == pytest.approx(0.8)
+    assert result.iou == pytest.approx(2 / 3)
+
+
+def test_timeline_eval_requires_a_task_and_matching_reference_and_prediction():
+    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-errors")
+    timeline = audio.ensure_timeline("mono", duration_ms=1000)
+
+    with pytest.raises(asr_data.AsrDataError, match="at least one"):
+        timeline.eval()
+    with pytest.raises(asr_data.AsrDataError, match="reference annotations are missing"):
+        timeline.eval(transcription="qwen-asr", normalize=False)
+
+    timeline.reference.add_transcription(0, 1000, Transcription("参考"))
+    with pytest.raises(asr_data.AsrDataError, match="qwen-asr"):
+        timeline.eval(transcription="qwen-asr", normalize=False)
 
 
 def test_database_update_detects_changes(tmp_path):
