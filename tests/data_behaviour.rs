@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use asr_data::{
     Annotation, AnnotationPayload, AnnotationSource, AnnotationStatus, Audio, AudioChannel,
     AudioDb, AudioDbError, AudioDbMode, AudioDoc, AudioEncoding, AudioError, AudioFormat,
-    AudioLoadOptions, AudioLoader, AudioQuery, AudioSource, DurationMs, MAX_QUERY_LIMIT, TextSpan,
-    TimeRange, Timeline, Token, import_legacy_msgpack_to_db, read_legacy_msgpack,
+    AudioQuery, AudioSource, DurationMs, MAX_QUERY_LIMIT, TextSpan, TimeRange, Timeline, Token,
+    import_legacy_msgpack_to_db, read_legacy_msgpack,
 };
 
 #[test]
@@ -301,21 +301,15 @@ fn waveform_from_pcm_matches_source_load() {
 }
 
 #[test]
-fn audio_loader_applies_optional_sample_rate_and_mono() {
+fn audio_source_load_with_applies_optional_sample_rate_and_mono() {
     let bytes = [0_i16, 1000, -1000, 2000]
         .into_iter()
         .flat_map(i16::to_le_bytes)
         .collect::<Vec<_>>();
     let source = AudioSource::from_pcm_s16le(bytes, 8_000, 2);
 
-    let transformed = AudioLoader
-        .load(
-            &source,
-            &AudioLoadOptions {
-                sample_rate: Some(16_000),
-                mono: Some(true),
-            },
-        )
+    let transformed = source
+        .load_with(Some(16_000), Some(true))
         .expect("transform source");
 
     assert_eq!(transformed.sample_rate, 16_000);
@@ -328,14 +322,8 @@ fn audio_loader_applies_optional_sample_rate_and_mono() {
             .all(|sample| (-1.0..=1.0).contains(sample))
     );
 
-    let preserved = AudioLoader
-        .load(
-            &source,
-            &AudioLoadOptions {
-                sample_rate: None,
-                mono: Some(false),
-            },
-        )
+    let preserved = source
+        .load_with(None, Some(false))
         .expect("preserve source format");
     assert_eq!(preserved.sample_rate, 8_000);
     assert_eq!(preserved.channels, 2);

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Audio, AudioLoadOptions, AudioLoader, decode, transform_loaded_audio};
+use super::{Audio, data, decode, local_path_from_urlish, transform_loaded_audio};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum AudioChannel {
@@ -121,18 +121,41 @@ impl AudioSource {
     }
 
     pub fn load(&self) -> anyhow::Result<Audio> {
-        AudioLoader.load_raw(self)
+        let waveform = match self {
+            Self::Path(path) => decode::decode_path_audio(path)?,
+            Self::Url(url) => {
+                if let Some(path) = local_path_from_urlish(url) {
+                    decode::decode_path_audio(&path)?
+                } else {
+                    decode::decode_url_audio(url)?
+                }
+            }
+            Self::Base64(b64) => decode::decode_base64_audio(b64)?,
+            Self::EncodedBytes(bytes) => decode::decode_bytes_audio(bytes.clone())?,
+            Self::PcmS16Le {
+                bytes,
+                sample_rate,
+                channels,
+            } => Audio::from_i16_pcm_bytes_with_channels(bytes, *sample_rate, *channels)?,
+        };
+        let mut waveform = waveform;
+        data::sanitize_samples(&mut waveform.samples);
+        Ok(waveform)
     }
 
-    pub fn load_with(&self, loader: &AudioLoader) -> anyhow::Result<Audio> {
-        loader.load_raw(self)
+    pub fn load_with(&self, sample_rate: Option<u32>, mono: Option<bool>) -> anyhow::Result<Audio> {
+        transform_loaded_audio(self.load()?, sample_rate, mono)
     }
 
     pub async fn aload(&self) -> anyhow::Result<Audio> {
-        self.aload_with_options(&AudioLoadOptions::default()).await
+        self.aload_with(None, None).await
     }
 
-    pub async fn aload_with_options(&self, options: &AudioLoadOptions) -> anyhow::Result<Audio> {
+    pub async fn aload_with(
+        &self,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> anyhow::Result<Audio> {
         let waveform = match self {
             Self::Url(url) if url.starts_with("http://") || url.starts_with("https://") => {
                 let bytes = decode::download_url_bytes(url).await?;
@@ -147,7 +170,7 @@ impl AudioSource {
                     .map_err(|error| anyhow::anyhow!("audio loader worker failed: {error}"))?
             }
         }?;
-        transform_loaded_audio(waveform, options)
+        transform_loaded_audio(waveform, sample_rate, mono)
     }
 }
 

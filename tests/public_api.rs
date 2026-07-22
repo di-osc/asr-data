@@ -4,10 +4,10 @@ use asr_data::audio::{self, decode};
 use asr_data::{
     Annotation, AnnotationPayload, AnnotationSource, AnnotationStatus, Audio, AudioChannel,
     AudioChunk, AudioChunks, AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioDoc,
-    AudioEncoding, AudioError, AudioFormat, AudioLoadOptions, AudioLoader, AudioQuery, AudioSource,
-    CerStats, DEFAULT_QUERY_LIMIT, DurationMs, MAX_QUERY_LIMIT, SampleIndex, TextSpan, TimeRange,
-    Timeline, Token, Transcript, compute_cer, import_legacy_msgpack_to_db, normalize_for_cer,
-    read_audio_db_info, read_legacy_msgpack,
+    AudioEncoding, AudioError, AudioFormat, AudioQuery, AudioSource, CerStats, DEFAULT_QUERY_LIMIT,
+    DurationMs, MAX_QUERY_LIMIT, SampleIndex, TextSpan, TimeRange, Timeline, Token, Transcript,
+    compute_cer, import_legacy_msgpack_to_db, normalize_for_cer, read_audio_db_info,
+    read_legacy_msgpack,
 };
 
 #[test]
@@ -29,8 +29,6 @@ fn stable_public_paths_compile() {
     let _: Option<AudioEncoding> = None;
     let _: Option<AudioError> = None;
     let _: Option<AudioFormat> = None;
-    let _: Option<AudioLoadOptions> = None;
-    let _: Option<AudioLoader> = None;
     let _: Option<AudioQuery> = None;
     let _: Option<AudioSource> = None;
     let _: Option<CerStats> = None;

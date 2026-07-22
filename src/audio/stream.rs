@@ -8,7 +8,7 @@ use rubato::{
 };
 
 #[cfg(feature = "python-bindings")]
-use super::{AudioChunk, AudioChunks, AudioFormat, AudioLoadOptions, AudioSource};
+use super::{AudioChunk, AudioChunks, AudioFormat, AudioSource};
 
 #[cfg(feature = "python-bindings")]
 enum RawAudioStream {
@@ -154,7 +154,8 @@ impl StreamingResampler {
 #[cfg(feature = "python-bindings")]
 pub(crate) struct SourceAudioStream {
     raw: RawAudioStream,
-    options: AudioLoadOptions,
+    sample_rate: Option<u32>,
+    mono: Option<bool>,
     chunk_size_ms: u64,
     output: VecDeque<f32>,
     output_sample_rate: Option<u32>,
@@ -170,12 +171,13 @@ impl SourceAudioStream {
     pub(crate) fn new(
         source: AudioSource,
         chunk_size_ms: u64,
-        options: AudioLoadOptions,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
     ) -> Result<Self> {
         if chunk_size_ms == 0 {
             bail!("chunk size must be greater than zero");
         }
-        if options.sample_rate == Some(0) {
+        if sample_rate == Some(0) {
             bail!("sample rate must be greater than zero");
         }
         let raw = match &source {
@@ -186,7 +188,8 @@ impl SourceAudioStream {
         };
         Ok(Self {
             raw,
-            options,
+            sample_rate,
+            mono,
             chunk_size_ms,
             output: VecDeque::new(),
             output_sample_rate: None,
@@ -199,12 +202,12 @@ impl SourceAudioStream {
     }
 
     fn process_chunk(&mut self, chunk: AudioChunk) -> Result<()> {
-        let chunk = if self.options.mono == Some(true) {
+        let chunk = if self.mono == Some(true) {
             chunk.to_mono()?
         } else {
             chunk
         };
-        let target_rate = self.options.sample_rate.unwrap_or(chunk.sample_rate);
+        let target_rate = self.sample_rate.unwrap_or(chunk.sample_rate);
         let target_channels = chunk.channels;
         self.output_sample_rate.get_or_insert(target_rate);
         self.output_channels.get_or_insert(target_channels);

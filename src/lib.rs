@@ -9,9 +9,9 @@ mod python;
 mod timeline;
 mod utils;
 
+pub use audio::SAMPLE_RATE_HZ;
 pub use audio::{Audio, AudioChunk, AudioChunks, AudioError};
 pub use audio::{AudioChannel, AudioEncoding, AudioFormat, AudioSource};
-pub use audio::{AudioLoadOptions, AudioLoader, SAMPLE_RATE_HZ};
 pub use db::{
     AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioQuery, DEFAULT_QUERY_LIMIT,
     MAX_QUERY_LIMIT, import_legacy_msgpack_to_db, read_audio_db_info,

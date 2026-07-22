@@ -13,55 +13,18 @@ pub use source::{AudioChannel, AudioEncoding, AudioFormat, AudioSource};
 /// Target ASR/VAD sample rate used by the offline pipeline.
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct AudioLoadOptions {
-    pub sample_rate: Option<u32>,
-    pub mono: Option<bool>,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct AudioLoader;
-
-impl AudioLoader {
-    pub fn load_raw(&self, source: &AudioSource) -> Result<Audio> {
-        let waveform = match source {
-            AudioSource::Path(path) => decode::decode_path_audio(path)?,
-            AudioSource::Url(url) => {
-                if let Some(path) = local_path_from_urlish(url) {
-                    decode::decode_path_audio(&path)?
-                } else {
-                    decode::decode_url_audio(url)?
-                }
-            }
-            AudioSource::Base64(b64) => decode::decode_base64_audio(b64)?,
-            AudioSource::EncodedBytes(bytes) => decode::decode_bytes_audio(bytes.clone())?,
-            AudioSource::PcmS16Le {
-                bytes,
-                sample_rate,
-                channels,
-            } => Audio::from_i16_pcm_bytes_with_channels(bytes, *sample_rate, *channels)?,
-        };
-        let mut waveform = waveform;
-        data::sanitize_samples(&mut waveform.samples);
-        Ok(waveform)
-    }
-
-    pub fn load(&self, source: &AudioSource, options: &AudioLoadOptions) -> Result<Audio> {
-        transform_loaded_audio(self.load_raw(source)?, options)
-    }
-}
-
 pub(crate) fn transform_loaded_audio(
     mut waveform: Audio,
-    options: &AudioLoadOptions,
+    sample_rate: Option<u32>,
+    mono: Option<bool>,
 ) -> Result<Audio> {
     if waveform.channels == 0 {
         bail!("invalid channel count: 0");
     }
-    if options.mono == Some(true) && waveform.channels != 1 {
+    if mono == Some(true) && waveform.channels != 1 {
         waveform = waveform.to_mono()?;
     }
-    if let Some(sample_rate) = options.sample_rate {
+    if let Some(sample_rate) = sample_rate {
         if sample_rate == 0 {
             bail!("sample rate must be greater than zero");
         }

@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::audio::{
     Audio as RustAudio, AudioChunk as RustAudioChunk, AudioFormat as RustAudioFormat,
-    AudioLoadOptions as RustAudioLoadOptions, AudioLoader as RustAudioLoader,
     AudioSource as RustAudioSource,
 };
 use crate::utils::DurationMs;
@@ -174,18 +173,12 @@ impl PyAudio {
 
     #[staticmethod]
     fn _start_aload_from_path(path: String) -> PyResult<PyAudioLoadTask> {
-        spawn_source_aload(
-            RustAudioSource::from_path(path),
-            RustAudioLoadOptions::default(),
-        )
+        spawn_source_aload(RustAudioSource::from_path(path), None, None)
     }
 
     #[staticmethod]
     fn _start_aload_from_source(source: &Bound<'_, PyAny>) -> PyResult<PyAudioLoadTask> {
-        spawn_source_aload(
-            rust_source_from_py(source)?,
-            RustAudioLoadOptions::default(),
-        )
+        spawn_source_aload(rust_source_from_py(source)?, None, None)
     }
 
     #[getter]
@@ -396,13 +389,14 @@ impl PyAudioLoadTask {
 
 fn spawn_source_aload(
     source: RustAudioSource,
-    options: RustAudioLoadOptions,
+    sample_rate: Option<u32>,
+    mono: Option<bool>,
 ) -> PyResult<PyAudioLoadTask> {
     let result: AsyncLoadResult = Arc::new(Mutex::new(None));
     let task_result = Arc::clone(&result);
     async_runtime().spawn(async move {
         let loaded = source
-            .aload_with_options(&options)
+            .aload_with(sample_rate, mono)
             .await
             .map_err(|error| format!("{error:#}"));
         if let Ok(mut slot) = task_result.lock() {
@@ -465,17 +459,19 @@ impl PyAudioStreamTask {
 fn spawn_source_astream(
     source: RustAudioSource,
     chunk_size_ms: u64,
-    options: RustAudioLoadOptions,
+    sample_rate: Option<u32>,
+    mono: Option<bool>,
 ) -> PyResult<PyAudioStreamTask> {
     if chunk_size_ms == 0 {
         return Err(py_error("chunk size must be greater than zero"));
     }
-    if options.sample_rate == Some(0) {
+    if sample_rate == Some(0) {
         return Err(py_error("sample rate must be greater than zero"));
     }
     let (sender, receiver) = sync_channel(2);
     async_runtime().spawn_blocking(move || {
-        let stream = crate::audio::stream::SourceAudioStream::new(source, chunk_size_ms, options);
+        let stream =
+            crate::audio::stream::SourceAudioStream::new(source, chunk_size_ms, sample_rate, mono);
         let mut stream = match stream {
             Ok(stream) => stream,
             Err(error) => {
@@ -632,11 +628,7 @@ fn stream_source(
 ) -> PyResult<PyAudioIterator> {
     let chunks = py
         .detach(move || {
-            crate::audio::stream::SourceAudioStream::new(
-                source,
-                chunk_size_ms,
-                RustAudioLoadOptions { sample_rate, mono },
-            )
+            crate::audio::stream::SourceAudioStream::new(source, chunk_size_ms, sample_rate, mono)
         })
         .map_err(py_error)?;
     Ok(PyAudioIterator { chunks })
@@ -648,8 +640,7 @@ fn load_source(
     sample_rate: Option<u32>,
     mono: Option<bool>,
 ) -> PyResult<PyAudio> {
-    let options = RustAudioLoadOptions { sample_rate, mono };
-    py.detach(move || RustAudioLoader.load(&source, &options))
+    py.detach(move || source.load_with(sample_rate, mono))
         .map(PyAudio::from_rust)
         .map_err(py_error)
 }
@@ -717,7 +708,8 @@ impl PyAudioPath {
     ) -> PyResult<PyAudioLoadTask> {
         spawn_source_aload(
             RustAudioSource::from_path(self.path.clone()),
-            RustAudioLoadOptions { sample_rate, mono },
+            sample_rate,
+            mono,
         )
     }
 
@@ -731,7 +723,8 @@ impl PyAudioPath {
         spawn_source_astream(
             RustAudioSource::from_path(self.path.clone()),
             chunk_size_ms,
-            RustAudioLoadOptions { sample_rate, mono },
+            sample_rate,
+            mono,
         )
     }
 
@@ -803,7 +796,8 @@ impl PyAudioUrl {
     ) -> PyResult<PyAudioLoadTask> {
         spawn_source_aload(
             RustAudioSource::from_url(self.url.clone()),
-            RustAudioLoadOptions { sample_rate, mono },
+            sample_rate,
+            mono,
         )
     }
 
@@ -817,7 +811,8 @@ impl PyAudioUrl {
         spawn_source_astream(
             RustAudioSource::from_url(self.url.clone()),
             chunk_size_ms,
-            RustAudioLoadOptions { sample_rate, mono },
+            sample_rate,
+            mono,
         )
     }
 
@@ -891,7 +886,8 @@ impl PyAudioBytes {
     ) -> PyResult<PyAudioLoadTask> {
         spawn_source_aload(
             RustAudioSource::from_encoded_bytes(self.bytes.clone()),
-            RustAudioLoadOptions { sample_rate, mono },
+            sample_rate,
+            mono,
         )
     }
 
@@ -905,7 +901,8 @@ impl PyAudioBytes {
         spawn_source_astream(
             RustAudioSource::from_encoded_bytes(self.bytes.clone()),
             chunk_size_ms,
-            RustAudioLoadOptions { sample_rate, mono },
+            sample_rate,
+            mono,
         )
     }
 
@@ -977,7 +974,8 @@ impl PyAudioBase64 {
     ) -> PyResult<PyAudioLoadTask> {
         spawn_source_aload(
             RustAudioSource::from_base64(self.data.clone()),
-            RustAudioLoadOptions { sample_rate, mono },
+            sample_rate,
+            mono,
         )
     }
 
@@ -991,7 +989,8 @@ impl PyAudioBase64 {
         spawn_source_astream(
             RustAudioSource::from_base64(self.data.clone()),
             chunk_size_ms,
-            RustAudioLoadOptions { sample_rate, mono },
+            sample_rate,
+            mono,
         )
     }
 
@@ -1080,7 +1079,8 @@ impl PyAudioPcm {
     ) -> PyResult<PyAudioLoadTask> {
         spawn_source_aload(
             RustAudioSource::from_pcm_s16le(self.bytes.clone(), self.sample_rate, self.channels),
-            RustAudioLoadOptions { sample_rate, mono },
+            sample_rate,
+            mono,
         )
     }
 
@@ -1094,7 +1094,8 @@ impl PyAudioPcm {
         spawn_source_astream(
             RustAudioSource::from_pcm_s16le(self.bytes.clone(), self.sample_rate, self.channels),
             chunk_size_ms,
-            RustAudioLoadOptions { sample_rate, mono },
+            sample_rate,
+            mono,
         )
     }
 
