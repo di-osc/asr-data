@@ -22,8 +22,8 @@ pub use doc::{
 };
 pub use metrics::{CerStats, compute_cer, normalize_for_cer};
 pub use timeline::{
-    AcousticEvent, Annotation, AnnotationId, AnnotationPayload, AnnotationSource, AnnotationStatus,
-    AudioId, Diagnostic, HotwordMatch, LanguageTag, SpeakerId, TextSpan, Timeline, TimelineId,
-    Token, Transcript,
+    AcousticEvent, Annotation, AnnotationId, AnnotationPayload, AnnotationStatus, AudioId,
+    Diagnostic, HotwordMatch, LanguageTag, SpeakerId, SpeakerPayload, TextSpan, Timeline,
+    TimelineId, Token, Transcript, Transcription,
 };
 pub use utils::{DurationMs, SampleIndex, TimeRange};

@@ -3,6 +3,7 @@ use std::sync::{Arc, RwLock};
 use crate::audio::AudioSource as RustAudioSource;
 use crate::doc::AudioDoc as RustAudioDoc;
 use crate::utils::DurationMs;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
@@ -86,13 +87,23 @@ impl PyAudioDoc {
     fn ensure_timeline(
         &self,
         channel: &Bound<'_, PyAny>,
-        duration_ms: Option<u64>,
+        duration_ms: Option<f64>,
     ) -> PyResult<PyTimeline> {
         let channel = audio_channel(channel)?;
+        let duration_ms = duration_ms
+            .map(|value| {
+                if !value.is_finite() || value < 0.0 || value.ceil() > u64::MAX as f64 {
+                    return Err(PyValueError::new_err(
+                        "duration_ms must be a finite non-negative number",
+                    ));
+                }
+                Ok(DurationMs(value.ceil() as u64))
+            })
+            .transpose()?;
         self.inner
             .write()
             .map_err(|_| poisoned("audio"))?
-            .ensure_timeline(channel, duration_ms.map(DurationMs))
+            .ensure_timeline(channel, duration_ms)
             .map_err(py_error)?;
         Ok(PyTimeline {
             audio: Arc::clone(&self.inner),
@@ -165,7 +176,7 @@ impl PyAudioDoc {
         let annotation_count = audio
             .timelines()
             .values()
-            .map(|timeline| timeline.annotations.len())
+            .map(|timeline| timeline.annotation_count())
             .sum::<usize>();
         if annotation_count != 0 {
             fields.push(format!("annotations={annotation_count}"));

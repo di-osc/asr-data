@@ -153,7 +153,27 @@ impl AudioDoc {
                     found: timeline.duration,
                 });
             }
-            for annotation in &timeline.annotations {
+            for annotation in &timeline.reference {
+                if annotation.source.is_some() {
+                    return Err(AudioValidationError::ReferenceAnnotationHasSource {
+                        channel: *channel,
+                        annotation_id: annotation.id.clone(),
+                    });
+                }
+            }
+            for annotation in &timeline.prediction {
+                if annotation
+                    .source
+                    .as_deref()
+                    .is_none_or(|source| source.trim().is_empty())
+                {
+                    return Err(AudioValidationError::PredictionAnnotationMissingSource {
+                        channel: *channel,
+                        annotation_id: annotation.id.clone(),
+                    });
+                }
+            }
+            for annotation in timeline.all_annotations() {
                 if annotation.range.end > timeline.duration {
                     return Err(AudioValidationError::AnnotationOutOfBounds {
                         channel: *channel,
@@ -194,6 +214,16 @@ pub enum AudioValidationError {
         annotation_id: String,
         end: DurationMs,
         duration: DurationMs,
+    },
+    #[error("reference annotation {annotation_id:?} on {channel:?} must not have a source")]
+    ReferenceAnnotationHasSource {
+        channel: AudioChannel,
+        annotation_id: String,
+    },
+    #[error("prediction annotation {annotation_id:?} on {channel:?} must have a non-empty source")]
+    PredictionAnnotationMissingSource {
+        channel: AudioChannel,
+        annotation_id: String,
     },
 }
 

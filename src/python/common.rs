@@ -4,7 +4,7 @@ use crate::audio::{
     AudioChannel as RustAudioChannel, AudioEncoding, AudioSource as RustAudioSource,
 };
 use crate::db::AudioDbError as RustAudioDbError;
-use crate::timeline::{AnnotationSource, AnnotationStatus};
+use crate::timeline::AnnotationStatus;
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
@@ -39,18 +39,6 @@ pub(super) fn annotation_status(value: &str) -> PyResult<AnnotationStatus> {
     }
 }
 
-pub(super) fn annotation_source(kind: &str, name: &str) -> PyResult<AnnotationSource> {
-    match kind.to_ascii_lowercase().as_str() {
-        "user" => Ok(AnnotationSource::User),
-        "model" => Ok(AnnotationSource::Model(name.to_string())),
-        "stage" => Ok(AnnotationSource::Stage(name.to_string())),
-        "system" => Ok(AnnotationSource::System),
-        _ => Err(PyValueError::new_err(format!(
-            "unsupported annotation source kind {kind:?}; expected user, model, stage, or system"
-        ))),
-    }
-}
-
 pub(super) fn audio_channel(value: &Bound<'_, PyAny>) -> PyResult<RustAudioChannel> {
     if let Ok(name) = value.extract::<String>() {
         return match name.to_ascii_lowercase().as_str() {
@@ -77,22 +65,6 @@ pub(super) fn audio_channel(value: &Bound<'_, PyAny>) -> PyResult<RustAudioChann
 
 pub(super) fn audio_channel_name(channel: RustAudioChannel) -> String {
     channel.name()
-}
-
-pub(super) fn source_kind(source: &AnnotationSource) -> &'static str {
-    match source {
-        AnnotationSource::User => "user",
-        AnnotationSource::Model(_) => "model",
-        AnnotationSource::Stage(_) => "stage",
-        AnnotationSource::System => "system",
-    }
-}
-
-pub(super) fn source_name(source: &AnnotationSource) -> Option<&str> {
-    match source {
-        AnnotationSource::Model(name) | AnnotationSource::Stage(name) => Some(name),
-        AnnotationSource::User | AnnotationSource::System => None,
-    }
 }
 
 pub(super) fn status_name(status: &AnnotationStatus) -> &'static str {
@@ -128,6 +100,36 @@ pub(super) fn truncate(value: &str, max_chars: usize) -> String {
     output
 }
 
+/// Keep URLs useful in reprs without dumping long paths or signed query strings.
+pub(super) fn summarize_url(value: &str, max_chars: usize) -> String {
+    let (base, has_suffix) = match value.find(['?', '#']) {
+        Some(index) => (&value[..index], true),
+        None => (value, false),
+    };
+    let suffix = if has_suffix { "?…" } else { "" };
+    let base_budget = max_chars.saturating_sub(suffix.chars().count());
+
+    if base.chars().count() <= base_budget {
+        return format!("{base}{suffix}");
+    }
+    if base_budget <= 1 {
+        return truncate(base, base_budget);
+    }
+
+    let right_chars = (base_budget / 2).max(1);
+    let left_chars = base_budget.saturating_sub(right_chars + 1);
+    let left = base.chars().take(left_chars).collect::<String>();
+    let right = base
+        .chars()
+        .rev()
+        .take(right_chars)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!("{left}…{right}{suffix}")
+}
+
 pub(super) fn format_duration_ms(duration_ms: f64) -> String {
     if duration_ms < 1_000.0 {
         return format!("{duration_ms:.0}ms");
@@ -151,7 +153,7 @@ pub(super) fn format_source_field(source: &RustAudioSource) -> String {
         RustAudioSource::Path(path) => {
             format!("file={:?}", truncate(&path.display().to_string(), 72))
         }
-        RustAudioSource::Url(url) => format!("url={:?}", truncate(url, 72)),
+        RustAudioSource::Url(url) => format!("url={:?}", summarize_url(url, 72)),
         RustAudioSource::Base64(data) => format!("base64_chars={}", data.len()),
         RustAudioSource::EncodedBytes(bytes) => format!("bytes={}", bytes.len()),
         RustAudioSource::PcmS16Le {
@@ -164,5 +166,29 @@ pub(super) fn format_source_field(source: &RustAudioSource) -> String {
             sample_rate,
             channels
         ),
+    }
+}
+
+#[cfg(test)]
+mod repr_tests {
+    use super::summarize_url;
+
+    #[test]
+    fn url_summary_keeps_both_ends_and_hides_query_values() {
+        let value = "https://audio.example.com/a/very/long/path/session_123456789.wav?token=secret";
+        let summary = summarize_url(value, 48);
+
+        assert_eq!(summary.chars().count(), 48);
+        assert!(summary.starts_with("https://audio.example"));
+        assert!(summary.ends_with("session_123456789.wav?…"));
+        assert!(!summary.contains("secret"));
+    }
+
+    #[test]
+    fn short_url_is_left_unchanged() {
+        assert_eq!(
+            summarize_url("https://example.com/audio.wav", 72),
+            "https://example.com/audio.wav"
+        );
     }
 }

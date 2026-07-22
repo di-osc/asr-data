@@ -1,14 +1,19 @@
 import asyncio as _asyncio
 
-from ._types import AnnotationKind, AnnotationSourceKind, AnnotationStatus
+from ._types import AnnotationKind, AnnotationStatus
 from ._native import (
     Annotation,
     AudioDB,
     AudioDoc,
     AudioFormat,
     AudioSource,
+    PredictionAnnotations,
+    ReferenceAnnotations,
+    Speaker,
     Timeline,
+    Token,
     Transcript,
+    Transcription,
     AsrDataError,
     Audio,
     AudioChunk,
@@ -78,14 +83,18 @@ Audio.aload_from_source = classmethod(_wf_aload_from_source)
 __all__ = [
     "Annotation",
     "AnnotationKind",
-    "AnnotationSourceKind",
     "AnnotationStatus",
     "AudioDB",
     "AudioDoc",
     "AudioFormat",
     "AudioSource",
+    "PredictionAnnotations",
+    "ReferenceAnnotations",
+    "Speaker",
     "Timeline",
+    "Token",
     "Transcript",
+    "Transcription",
     "AsrDataError",
     "Audio",
     "AudioChunk",

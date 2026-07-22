@@ -12,7 +12,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict};
 
 use super::AsrDataError;
-use super::common::{encoding_name, format_duration_ms, poisoned, py_error, truncate};
+use super::common::{
+    encoding_name, format_duration_ms, poisoned, py_error, summarize_url, truncate,
+};
 
 #[pyclass(name = "AudioFormat", frozen)]
 #[derive(Clone)]
@@ -800,25 +802,25 @@ impl PyAudioSource {
         match &self.inner {
             RustAudioSource::Path(path) => {
                 format!(
-                    "AudioSource.from_path({:?})",
+                    "AudioSource(path={:?})",
                     truncate(&path.display().to_string(), 72)
                 )
             }
             RustAudioSource::Url(url) => {
-                format!("AudioSource.from_url({:?})", truncate(url, 72))
+                format!("AudioSource(url={:?})", summarize_url(url, 72))
             }
             RustAudioSource::EncodedBytes(bytes) => {
-                format!("AudioSource.from_bytes(byte_size={})", bytes.len())
+                format!("AudioSource(bytes={})", bytes.len())
             }
             RustAudioSource::Base64(data) => {
-                format!("AudioSource.from_base64(chars={})", data.len())
+                format!("AudioSource(base64_chars={})", data.len())
             }
             RustAudioSource::PcmS16Le {
                 bytes,
                 sample_rate,
                 channels,
             } => format!(
-                "AudioSource.from_pcm(byte_size={}, sample_rate={}, channels={})",
+                "AudioSource(pcm_bytes={}, sample_rate={}, channels={})",
                 bytes.len(),
                 sample_rate,
                 channels

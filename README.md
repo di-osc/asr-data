@@ -37,11 +37,26 @@ cargo add asr-data
 ## 快速开始
 
 ```python
-from asr_data import AudioDB, AudioDoc, AudioSource
+from asr_data import AudioDB, AudioDoc, AudioSource, Speaker, Token, Transcription
 
 doc = AudioDoc(AudioSource.from_path("audio.wav"), id="call-001")
 timeline = doc.ensure_timeline("mono", duration_ms=1_200)
-timeline.add_transcription(0, 1_200, "hello world", language="en")
+timeline.reference.add_speech(0, 1_200)
+timeline.reference.add_speaker(
+    0,
+    1_200,
+    Speaker(
+        "speaker_1",
+        transcription=Transcription(
+            "hello world",
+            language="en",
+            tokens=[
+                Token("hello", start_ms=0, end_ms=600),
+                Token("world", start_ms=600, end_ms=1_200),
+            ],
+        ),
+    ),
+)
 
 db = AudioDB("dataset.sqlite")
 db.insert(doc)

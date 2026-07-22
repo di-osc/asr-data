@@ -2,7 +2,6 @@ from typing import Literal, TypeAlias
 
 AnnotationKind: TypeAlias = Literal[
     "speech",
-    "silence",
     "token",
     "transcription",
     "sentence",
@@ -18,11 +17,4 @@ AnnotationStatus: TypeAlias = Literal[
     "final",
     "revised",
     "deleted",
-]
-
-AnnotationSourceKind: TypeAlias = Literal[
-    "user",
-    "model",
-    "stage",
-    "system",
 ]
