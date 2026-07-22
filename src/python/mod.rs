@@ -3,6 +3,7 @@ mod audio;
 mod common;
 mod db;
 mod doc;
+mod metrics;
 mod timeline;
 
 use pyo3::create_exception;
@@ -17,6 +18,7 @@ fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("AsrDataError", py.get_type::<AsrDataError>())?;
     annotation::register(module)?;
     audio::register(module)?;
+    metrics::register(module)?;
     timeline::register(module)?;
     doc::register(module)?;
     db::register(module)?;

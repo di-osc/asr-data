@@ -21,6 +21,7 @@ from ._native import Transcript as Transcript
 from ._native import AsrDataError as AsrDataError
 from ._native import Audio as _Audio
 from ._native import AudioChunk as AudioChunk
+from ._native import normalize_zh as normalize_zh
 
 class Audio(_Audio):
     @staticmethod

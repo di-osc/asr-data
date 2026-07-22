@@ -28,6 +28,15 @@ from asr_data.annotation import (
 )
 
 
+def test_normalize_zh_is_public():
+    from asr_data import normalize_zh
+
+    assert normalize_zh("2024年") == "二零二四年"
+    assert normalize_zh("") == ""
+    with pytest.raises(TypeError):
+        normalize_zh(2024)
+
+
 def test_audio_source_factories_and_variant_properties():
     source_type = asr_data.AudioSource
 

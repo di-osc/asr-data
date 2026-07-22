@@ -24,6 +24,7 @@ from ._native import (
     AsrDataError,
     Audio,
     AudioChunk,
+    normalize_zh,
 )
 
 
@@ -109,4 +110,5 @@ __all__ = [
     "AsrDataError",
     "Audio",
     "AudioChunk",
+    "normalize_zh",
 ]
