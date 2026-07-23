@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
 use uuid::Uuid;
 
@@ -111,14 +112,31 @@ impl Timeline {
             .filter(move |annotation| annotation.source.as_deref() == Some(source))
     }
 
-    pub fn prediction_sources(&self) -> Vec<&str> {
-        let mut sources = self
-            .prediction
-            .iter()
-            .filter_map(|annotation| annotation.source.as_deref())
-            .collect::<Vec<_>>();
-        sources.sort_unstable();
-        sources.dedup();
+    pub fn prediction_sources(&self) -> BTreeMap<&'static str, Vec<&str>> {
+        let mut sources = [
+            "speech",
+            "token",
+            "transcription",
+            "sentence",
+            "speaker",
+            "language",
+            "acoustic_event",
+        ]
+        .into_iter()
+        .map(|kind| (kind, Vec::new()))
+        .collect::<BTreeMap<_, _>>();
+        for annotation in &self.prediction {
+            if let Some(source) = annotation.source.as_deref() {
+                sources
+                    .get_mut(annotation.payload.kind())
+                    .expect("every annotation kind has a source group")
+                    .push(source);
+            }
+        }
+        for values in sources.values_mut() {
+            values.sort_unstable();
+            values.dedup();
+        }
         sources
     }
 

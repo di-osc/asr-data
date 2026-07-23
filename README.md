@@ -41,11 +41,12 @@ from asr_data import AudioDB, AudioDoc, AudioSource
 from asr_data.annotation import Speaker, Token, Transcription
 
 doc = AudioDoc(AudioSource.from_path("audio.wav"), id="call-001")
-timeline = doc.ensure_timeline("mono", duration_ms=1_200)
-timeline.reference.add_speech(0, 1_200)
+timeline = doc.timeline("mono")
+end_ms = timeline.duration_ms
+timeline.reference.add_speech(0, end_ms)
 timeline.reference.add_speaker(
     0,
-    1_200,
+    end_ms,
     Speaker(
         "speaker_1",
         transcription=Transcription(
@@ -59,36 +60,14 @@ timeline.reference.add_speaker(
     ),
 )
 
-db = AudioDB("dataset.db")
+db = AudioDB.create("dataset.db")
 db.insert(doc)
-```
-
-## 评估
-
-`Timeline.eval()` 使用 reference 评估指定来源的 prediction。转写评估默认使用内嵌的
-中文 TN 资源完成文本标准化，再计算 CER：
-
-```python
-result = timeline.eval(
-    transcription="qwen-asr",
-    speech="silero-vad",
-)
-
-print(result.transcription.cer)
-print(result.transcription.normalized_reference)
-print(result.speech.f1)
-print(result.speech.iou)
-```
-
-如需要按原文计算 CER，可以关闭 TN：
-
-```python
-result = timeline.eval(transcription="qwen-asr", normalize=False)
 ```
 
 ## 文档
 
-完整的 API 与使用说明请查看[在线文档](https://libraries-793f13szd-di-osc1.vercel.app/asr-data)。
+音频探测、标注、评测、数据库以及完整 API 请查看
+[在线文档](https://libraries-793f13szd-di-osc1.vercel.app/asr-data)。
 
 ## 许可证
 

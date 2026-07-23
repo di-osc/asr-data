@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::db::{AudioDb as RustAudioDb, AudioDbMode, AudioQuery};
 use crate::doc::AudioDoc as RustAudioDoc;
 use crate::utils::DurationMs;
-use pyo3::exceptions::PyKeyError;
+use pyo3::exceptions::{PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict};
+use pyo3::types::{PyAny, PyDateTime, PyDict};
 
 use super::common::{format_duration_ms, poisoned, py_db_error, py_error, truncate};
 use super::doc::PyAudioDoc;
@@ -62,9 +63,19 @@ impl PyAudioDbIterator {
 
 #[pymethods]
 impl PyAudioDb {
-    #[new]
+    #[staticmethod]
+    fn create(path: String) -> PyResult<Self> {
+        let db = RustAudioDb::create(&path);
+        Ok(Self {
+            inner: Arc::new(Mutex::new(db.map_err(py_db_error)?)),
+            path,
+            read_only: false,
+        })
+    }
+
+    #[staticmethod]
     #[pyo3(signature = (path, read_only=false))]
-    fn new(path: String, read_only: bool) -> PyResult<Self> {
+    fn open(path: String, read_only: bool) -> PyResult<Self> {
         let mode = if read_only {
             AudioDbMode::ReadOnly
         } else {
@@ -72,7 +83,7 @@ impl PyAudioDb {
         };
         let db = RustAudioDb::open(&path, mode);
         Ok(Self {
-            inner: Arc::new(Mutex::new(db.map_err(py_error)?)),
+            inner: Arc::new(Mutex::new(db.map_err(py_db_error)?)),
             path,
             read_only,
         })
@@ -96,7 +107,19 @@ impl PyAudioDb {
             .map_err(py_db_error)
     }
 
-    #[pyo3(signature = (limit=100, *, after=None, min_duration_ms=None, max_duration_ms=None, metadata=None))]
+    #[pyo3(signature = (
+        limit=100,
+        *,
+        after=None,
+        min_duration_ms=None,
+        max_duration_ms=None,
+        created_from=None,
+        created_until=None,
+        updated_from=None,
+        updated_until=None,
+        metadata=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn query(
         &self,
         py: Python<'_>,
@@ -104,8 +127,26 @@ impl PyAudioDb {
         after: Option<String>,
         min_duration_ms: Option<u64>,
         max_duration_ms: Option<u64>,
+        created_from: Option<&Bound<'_, PyAny>>,
+        created_until: Option<&Bound<'_, PyAny>>,
+        updated_from: Option<&Bound<'_, PyAny>>,
+        updated_until: Option<&Bound<'_, PyAny>>,
         metadata: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Vec<PyAudioDoc>> {
+        let created_from = datetime_to_system_time(created_from, "created_from")?;
+        let created_until = datetime_to_system_time(created_until, "created_until")?;
+        let updated_from = datetime_to_system_time(updated_from, "updated_from")?;
+        let updated_until = datetime_to_system_time(updated_until, "updated_until")?;
+        validate_time_range(
+            created_from,
+            created_until,
+            "created_from must not exceed created_until",
+        )?;
+        validate_time_range(
+            updated_from,
+            updated_until,
+            "updated_from must not exceed updated_until",
+        )?;
         let metadata = metadata
             .map(|metadata| {
                 pythonize::depythonize::<BTreeMap<String, serde_json::Value>>(metadata.as_any())
@@ -121,6 +162,10 @@ impl PyAudioDb {
                 after,
                 min_duration: min_duration_ms.map(DurationMs),
                 max_duration: max_duration_ms.map(DurationMs),
+                created_from,
+                created_until,
+                updated_from,
+                updated_until,
                 metadata,
             })
             .map_err(py_error)?
@@ -254,6 +299,53 @@ impl PyAudioDb {
             len
         ))
     }
+}
+
+fn datetime_to_system_time(
+    value: Option<&Bound<'_, PyAny>>,
+    name: &str,
+) -> PyResult<Option<SystemTime>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    value.cast::<PyDateTime>().map_err(|_| {
+        PyTypeError::new_err(format!("{name} must be a datetime.datetime instance"))
+    })?;
+    if value.call_method0("utcoffset")?.is_none() {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be timezone-aware"
+        )));
+    }
+    let seconds = value.call_method0("timestamp")?.extract::<f64>()?;
+    let milliseconds = seconds * 1_000.0;
+    if !milliseconds.is_finite() || milliseconds < i64::MIN as f64 || milliseconds > i64::MAX as f64
+    {
+        return Err(PyValueError::new_err(format!(
+            "{name} is outside the supported datetime range"
+        )));
+    }
+    let milliseconds = milliseconds.ceil() as i64;
+    let duration = Duration::from_millis(milliseconds.unsigned_abs());
+    let time = if milliseconds >= 0 {
+        UNIX_EPOCH.checked_add(duration)
+    } else {
+        UNIX_EPOCH.checked_sub(duration)
+    }
+    .ok_or_else(|| {
+        PyValueError::new_err(format!("{name} is outside the supported datetime range"))
+    })?;
+    Ok(Some(time))
+}
+
+fn validate_time_range(
+    start: Option<SystemTime>,
+    end: Option<SystemTime>,
+    message: &'static str,
+) -> PyResult<()> {
+    if start.zip(end).is_some_and(|(start, end)| start > end) {
+        return Err(PyValueError::new_err(message));
+    }
+    Ok(())
 }
 
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -62,6 +62,27 @@ pub struct AudioFormat {
     pub channels: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioInfo {
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub frame_count: u64,
+    pub source_format: AudioFormat,
+}
+
+impl AudioInfo {
+    pub fn duration_ms(&self) -> f64 {
+        self.frame_count as f64 * 1000.0 / f64::from(self.sample_rate)
+    }
+
+    pub fn timeline_duration_ms(&self) -> u64 {
+        let millis = u128::from(self.frame_count)
+            .saturating_mul(1000)
+            .div_ceil(u128::from(self.sample_rate));
+        millis.min(u128::from(u64::MAX)) as u64
+    }
+}
+
 impl AudioFormat {
     pub fn pcm16_mono(sample_rate: u32) -> Self {
         Self {
@@ -141,6 +162,67 @@ impl AudioSource {
         let mut waveform = waveform;
         data::sanitize_samples(&mut waveform.samples);
         Ok(waveform)
+    }
+
+    pub fn probe(&self) -> anyhow::Result<AudioInfo> {
+        match self {
+            Self::Path(path) => decode::probe_path(path),
+            Self::Url(url) => {
+                if let Some(path) = local_path_from_urlish(url) {
+                    decode::probe_path(&path)
+                } else {
+                    decode::probe_url(url)
+                }
+            }
+            Self::Base64(data) => decode::probe_base64(data),
+            Self::EncodedBytes(bytes) => decode::probe_bytes(bytes.clone()),
+            Self::PcmS16Le {
+                bytes,
+                sample_rate,
+                channels,
+            } => {
+                if *sample_rate == 0 {
+                    anyhow::bail!("sample rate must be greater than zero");
+                }
+                if *channels == 0 {
+                    anyhow::bail!("channel count must be greater than zero");
+                }
+                if !bytes.len().is_multiple_of(2 * usize::from(*channels)) {
+                    anyhow::bail!(
+                        "PCM byte length {} is not a whole number of {}-channel frames",
+                        bytes.len(),
+                        channels
+                    );
+                }
+                Ok(AudioInfo {
+                    sample_rate: *sample_rate,
+                    channels: *channels,
+                    frame_count: (bytes.len() / 2 / usize::from(*channels)) as u64,
+                    source_format: AudioFormat {
+                        encoding: AudioEncoding::PcmS16Le,
+                        sample_rate: *sample_rate,
+                        channels: *channels,
+                    },
+                })
+            }
+        }
+    }
+
+    pub async fn aprobe(&self) -> anyhow::Result<AudioInfo> {
+        match self {
+            Self::Url(url) if url.starts_with("http://") || url.starts_with("https://") => {
+                let bytes = decode::download_url_bytes(url).await?;
+                tokio::task::spawn_blocking(move || decode::probe_bytes(bytes))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("audio probe worker failed: {error}"))?
+            }
+            source => {
+                let source = source.clone();
+                tokio::task::spawn_blocking(move || source.probe())
+                    .await
+                    .map_err(|error| anyhow::anyhow!("audio probe worker failed: {error}"))?
+            }
+        }
     }
 
     pub fn load_with(&self, sample_rate: Option<u32>, mono: Option<bool>) -> anyhow::Result<Audio> {

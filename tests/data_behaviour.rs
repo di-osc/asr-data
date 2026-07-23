@@ -6,6 +6,14 @@ use asr_data::{
     MAX_QUERY_LIMIT, SpeakerPayload, TextSpan, TimeRange, Timeline, Token, Transcription,
 };
 
+fn pcm_source(duration_ms: usize, channels: u16) -> AudioSource {
+    AudioSource::from_pcm_s16le(
+        vec![0; duration_ms * usize::from(channels) * 2],
+        1_000,
+        channels,
+    )
+}
+
 #[test]
 fn waveform_round_trips_pcm16_samples() {
     let waveform = Audio::from_i16_pcm(&[0, 16_384, -16_384, 32_767], 16_000);
@@ -317,8 +325,29 @@ fn annotation_overlap_prediction_relabel_is_atomic() {
 }
 
 #[test]
+fn prediction_sources_are_grouped_by_annotation_kind() {
+    let mut timeline = Timeline::new("audio", DurationMs(300));
+    timeline
+        .push_prediction(speech_annotation(0, 100, Some("silero-vad")))
+        .unwrap();
+    timeline
+        .push_prediction(Annotation::new(
+            TimeRange::new(DurationMs(0), DurationMs(100)),
+            AnnotationPayload::Transcription(Transcription::new("hello")),
+            Some("qwen-asr".to_owned()),
+        ))
+        .unwrap();
+
+    let sources = timeline.prediction_sources();
+    assert_eq!(sources["speech"], vec!["silero-vad"]);
+    assert_eq!(sources["transcription"], vec!["qwen-asr"]);
+    assert!(sources["speaker"].is_empty());
+    assert_eq!(sources.len(), 7);
+}
+
+#[test]
 fn annotation_overlap_audio_validation_rejects_direct_vector_mutation() {
-    let mut audio = AudioDoc::with_id("audio", AudioSource::from_pcm_s16le(vec![0; 2], 1_000, 1));
+    let mut audio = AudioDoc::with_id("audio", pcm_source(300, 1)).expect("audio document");
     let timeline = audio
         .ensure_timeline(AudioChannel::Mono, Some(DurationMs(300)))
         .unwrap();
@@ -378,7 +407,7 @@ fn timeline_derives_transcript_from_all_text_annotations() {
 
 #[test]
 fn audio_keeps_independent_channel_timelines() {
-    let mut audio = AudioDoc::with_id("call-1", AudioSource::from_pcm_s16le(vec![0; 8], 8_000, 2));
+    let mut audio = AudioDoc::with_id("call-1", pcm_source(100, 2)).expect("audio document");
     let transcription = |text: &str| {
         Annotation::new(
             TimeRange::new(DurationMs(0), DurationMs(100)),
@@ -423,7 +452,7 @@ fn audio_keeps_independent_channel_timelines() {
 
 #[test]
 fn audio_timelines_own_a_shared_duration_and_channel_normalization() {
-    let mut audio = AudioDoc::with_id("call-1", AudioSource::from_encoded_bytes(vec![]));
+    let mut audio = AudioDoc::with_id("call-1", pcm_source(500, 2)).expect("audio document");
     audio
         .ensure_timeline(AudioChannel::from_index(1), Some(DurationMs(500)))
         .expect("right timeline");
@@ -492,7 +521,8 @@ fn annotated_audio() -> AudioDoc {
             None,
         ))
         .unwrap();
-    let audio = AudioDoc::with_id("audio_1", AudioSource::from_encoded_bytes(vec![1, 2, 3, 4]))
+    let audio = AudioDoc::with_id("audio_1", pcm_source(100, 2))
+        .expect("audio document")
         .with_timeline(timeline)
         .with_metadata_value("sha256", serde_json::json!("sha"));
     audio.with_metadata_value("model", serde_json::json!("qwen3-asr"))
@@ -543,7 +573,8 @@ fn audio_source_loads_pcm_and_waveform_ops_preserve_original_format() {
         .into_iter()
         .flat_map(i16::to_le_bytes)
         .collect::<Vec<_>>();
-    let audio = AudioDoc::with_id("pcm", AudioSource::from_pcm_s16le(bytes, 8_000, 2));
+    let audio = AudioDoc::with_id("pcm", AudioSource::from_pcm_s16le(bytes, 8_000, 2))
+        .expect("audio document");
 
     let waveform = audio.source.load().expect("load PCM source");
     assert_eq!(waveform.sample_rate, 8_000);
@@ -565,9 +596,68 @@ fn audio_source_loads_pcm_and_waveform_ops_preserve_original_format() {
 }
 
 #[test]
+fn audio_source_probe_and_audio_doc_initialize_timelines_without_decoding() {
+    let source = AudioSource::from_pcm_s16le(vec![0; 24], 1_000, 2);
+    let info = source.probe().expect("probe PCM source");
+    let doc = AudioDoc::from_source(source).expect("document from stereo source");
+
+    assert_eq!(info.sample_rate, 1_000);
+    assert_eq!(info.channels, 2);
+    assert_eq!(info.frame_count, 6);
+    assert_eq!(info.duration_ms(), 6.0);
+    assert_eq!(doc.timelines().len(), 2);
+    assert_eq!(
+        doc.timeline(AudioChannel::Left)
+            .expect("left channel")
+            .expect("left timeline")
+            .duration,
+        DurationMs(6)
+    );
+    assert!(
+        doc.timeline(AudioChannel::Right)
+            .expect("right channel")
+            .is_some()
+    );
+    assert!(
+        doc.timeline(AudioChannel::Mono)
+            .expect("mono channel")
+            .is_none()
+    );
+}
+
+#[test]
+fn audio_doc_uses_ceiling_duration_and_indexed_multichannel_timeline_names() {
+    let mono_source = AudioSource::from_pcm_s16le(vec![0; 4], 3, 1);
+    let mono_doc = AudioDoc::from_source(mono_source).expect("mono document");
+    assert_eq!(
+        mono_doc.timelines().keys().copied().collect::<Vec<_>>(),
+        vec![AudioChannel::Mono]
+    );
+    assert_eq!(mono_doc.timeline_duration(), Some(DurationMs(667)));
+
+    let source = AudioSource::from_pcm_s16le(vec![0; 16], 1_000, 4);
+    let multi_doc = AudioDoc::from_source(source).expect("multichannel document");
+    assert_eq!(
+        multi_doc.timelines().keys().copied().collect::<Vec<_>>(),
+        vec![
+            AudioChannel::Left,
+            AudioChannel::Right,
+            AudioChannel::Channel(2),
+            AudioChannel::Channel(3),
+        ]
+    );
+}
+
+#[test]
+fn audio_source_probe_rejects_incomplete_pcm_frames() {
+    let source = AudioSource::from_pcm_s16le(vec![0; 6], 16_000, 2);
+    assert!(source.probe().is_err());
+}
+
+#[test]
 fn audio_db_crud_and_difference_update() {
     let path = std::env::temp_dir().join(format!("asr-db-{}.vasr", uuid::Uuid::new_v4().simple()));
-    let mut db = AudioDb::open(&path, AudioDbMode::ReadWrite).expect("open AudioDb");
+    let mut db = AudioDb::create(&path).expect("open AudioDb");
     let mut first = annotated_audio();
     first
         .ensure_timeline(AudioChannel::Left, None)
@@ -587,7 +677,8 @@ fn audio_db_crud_and_difference_update() {
             None,
         ))
         .unwrap();
-    let mut second = AudioDoc::with_id("second", AudioSource::from_encoded_bytes(vec![5, 6, 7]));
+    let mut second =
+        AudioDoc::with_id("second", pcm_source(250, 1)).expect("second audio document");
     second
         .ensure_timeline(AudioChannel::Mono, Some(DurationMs(250)))
         .expect("mono timeline");
@@ -644,7 +735,7 @@ fn audio_db_crud_and_difference_update() {
         }),
         Err(AudioDbError::QueryLimitExceeded { .. })
     ));
-    let missing = AudioDoc::with_id("missing", AudioSource::from_encoded_bytes(vec![]));
+    let missing = AudioDoc::with_id("missing", pcm_source(1, 1)).expect("missing audio document");
     assert!(matches!(
         db.update(&missing),
         Err(AudioDbError::NotFound { audio_id }) if audio_id == "missing"
@@ -678,14 +769,14 @@ fn audio_db_crud_and_difference_update() {
 }
 
 #[test]
-fn audio_db_rejects_every_schema_before_v6() {
+fn audio_db_rejects_every_schema_before_v8() {
     let path = std::env::temp_dir().join(format!(
         "asr-db-old-schema-{}.vasr",
         uuid::Uuid::new_v4().simple()
     ));
-    assert_eq!(AudioDb::SCHEMA_VERSION, 6);
+    assert_eq!(AudioDb::SCHEMA_VERSION, 8);
 
-    for version in 1..6 {
+    for version in 1..8 {
         let connection = rusqlite::Connection::open(&path).expect("open v1 fixture");
         connection
             .pragma_update(None, "application_id", 0x5641_5352_i64)
@@ -697,8 +788,29 @@ fn audio_db_rejects_every_schema_before_v6() {
 
         assert!(matches!(
             AudioDb::open(&path, AudioDbMode::ReadOnly),
-            Err(AudioDbError::UnsupportedSchema { found, expected: 6 }) if found == version
+            Err(AudioDbError::UnsupportedSchema { found, expected: 8 }) if found == version
         ));
         std::fs::remove_file(&path).ok();
     }
+}
+
+#[test]
+fn audio_db_create_and_open_are_explicit() {
+    let path = std::env::temp_dir().join(format!(
+        "asr-db-explicit-{}.db",
+        uuid::Uuid::new_v4().simple()
+    ));
+
+    assert!(matches!(
+        AudioDb::open(&path, AudioDbMode::ReadWrite),
+        Err(AudioDbError::DatabaseNotFound { .. })
+    ));
+    let db = AudioDb::create(&path).expect("create database");
+    drop(db);
+    assert!(matches!(
+        AudioDb::create(&path),
+        Err(AudioDbError::AlreadyExists { .. })
+    ));
+    AudioDb::open(&path, AudioDbMode::ReadWrite).expect("open existing database");
+    std::fs::remove_file(path).ok();
 }

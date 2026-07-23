@@ -7,8 +7,9 @@ from .annotation import Speaker as Speaker
 from .annotation import Token as Token
 from .annotation import Transcription as Transcription
 from ._native import AudioDB as AudioDB
-from ._native import AudioDoc as AudioDoc
+from ._native import AudioDoc as _AudioDoc
 from ._native import AudioFormat as AudioFormat
+from ._native import AudioInfo as AudioInfo
 from ._native import AudioSource as AudioSource
 from ._native import PredictionAnnotations as PredictionAnnotations
 from ._native import ReferenceAnnotations as ReferenceAnnotations
@@ -29,5 +30,11 @@ class Audio(_Audio):
     def aload_from_source(
         source: AudioSource,
     ) -> Awaitable[Audio]: ...
+
+class AudioDoc(_AudioDoc):
+    @staticmethod
+    def afrom_source(
+        source: AudioSource, id: str | None = None
+    ) -> Awaitable[AudioDoc]: ...
 
 __all__: list[str]

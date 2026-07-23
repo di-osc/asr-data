@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-use crate::audio::{AudioChannel, AudioSource};
+use crate::audio::{AudioChannel, AudioInfo, AudioSource};
 use crate::timeline::{Timeline, TimelineAnnotationError};
 use crate::utils::DurationMs;
 
@@ -12,24 +12,86 @@ pub struct AudioDoc {
     #[serde(default)]
     pub id: String,
     pub source: AudioSource,
+    pub audio_info: AudioInfo,
     pub(crate) timelines: BTreeMap<AudioChannel, Timeline>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
 }
 
 impl AudioDoc {
-    pub fn new(source: impl Into<AudioSource>) -> Self {
+    pub fn new(source: impl Into<AudioSource>) -> anyhow::Result<Self> {
         Self::with_id(format!("audio_{}", uuid::Uuid::new_v4().simple()), source)
     }
 
-    pub fn with_id(audio_id: impl Into<String>, source: impl Into<AudioSource>) -> Self {
+    pub fn with_id(
+        audio_id: impl Into<String>,
+        source: impl Into<AudioSource>,
+    ) -> anyhow::Result<Self> {
+        Self::with_id_from_source(audio_id, source)
+    }
+
+    pub fn from_source(source: impl Into<AudioSource>) -> anyhow::Result<Self> {
+        Self::new(source)
+    }
+
+    pub fn with_id_from_source(
+        audio_id: impl Into<String>,
+        source: impl Into<AudioSource>,
+    ) -> anyhow::Result<Self> {
+        let source = source.into();
+        let info = source.probe()?;
+        Ok(Self::with_id_from_info(audio_id, source, &info))
+    }
+
+    pub async fn afrom_source(source: impl Into<AudioSource>) -> anyhow::Result<Self> {
+        let source = source.into();
+        let info = source.aprobe().await?;
+        Ok(Self::from_info(source, &info))
+    }
+
+    pub async fn with_id_afrom_source(
+        audio_id: impl Into<String>,
+        source: impl Into<AudioSource>,
+    ) -> anyhow::Result<Self> {
         let audio_id = audio_id.into();
-        Self {
-            id: audio_id,
+        let source = source.into();
+        let info = source.aprobe().await?;
+        Ok(Self::with_id_from_info(audio_id, source, &info))
+    }
+
+    pub fn from_info(source: impl Into<AudioSource>, info: &AudioInfo) -> Self {
+        Self::with_id_from_info(
+            format!("audio_{}", uuid::Uuid::new_v4().simple()),
+            source,
+            info,
+        )
+    }
+
+    pub fn with_id_from_info(
+        audio_id: impl Into<String>,
+        source: impl Into<AudioSource>,
+        info: &AudioInfo,
+    ) -> Self {
+        let mut doc = Self {
+            id: audio_id.into(),
             source: source.into(),
+            audio_info: info.clone(),
             timelines: BTreeMap::new(),
             metadata: BTreeMap::new(),
+        };
+        let duration = DurationMs(info.timeline_duration_ms());
+        if info.channels == 1 {
+            doc.timelines
+                .insert(AudioChannel::Mono, Timeline::new(doc.id.clone(), duration));
+        } else {
+            for index in 0..info.channels {
+                doc.timelines.insert(
+                    AudioChannel::from_index(index),
+                    Timeline::new(doc.id.clone(), duration),
+                );
+            }
         }
+        doc
     }
 
     pub fn with_timeline(mut self, timeline: Timeline) -> Self {
@@ -58,11 +120,7 @@ impl AudioDoc {
         duration: Option<DurationMs>,
     ) -> Result<&mut Timeline, AudioTimelineError> {
         validate_channel(channel).map_err(AudioTimelineError::InvalidChannel)?;
-        let expected = self
-            .timelines
-            .values()
-            .next()
-            .map(|timeline| timeline.duration);
+        let expected = Some(DurationMs(self.audio_info.timeline_duration_ms()));
         let duration = match (expected, duration) {
             (None, None) => return Err(AudioTimelineError::MissingDuration),
             (None, Some(duration)) | (Some(duration), None) => duration,
@@ -120,15 +178,18 @@ impl AudioDoc {
     }
 
     pub fn timeline_duration(&self) -> Option<DurationMs> {
-        self.timelines
-            .values()
-            .next()
-            .map(|timeline| timeline.duration)
+        Some(DurationMs(self.audio_info.timeline_duration_ms()))
     }
 
     pub fn validate(&self) -> Result<(), AudioValidationError> {
         if self.id.trim().is_empty() {
             return Err(AudioValidationError::EmptyAudioId);
+        }
+        if self.audio_info.sample_rate == 0 {
+            return Err(AudioValidationError::InvalidAudioInfoSampleRate);
+        }
+        if self.audio_info.channels == 0 {
+            return Err(AudioValidationError::InvalidAudioInfoChannels);
         }
         let expected_duration = self.timeline_duration();
         for (channel, timeline) in &self.timelines {
@@ -194,6 +255,10 @@ impl AudioDoc {
 pub enum AudioValidationError {
     #[error("audio id must not be empty")]
     EmptyAudioId,
+    #[error("audio info sample rate must be greater than zero")]
+    InvalidAudioInfoSampleRate,
+    #[error("audio info channel count must be greater than zero")]
+    InvalidAudioInfoChannels,
     #[error("audio channel {channel:?} is not canonical")]
     NonCanonicalChannel { channel: AudioChannel },
     #[error("timeline {channel:?} audio id mismatch: expected {expected:?}, found {found:?}")]
@@ -257,24 +322,6 @@ fn validate_channel(channel: AudioChannel) -> Result<(), AudioChannelError> {
     match channel {
         AudioChannel::Channel(index @ 0..=1) => Err(AudioChannelError { index }),
         _ => Ok(()),
-    }
-}
-
-impl From<AudioSource> for AudioDoc {
-    fn from(source: AudioSource) -> Self {
-        Self::new(source)
-    }
-}
-
-impl From<&str> for AudioDoc {
-    fn from(source: &str) -> Self {
-        Self::new(AudioSource::new(source))
-    }
-}
-
-impl From<String> for AudioDoc {
-    fn from(source: String) -> Self {
-        Self::new(AudioSource::new(source))
     }
 }
 

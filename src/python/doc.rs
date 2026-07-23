@@ -1,13 +1,15 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::audio::AudioSource as RustAudioSource;
 use crate::doc::AudioDoc as RustAudioDoc;
 use crate::utils::DurationMs;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
-use super::audio::{py_source_from_rust, rust_source_from_py};
+use super::audio::{
+    PyAudioInfo, async_runtime, py_audio_info_from_rust, py_source_from_rust, rust_source_from_py,
+};
 use super::common::{
     SharedAudio, audio_channel, audio_channel_name, format_duration_ms, format_source_field,
     poisoned, py_error, truncate,
@@ -33,10 +35,12 @@ impl PyAudioDoc {
     }
 
     fn build(py: Python<'_>, source: RustAudioSource, id: Option<String>) -> PyResult<Self> {
-        let audio = match id {
-            Some(id) => RustAudioDoc::with_id(id, source),
-            None => RustAudioDoc::new(source),
-        };
+        let audio = py
+            .detach(move || match id {
+                Some(id) => RustAudioDoc::with_id_from_source(id, source),
+                None => RustAudioDoc::from_source(source),
+            })
+            .map_err(py_error)?;
         Self::from_rust(py, audio)
     }
 
@@ -48,6 +52,50 @@ impl PyAudioDoc {
     }
 }
 
+type AsyncDocResult = Arc<Mutex<Option<Result<RustAudioDoc, String>>>>;
+
+#[pyclass(name = "_AudioDocTask")]
+struct PyAudioDocTask {
+    result: AsyncDocResult,
+}
+
+#[pymethods]
+impl PyAudioDocTask {
+    fn done(&self) -> PyResult<bool> {
+        Ok(self
+            .result
+            .lock()
+            .map_err(|_| poisoned("audio document task"))?
+            .is_some())
+    }
+
+    fn result(&self, py: Python<'_>) -> PyResult<PyAudioDoc> {
+        let result = self
+            .result
+            .lock()
+            .map_err(|_| poisoned("audio document task"))?
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("audio document has not completed"))?;
+        PyAudioDoc::from_rust(py, result.map_err(super::AsrDataError::new_err)?)
+    }
+}
+
+fn spawn_doc_from_source(source: RustAudioSource, id: Option<String>) -> PyAudioDocTask {
+    let result: AsyncDocResult = Arc::new(Mutex::new(None));
+    let task_result = Arc::clone(&result);
+    async_runtime().spawn(async move {
+        let doc = match id {
+            Some(id) => RustAudioDoc::with_id_afrom_source(id, source).await,
+            None => RustAudioDoc::afrom_source(source).await,
+        }
+        .map_err(|error| format!("{error:#}"));
+        if let Ok(mut slot) = task_result.lock() {
+            *slot = Some(doc);
+        }
+    });
+    PyAudioDocTask { result }
+}
+
 #[pymethods]
 impl PyAudioDoc {
     #[new]
@@ -57,10 +105,25 @@ impl PyAudioDoc {
         Self::build(py, source, id)
     }
 
+    #[staticmethod]
+    #[pyo3(signature = (source, id=None))]
+    fn _start_afrom_source(
+        source: &Bound<'_, PyAny>,
+        id: Option<String>,
+    ) -> PyResult<PyAudioDocTask> {
+        Ok(spawn_doc_from_source(rust_source_from_py(source)?, id))
+    }
+
     #[getter]
     fn source(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
         py_source_from_rust(py, &audio.source)
+    }
+
+    #[getter]
+    fn audio_info(&self) -> PyResult<PyAudioInfo> {
+        let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
+        Ok(py_audio_info_from_rust(&audio.audio_info))
     }
 
     #[getter]
@@ -202,5 +265,6 @@ impl PyAudioDoc {
 
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAudioDoc>()?;
+    module.add_class::<PyAudioDocTask>()?;
     Ok(())
 }

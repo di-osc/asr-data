@@ -8,7 +8,7 @@ pub mod decode;
 mod source;
 pub(crate) mod stream;
 pub use data::{Audio, AudioChunk, AudioChunks, AudioError};
-pub use source::{AudioChannel, AudioEncoding, AudioFormat, AudioSource};
+pub use source::{AudioChannel, AudioEncoding, AudioFormat, AudioInfo, AudioSource};
 
 pub(crate) fn transform_loaded_audio(
     mut waveform: Audio,

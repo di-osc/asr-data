@@ -4,7 +4,7 @@ use asr_data::audio::{self, decode};
 use asr_data::{
     Annotation, AnnotationPayload, Audio, AudioChannel, AudioChunk, AudioChunks, AudioDb,
     AudioDbError, AudioDbInfo, AudioDbMode, AudioDoc, AudioEncoding, AudioError, AudioFormat,
-    AudioQuery, AudioSource, CerStats, DEFAULT_QUERY_LIMIT, DurationMs, MAX_QUERY_LIMIT,
+    AudioInfo, AudioQuery, AudioSource, CerStats, DEFAULT_QUERY_LIMIT, DurationMs, MAX_QUERY_LIMIT,
     SampleIndex, SpeakerPayload, SpeechEvaluation, TextNormalizationError, TextSpan, TimeRange,
     Timeline, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation, Token, Transcript,
     Transcription, TranscriptionEvaluation, TranscriptionNormalization, compute_cer,
@@ -28,6 +28,7 @@ fn stable_public_paths_compile() {
     let _: Option<AudioEncoding> = None;
     let _: Option<AudioError> = None;
     let _: Option<AudioFormat> = None;
+    let _: Option<AudioInfo> = None;
     let _: Option<AudioQuery> = None;
     let _: Option<AudioSource> = None;
     let _: Option<CerStats> = None;

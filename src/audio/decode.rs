@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 
-use super::{Audio, AudioChunk, AudioEncoding, AudioFormat, AudioSource};
+use super::{Audio, AudioChunk, AudioEncoding, AudioFormat, AudioInfo, AudioSource};
 
 pub struct DecodedAudioChunks {
     format: Box<dyn symphonia::core::formats::FormatReader>,
@@ -254,6 +254,156 @@ pub fn decode_path(path: &Path) -> Result<(Vec<f32>, u32)> {
     let waveform = decode_path_audio(path)?;
     let mono = waveform.to_mono()?;
     Ok((mono.samples, mono.sample_rate))
+}
+
+pub fn probe_path(path: &Path) -> Result<AudioInfo> {
+    use std::fs::File;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::io::MediaSourceStream;
+
+    let file = File::open(path).with_context(|| format!("failed to open audio file {path:?}"))?;
+    let mut hint = Hint::new();
+    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+        hint.with_extension(extension);
+    }
+    let encoding = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(encoding_from_extension)
+        .unwrap_or(AudioEncoding::Unknown);
+    probe_audio_stream(
+        MediaSourceStream::new(Box::new(file), Default::default()),
+        hint,
+        encoding,
+    )
+}
+
+pub fn probe_url(url: &str) -> Result<AudioInfo> {
+    let response = reqwest::blocking::get(url)
+        .with_context(|| format!("failed to fetch audio from URL {url:?}"))?;
+    if !response.status().is_success() {
+        bail!("HTTP error fetching {url:?}: {}", response.status());
+    }
+    let bytes = response
+        .bytes()
+        .with_context(|| format!("failed to read response body for {url:?}"))?
+        .to_vec();
+    probe_bytes_with_encoding(bytes.clone(), encoding_from_url(url, &bytes))
+}
+
+pub fn probe_base64(data: &str) -> Result<AudioInfo> {
+    use base64::Engine;
+    let raw = data
+        .strip_prefix("data:")
+        .and_then(|value| value.split_once(',').map(|value| value.1))
+        .unwrap_or(data);
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(raw)
+        .map_err(|error| anyhow::anyhow!("base64 decode error: {error}"))?;
+    probe_bytes(bytes)
+}
+
+pub fn probe_bytes(bytes: impl Into<Vec<u8>>) -> Result<AudioInfo> {
+    let bytes = bytes.into();
+    let encoding = detect_encoding(&bytes);
+    probe_bytes_with_encoding(bytes, encoding)
+}
+
+fn probe_bytes_with_encoding(bytes: Vec<u8>, encoding: AudioEncoding) -> Result<AudioInfo> {
+    use std::io::Cursor;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::io::MediaSourceStream;
+    probe_audio_stream(
+        MediaSourceStream::new(Box::new(Cursor::new(bytes)), Default::default()),
+        Hint::new(),
+        encoding,
+    )
+}
+
+fn probe_audio_stream(
+    mss: symphonia::core::io::MediaSourceStream,
+    hint: symphonia::core::formats::probe::Hint,
+    encoding: AudioEncoding,
+) -> Result<AudioInfo> {
+    use symphonia::core::formats::{FormatOptions, TrackType};
+    use symphonia::core::meta::MetadataOptions;
+
+    let mut format = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|error| anyhow::anyhow!("failed to probe audio format: {error}"))?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| anyhow::anyhow!("no audio tracks found"))?;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|params| params.audio())
+        .ok_or_else(|| anyhow::anyhow!("track has no audio codec parameters"))?;
+    let sample_rate = params
+        .sample_rate
+        .ok_or_else(|| anyhow::anyhow!("unknown sample rate"))?;
+    let channels = params
+        .channels
+        .as_ref()
+        .map(|value| value.count())
+        .unwrap_or(1) as u16;
+    let track_id = track.id;
+    let time_base = track.time_base;
+    let frame_count = track.num_frames.or_else(|| {
+        let duration = track.duration?;
+        let time_base = time_base?;
+        let numerator = u128::from(duration.get())
+            .saturating_mul(u128::from(time_base.numer.get()))
+            .saturating_mul(u128::from(sample_rate));
+        Some(
+            numerator
+                .div_ceil(u128::from(time_base.denom.get()))
+                .min(u128::from(u64::MAX)) as u64,
+        )
+    });
+    let frame_count = match frame_count {
+        Some(frame_count) => frame_count,
+        None => {
+            let time_base =
+                time_base.ok_or_else(|| anyhow::anyhow!("audio duration is unavailable"))?;
+            let mut ticks = 0_u64;
+            loop {
+                match format.next_packet() {
+                    Ok(Some(packet)) if packet.track_id == track_id => {
+                        ticks = ticks.saturating_add(packet.dur.get());
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(error) => {
+                        return Err(anyhow::anyhow!(
+                            "failed to scan audio packets for duration: {error}"
+                        ));
+                    }
+                }
+            }
+            let numerator = u128::from(ticks)
+                .saturating_mul(u128::from(time_base.numer.get()))
+                .saturating_mul(u128::from(sample_rate));
+            numerator
+                .div_ceil(u128::from(time_base.denom.get()))
+                .min(u128::from(u64::MAX)) as u64
+        }
+    };
+    Ok(AudioInfo {
+        sample_rate,
+        channels,
+        frame_count,
+        source_format: AudioFormat {
+            encoding,
+            sample_rate,
+            channels,
+        },
+    })
 }
 
 pub fn decode_path_audio(path: &Path) -> Result<Audio> {

@@ -4,7 +4,9 @@ use crate::audio::{
     AudioChannel as RustAudioChannel, AudioEncoding, AudioSource as RustAudioSource,
 };
 use crate::db::AudioDbError as RustAudioDbError;
-use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{
+    PyFileExistsError, PyFileNotFoundError, PyKeyError, PyRuntimeError, PyValueError,
+};
 use pyo3::prelude::*;
 
 use super::AsrDataError;
@@ -18,6 +20,8 @@ pub(super) fn py_error(error: impl std::fmt::Display) -> PyErr {
 pub(super) fn py_db_error(error: RustAudioDbError) -> PyErr {
     match error {
         RustAudioDbError::NotFound { audio_id } => PyKeyError::new_err(audio_id),
+        RustAudioDbError::AlreadyExists { path } => PyFileExistsError::new_err(path),
+        RustAudioDbError::DatabaseNotFound { path } => PyFileNotFoundError::new_err(path),
         error => py_error(error),
     }
 }

@@ -17,21 +17,26 @@ pub(super) fn initialize(connection: &Connection) -> Result<(), AudioDbError> {
              value TEXT NOT NULL
          ) STRICT;
          CREATE TABLE audios (
-             audio_id   TEXT PRIMARY KEY NOT NULL,
-             metadata   TEXT NOT NULL,
-             duration_ms INTEGER
+             audio_id      TEXT PRIMARY KEY NOT NULL,
+             metadata      TEXT NOT NULL,
+             duration_ms   INTEGER,
+             created_at_ms INTEGER NOT NULL,
+             updated_at_ms INTEGER NOT NULL
          ) STRICT;
          CREATE TABLE audio_sources (
              audio_id TEXT PRIMARY KEY NOT NULL
                  REFERENCES audios(audio_id) ON DELETE CASCADE,
-             source BLOB NOT NULL
+             source     BLOB NOT NULL,
+             audio_info BLOB NOT NULL
          ) STRICT;
          CREATE TABLE timelines (
              audio_id TEXT PRIMARY KEY NOT NULL
                  REFERENCES audios(audio_id) ON DELETE CASCADE,
              timeline BLOB NOT NULL
          ) STRICT;
-         CREATE INDEX audios_duration ON audios(duration_ms);"
+         CREATE INDEX audios_duration ON audios(duration_ms);
+         CREATE INDEX audios_created_at ON audios(created_at_ms);
+         CREATE INDEX audios_updated_at ON audios(updated_at_ms);"
     ))?;
     Ok(())
 }

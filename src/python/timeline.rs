@@ -249,15 +249,7 @@ impl PyAnnotation {
 }
 
 fn annotation_kind(payload: &AnnotationPayload) -> &'static str {
-    match payload {
-        AnnotationPayload::Speech => "speech",
-        AnnotationPayload::Token(_) => "token",
-        AnnotationPayload::Transcription(_) => "transcription",
-        AnnotationPayload::Sentence(_) => "sentence",
-        AnnotationPayload::Speaker(_) => "speaker",
-        AnnotationPayload::Language(_) => "language",
-        AnnotationPayload::AcousticEvent(_) => "acoustic_event",
-    }
+    payload.kind()
 }
 
 fn validate_speaker_transcription(
@@ -824,14 +816,19 @@ impl PyPredictionAnnotations {
     }
 
     #[getter]
-    fn sources(&self) -> PyResult<Vec<String>> {
+    fn sources(&self) -> PyResult<std::collections::BTreeMap<&'static str, Vec<String>>> {
         let audio = self.core.audio.read().map_err(|_| poisoned("audio"))?;
         Ok(self
             .core
             .selected(&audio)?
             .prediction_sources()
             .into_iter()
-            .map(str::to_string)
+            .map(|(kind, sources)| {
+                (
+                    kind,
+                    sources.into_iter().map(str::to_string).collect::<Vec<_>>(),
+                )
+            })
             .collect())
     }
 

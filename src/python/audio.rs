@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::audio::{
     Audio as RustAudio, AudioChunk as RustAudioChunk, AudioFormat as RustAudioFormat,
-    AudioSource as RustAudioSource,
+    AudioInfo as RustAudioInfo, AudioSource as RustAudioSource,
 };
 use crate::utils::DurationMs;
 use numpy::{IntoPyArray, PyArray1, PyArrayMethods, ndarray::ArrayView1};
@@ -54,6 +54,59 @@ impl PyAudioFormat {
             self.encoding(),
             self.sample_rate(),
             self.channels()
+        )
+    }
+}
+
+#[pyclass(name = "AudioInfo", frozen)]
+#[derive(Clone)]
+pub(super) struct PyAudioInfo {
+    inner: RustAudioInfo,
+}
+
+pub(super) fn py_audio_info_from_rust(info: &RustAudioInfo) -> PyAudioInfo {
+    PyAudioInfo {
+        inner: info.clone(),
+    }
+}
+
+#[pymethods]
+impl PyAudioInfo {
+    #[getter]
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate
+    }
+
+    #[getter]
+    fn channels(&self) -> u16 {
+        self.inner.channels
+    }
+
+    #[getter]
+    fn frame_count(&self) -> u64 {
+        self.inner.frame_count
+    }
+
+    #[getter]
+    fn duration_ms(&self) -> f64 {
+        self.inner.duration_ms()
+    }
+
+    #[getter]
+    fn source_format(&self) -> PyAudioFormat {
+        PyAudioFormat {
+            inner: self.inner.source_format.clone(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AudioInfo(frames={}, duration={}, sample_rate={}, channels={}, source_format={:?})",
+            self.frame_count(),
+            format_duration_ms(self.duration_ms()),
+            self.sample_rate(),
+            self.channels(),
+            self.source_format().__str__(),
         )
     }
 }
@@ -350,6 +403,7 @@ impl PyAudio {
 }
 
 type AsyncLoadResult = Arc<Mutex<Option<Result<RustAudio, String>>>>;
+type AsyncProbeResult = Arc<Mutex<Option<Result<RustAudioInfo, String>>>>;
 
 pub(super) fn async_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -387,6 +441,46 @@ impl PyAudioLoadTask {
             .map(PyAudio::from_rust)
             .map_err(AsrDataError::new_err)
     }
+}
+
+#[pyclass(name = "_AudioProbeTask")]
+struct PyAudioProbeTask {
+    result: AsyncProbeResult,
+}
+
+#[pymethods]
+impl PyAudioProbeTask {
+    fn done(&self) -> PyResult<bool> {
+        Ok(self
+            .result
+            .lock()
+            .map_err(|_| poisoned("audio probe task"))?
+            .is_some())
+    }
+
+    fn result(&self) -> PyResult<PyAudioInfo> {
+        let result = self
+            .result
+            .lock()
+            .map_err(|_| poisoned("audio probe task"))?
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("audio probe has not completed"))?;
+        result
+            .map(|inner| PyAudioInfo { inner })
+            .map_err(AsrDataError::new_err)
+    }
+}
+
+fn spawn_source_aprobe(source: RustAudioSource) -> PyAudioProbeTask {
+    let result: AsyncProbeResult = Arc::new(Mutex::new(None));
+    let task_result = Arc::clone(&result);
+    async_runtime().spawn(async move {
+        let info = source.aprobe().await.map_err(|error| format!("{error:#}"));
+        if let Ok(mut slot) = task_result.lock() {
+            *slot = Some(info);
+        }
+    });
+    PyAudioProbeTask { result }
 }
 
 fn spawn_source_aload(
@@ -768,6 +862,17 @@ impl PyAudioSource {
         load_source(py, self.inner.clone(), sample_rate, mono)
     }
 
+    fn probe(&self, py: Python<'_>) -> PyResult<PyAudioInfo> {
+        let source = self.inner.clone();
+        py.detach(move || source.probe())
+            .map(|inner| PyAudioInfo { inner })
+            .map_err(py_error)
+    }
+
+    fn _start_aprobe(&self) -> PyAudioProbeTask {
+        spawn_source_aprobe(self.inner.clone())
+    }
+
     #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
     fn stream(
         &self,
@@ -847,10 +952,12 @@ pub(super) fn py_source_from_rust(py: Python<'_>, source: &RustAudioSource) -> P
 
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAudioFormat>()?;
+    module.add_class::<PyAudioInfo>()?;
     module.add_class::<PyAudio>()?;
     module.add_class::<PyAudioChunk>()?;
     module.add_class::<PyAudioSource>()?;
     module.add_class::<PyAudioLoadTask>()?;
+    module.add_class::<PyAudioProbeTask>()?;
     module.add_class::<PyAudioStreamTask>()?;
     module.add_class::<PyAudioIterator>()?;
     Ok(())

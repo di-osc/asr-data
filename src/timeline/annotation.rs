@@ -91,6 +91,20 @@ pub enum AnnotationPayload {
     AcousticEvent(AcousticEvent),
 }
 
+impl AnnotationPayload {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Speech => "speech",
+            Self::Token(_) => "token",
+            Self::Transcription(_) => "transcription",
+            Self::Sentence(_) => "sentence",
+            Self::Speaker(_) => "speaker",
+            Self::Language(_) => "language",
+            Self::AcousticEvent(_) => "acoustic_event",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Annotation {
     pub id: AnnotationId,

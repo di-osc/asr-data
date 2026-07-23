@@ -98,12 +98,11 @@ def test_audio_waveform_timeline_and_db(tmp_path):
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
     audio = AudioDoc(AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1")
     assert isinstance(audio.source, AudioSource)
-    assert audio.timelines == {}
+    assert set(audio.timelines) == {"left", "right"}
     assert audio.timeline("mono") is None
     audio.metadata["speaker"] = {"name": "alice", "age": 30}
-    audio.ensure_timeline("mono", duration_ms=1)
-    audio.timeline("mono").reference.add_speech(0, 1, confidence=0.9)
-    audio.timeline("mono").reference.add_transcription(
+    audio.timeline("left").reference.add_speech(0, 1, confidence=0.9)
+    audio.timeline("left").reference.add_transcription(
         0, 1, Transcription("hello", language="en")
     )
 
@@ -130,14 +129,12 @@ def test_audio_waveform_timeline_and_db(tmp_path):
     assert mono.channels == 1
     assert mono.sample_rate == 16000
     assert mono.source_format.sample_rate == 8000
-    assert audio.timeline("mono").reference.transcript().text == "hello"
-    assert len(audio.timeline("mono").reference.annotations) == 2
+    assert audio.timeline("left").reference.transcript().text == "hello"
+    assert len(audio.timeline("left").reference.annotations) == 2
 
     db_path = tmp_path / "test.vasr"
-    db = AudioDB(str(db_path))
+    db = AudioDB.create(str(db_path))
     for removed in (
-        "create",
-        "open",
         "upsert",
         "insert_many",
         "get",
@@ -161,7 +158,7 @@ def test_audio_waveform_timeline_and_db(tmp_path):
     assert isinstance(loaded, AudioDoc)
     assert isinstance(loaded.source, AudioSource)
     assert loaded.metadata["speaker"]["name"] == "alice"
-    assert loaded.timeline("mono").reference.transcript().text == "hello"
+    assert loaded.timeline("left").reference.transcript().text == "hello"
     loaded.metadata["speaker"]["name"] = "bob"
     assert db.update(loaded) is True
     assert db["call-1"].metadata["speaker"]["name"] == "bob"
@@ -172,9 +169,27 @@ def test_audio_waveform_timeline_and_db(tmp_path):
     assert db.delete("call-1") is False
 
 
+def test_audio_db_create_and_open_are_explicit(tmp_path):
+    path = tmp_path / "explicit.db"
+
+    with pytest.raises(TypeError):
+        AudioDB(str(path))
+    with pytest.raises(FileNotFoundError):
+        AudioDB.open(str(path))
+
+    created = AudioDB.create(str(path))
+    assert len(created) == 0
+    with pytest.raises(FileExistsError):
+        AudioDB.create(str(path))
+
+    opened = AudioDB.open(str(path))
+    readonly = AudioDB.open(str(path), read_only=True)
+    assert len(opened) == len(readonly) == 0
+
+
 def test_ensure_timeline_accepts_fractional_audio_duration():
     waveform = Audio([0.0, 0.0], sample_rate=3)
-    doc = AudioDoc(AudioSource.from_pcm(b"\0\0", sample_rate=3), id="fractional")
+    doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 2, sample_rate=3), id="fractional")
 
     timeline = doc.ensure_timeline("mono", duration_ms=waveform.duration_ms)
 
@@ -190,11 +205,60 @@ def test_ensure_timeline_accepts_fractional_audio_duration():
             invalid_doc.ensure_timeline("mono", duration_ms=invalid)
 
 
+def test_audio_source_probe_and_audiodoc_initialize_timelines():
+    source = AudioSource.from_pcm(b"\0\0" * 6, sample_rate=1000, channels=2)
+    info = source.probe()
+    doc = AudioDoc(source, id="stereo")
+
+    assert info.sample_rate == 1000
+    assert info.channels == 2
+    assert info.frame_count == 3
+    assert info.duration_ms == pytest.approx(3)
+    assert info.source_format.encoding == "pcm_s16le"
+    assert doc.audio_info.sample_rate == info.sample_rate
+    assert doc.audio_info.channels == info.channels
+    assert doc.audio_info.frame_count == info.frame_count
+    assert doc.audio_info.duration_ms == info.duration_ms
+    assert list(doc.timelines) == ["left", "right"]
+    assert doc.timeline("left").duration_ms == 3
+    assert doc.timeline("right").duration_ms == 3
+    assert doc.timeline("mono") is None
+
+
+def test_audiodoc_uses_mono_and_indexed_multichannel_timelines():
+    mono_doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 2, sample_rate=3))
+
+    assert list(mono_doc.timelines) == ["mono"]
+    assert mono_doc.timeline("mono").duration_ms == 667
+
+    multi_doc = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 8, sample_rate=1000, channels=4)
+    )
+    assert list(multi_doc.timelines) == ["left", "right", "2", "3"]
+
+    with pytest.raises(asr_data.AsrDataError, match="whole number"):
+        AudioSource.from_pcm(b"\0\0\0", sample_rate=16000, channels=2).probe()
+
+
+def test_audio_source_aprobe_and_audiodoc_afrom_source():
+    source = AudioSource.from_pcm(b"\0\0" * 4, sample_rate=1000, channels=2)
+
+    async def run():
+        return await source.aprobe(), await AudioDoc.afrom_source(source, id="async")
+
+    info, doc = asyncio.run(run())
+    assert (info.frame_count, info.channels) == (2, 2)
+    assert doc.id == "async"
+    assert list(doc.timelines) == ["left", "right"]
+
+
 def test_audio_db_query_filters_cursor_and_lazy_iteration(tmp_path):
-    db = AudioDB(str(tmp_path / "query.vasr"))
+    db = AudioDB.create(str(tmp_path / "query.vasr"))
     for index in range(105):
-        audio = AudioDoc(AudioSource.from_pcm(b"\0\0", sample_rate=8000), id=f"audio-{index:03}")
-        audio.ensure_timeline("mono", duration_ms=index * 10)
+        audio = AudioDoc(
+            AudioSource.from_pcm(b"\0\0" * (index * 10), sample_rate=1000),
+            id=f"audio-{index:03}",
+        )
         audio.metadata["split"] = "train" if index % 2 == 0 else "test"
         db.insert(audio)
 
@@ -233,13 +297,14 @@ def test_audio_db_query_filters_cursor_and_lazy_iteration(tmp_path):
 
 def test_audio_channel_timelines_round_trip(tmp_path):
     audio = AudioDoc(
-        AudioSource.from_pcm(b"\0\0" * 4, sample_rate=8000, channels=2), id="call-stereo"
+        AudioSource.from_pcm(b"\0\0" * 200, sample_rate=1000, channels=2),
+        id="call-stereo",
     )
 
-    audio.ensure_timeline("left", duration_ms=100).reference.add_transcription(
+    audio.timeline("left").reference.add_transcription(
         0, 100, Transcription("caller")
     )
-    audio.ensure_timeline("right").reference.add_transcription(
+    audio.timeline("right").reference.add_transcription(
         0, 100, Transcription("agent")
     )
 
@@ -256,7 +321,7 @@ def test_audio_channel_timelines_round_trip(tmp_path):
     assert audio.remove_timeline(2) is True
     assert audio.timeline(2) is None
 
-    db = AudioDB(str(tmp_path / "stereo.sqlite"))
+    db = AudioDB.create(str(tmp_path / "stereo.sqlite"))
     db.insert(audio)
     loaded = db["call-stereo"]
 
@@ -265,9 +330,10 @@ def test_audio_channel_timelines_round_trip(tmp_path):
 
 
 def test_setting_timeline_audio_id_updates_the_whole_audio():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 4, sample_rate=8000, channels=2), id="old-id")
-    audio.ensure_timeline("left", duration_ms=100)
-    audio.ensure_timeline("right")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 200, sample_rate=1000, channels=2),
+        id="old-id",
+    )
 
     audio.timeline("left").audio_id = "new-id"
 
@@ -279,10 +345,8 @@ def test_setting_timeline_audio_id_updates_the_whole_audio():
 def test_timeline_duration_is_required_shared_and_read_only():
     audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 4000, sample_rate=8000), id="duration")
     assert not hasattr(audio, "duration_ms")
-    with pytest.raises(Exception, match="duration is required"):
-        audio.ensure_timeline("right")
 
-    mono = audio.ensure_timeline("mono", duration_ms=500)
+    mono = audio.timeline("mono")
     right = audio.ensure_timeline("right")
     assert mono.duration_ms == 500
     assert right.duration_ms == 500
@@ -700,10 +764,9 @@ def test_audio_display_builds_ipython_player_for_selected_range(monkeypatch):
 
 
 def test_public_types_have_informative_repr(tmp_path):
-    pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
+    pcm = b"\0\0" * (3250 * 8 * 2)
     audio = AudioDoc(AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1")
-    audio.ensure_timeline("mono", duration_ms=3250)
-    annotation = audio.timeline("mono").reference.add_transcription(
+    annotation = audio.timeline("left").reference.add_transcription(
         100,
         800,
         Transcription("hello world"),
@@ -711,18 +774,18 @@ def test_public_types_have_informative_repr(tmp_path):
     )
     audio.metadata["speaker"] = "alice"
     waveform = audio.source.load()
-    db = AudioDB(str(tmp_path / "repr.vasr"))
+    db = AudioDB.create(str(tmp_path / "repr.vasr"))
     db.insert(audio)
 
     assert repr(audio) == (
-        'AudioDoc(id="call-1", pcm_bytes=8, sample_rate=8000, channels=2, '
+        'AudioDoc(id="call-1", pcm_bytes=104000, sample_rate=8000, channels=2, '
         'duration="3.25s", annotations=1)'
     )
     assert str(audio) == 'AudioDoc "call-1" (3.25s)'
-    assert "duration=0ms" in repr(waveform)
+    assert "duration=3.25s" in repr(waveform)
     assert 'text="hello world"' in repr(annotation)
     assert str(annotation) == 'transcription [100..800ms]: "hello world"'
-    assert 'duration="3.25s"' in repr(audio.timeline("mono"))
+    assert 'duration="3.25s"' in repr(audio.timeline("left"))
     assert repr(db).endswith('mode="read-write", audios=1, duration="3.25s")')
 
 
@@ -793,7 +856,15 @@ def test_model_annotations_can_be_written_queried_and_removed():
     assert [item.id for item in timeline.prediction.by_source("tegasr")] == [prediction.id]
     assert timeline.reference.transcript().text == "reference"
     assert timeline.prediction.transcript("tegasr").text == "prediction"
-    assert timeline.prediction.sources == ["channel_mapping", "tegasr"]
+    assert timeline.prediction.sources == {
+        "acoustic_event": [],
+        "language": [],
+        "sentence": [],
+        "speaker": ["channel_mapping"],
+        "speech": [],
+        "token": [],
+        "transcription": ["tegasr"],
+    }
     original_id = prediction.id
     assert timeline.prediction.relabel_source("tegasr", "tegasr-v2") == 1
     relabeled = timeline.prediction.by_source("tegasr-v2")
@@ -819,7 +890,7 @@ def test_speaker_transcription_round_trips_through_database(tmp_path):
         ),
     )
 
-    db = AudioDB(str(tmp_path / "speaker.vasr"))
+    db = AudioDB.create(str(tmp_path / "speaker.vasr"))
     db.insert(audio)
     loaded = db["speaker"].timeline("mono")
     speaker = loaded.reference.annotations[0]
@@ -959,7 +1030,7 @@ def test_prediction_source_is_required_preserved_and_queryable(tmp_path):
     with pytest.raises(ValueError, match="non-empty"):
         timeline.prediction.add_speech(0, 1, source="")
 
-    db = AudioDB(str(tmp_path / "prediction-source.vasr"))
+    db = AudioDB.create(str(tmp_path / "prediction-source.vasr"))
     db.insert(audio)
     loaded = db["sources"].timeline("mono").prediction.annotations[0]
     assert loaded.source == "whisper"
@@ -1103,7 +1174,7 @@ def test_database_update_detects_changes(tmp_path):
     audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="timeline-only")
     audio.ensure_timeline("mono", duration_ms=1000)
     audio.metadata["preserved"] = True
-    db = AudioDB(str(path))
+    db = AudioDB.create(str(path))
     db.insert(audio)
 
     audio.timeline("mono").prediction.add_transcription(
@@ -1119,7 +1190,6 @@ def test_database_update_detects_changes(tmp_path):
     assert (
         loaded.timeline("mono").prediction.transcript("old-model").text == "prediction"
     )
-
     assert (
         loaded.timeline("mono").prediction.relabel_source("old-model", "new-model")
         == 1
@@ -1143,6 +1213,54 @@ def test_database_update_detects_changes(tmp_path):
     another = db["timeline-only"]
     another.metadata["batch"] = True
     assert db.update_many([another]) == 1
+
+
+def test_database_query_filters_automatic_creation_and_update_times(tmp_path):
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    db = AudioDB.create(str(tmp_path / "timestamps.db"))
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000),
+        id="timestamped",
+    )
+    before_insert = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.insert(audio)
+    after_insert = datetime.now(timezone.utc)
+
+    assert [
+        doc.id
+        for doc in db.query(
+            created_from=before_insert,
+            created_until=after_insert,
+        )
+    ] == ["timestamped"]
+    assert db.query(created_until=before_insert) == []
+
+    time.sleep(0.002)
+    update_boundary = datetime.now(timezone.utc)
+    assert db.update(audio) is False
+    assert db.query(updated_from=update_boundary) == []
+
+    time.sleep(0.002)
+    audio.metadata["changed"] = True
+    assert db.update(audio) is True
+    assert [doc.id for doc in db.query(updated_from=update_boundary)] == ["timestamped"]
+    assert db.query(created_from=update_boundary) == []
+
+
+def test_database_query_validates_datetime_filters(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    db = AudioDB.create(str(tmp_path / "timestamp-validation.db"))
+    now = datetime.now(timezone.utc)
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        db.query(created_from=datetime.now())
+    with pytest.raises(ValueError, match="created_from must not exceed created_until"):
+        db.query(created_from=now, created_until=now - timedelta(seconds=1))
+    with pytest.raises(ValueError, match="updated_from must not exceed updated_until"):
+        db.query(updated_from=now, updated_until=now - timedelta(seconds=1))
 
 
 def test_audiodoc_exposes_source_based_loading_only(tmp_path):
@@ -1169,5 +1287,26 @@ def test_audiodoc_exposes_source_based_loading_only(tmp_path):
     assert not hasattr(from_file, "load")
     assert not hasattr(from_file.source.load(), "num_channels")
     assert repr(from_file).startswith('AudioDoc(id="file", file="')
-    assert repr(from_file).endswith('")')
-    assert str(from_file) == 'AudioDoc "file"'
+    assert 'duration="1ms"' in repr(from_file)
+    assert str(from_file) == 'AudioDoc "file" (1ms)'
+
+
+def test_audiodb_restores_audio_info_without_reopening_source(tmp_path):
+    wav_path = tmp_path / "ephemeral.wav"
+    with wave.open(str(wav_path), "wb") as writer:
+        writer.setnchannels(2)
+        writer.setsampwidth(2)
+        writer.setframerate(8000)
+        writer.writeframes(b"\0\0" * 16)
+
+    doc = AudioDoc(AudioSource.from_path(str(wav_path)), id="ephemeral")
+    db = AudioDB.create(str(tmp_path / "audio-info.db"))
+    db.insert(doc)
+    wav_path.unlink()
+
+    loaded = db["ephemeral"]
+    assert loaded.audio_info.sample_rate == 8000
+    assert loaded.audio_info.channels == 2
+    assert loaded.audio_info.frame_count == 8
+    assert loaded.audio_info.duration_ms == pytest.approx(1)
+    assert list(loaded.timelines) == ["left", "right"]

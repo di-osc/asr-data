@@ -12,6 +12,7 @@ from ._native import (
     AudioDB,
     AudioDoc,
     AudioFormat,
+    AudioInfo,
     AudioSource,
     PredictionAnnotations,
     ReferenceAnnotations,
@@ -29,6 +30,12 @@ from ._native import (
 
 async def _source_aload(self, *, sample_rate=None, mono=None):
     task = self._start_aload(sample_rate=sample_rate, mono=mono)
+    while not task.done():
+        await _asyncio.sleep(0.005)
+    return task.result()
+
+async def _source_aprobe(self):
+    task = self._start_aprobe()
     while not task.done():
         await _asyncio.sleep(0.005)
     return task.result()
@@ -80,9 +87,17 @@ async def _wf_aload_from_source(cls, source):
         await _asyncio.sleep(0.005)
     return task.result()
 
+async def _doc_afrom_source(cls, source, id=None):
+    task = cls._start_afrom_source(source, id=id)
+    while not task.done():
+        await _asyncio.sleep(0.005)
+    return task.result()
+
 
 AudioSource.aload = _source_aload
+AudioSource.aprobe = _source_aprobe
 AudioSource.astream = _source_astream
+AudioDoc.afrom_source = classmethod(_doc_afrom_source)
 
 Audio.aload_from_path = classmethod(_wf_aload_from_path)
 Audio.aload_from_source = classmethod(_wf_aload_from_source)
@@ -94,6 +109,7 @@ __all__ = [
     "AudioDB",
     "AudioDoc",
     "AudioFormat",
+    "AudioInfo",
     "AudioSource",
     "PredictionAnnotations",
     "ReferenceAnnotations",

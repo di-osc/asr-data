@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::audio::AudioChannel;
 use crate::doc::AudioDoc;
@@ -18,35 +19,53 @@ use super::{
 impl AudioDb {
     pub const SCHEMA_VERSION: i64 = SCHEMA_VERSION;
 
+    pub fn create(path: impl AsRef<Path>) -> Result<Self, AudioDbError> {
+        let path = path.as_ref();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    AudioDbError::AlreadyExists {
+                        path: path.to_path_buf(),
+                    }
+                } else {
+                    AudioDbError::Io(error)
+                }
+            })?;
+        drop(file);
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        initialize(&connection)?;
+        configure(&connection)?;
+        Ok(Self { connection })
+    }
+
     pub fn open(path: impl AsRef<Path>, mode: AudioDbMode) -> Result<Self, AudioDbError> {
-        match mode {
-            AudioDbMode::ReadWrite => {
-                let connection = Connection::open_with_flags(
-                    path,
-                    OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
-                )?;
-                initialize(&connection)?;
-                configure(&connection)?;
-                Ok(Self { connection })
-            }
-            AudioDbMode::ReadOnly => {
-                let connection =
-                    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-                validate(&connection)?;
-                configure(&connection)?;
-                Ok(Self { connection })
-            }
+        let path = path.as_ref();
+        if !path.is_file() {
+            return Err(AudioDbError::DatabaseNotFound {
+                path: path.to_path_buf(),
+            });
         }
+        let flags = match mode {
+            AudioDbMode::ReadWrite => OpenFlags::SQLITE_OPEN_READ_WRITE,
+            AudioDbMode::ReadOnly => OpenFlags::SQLITE_OPEN_READ_ONLY,
+        };
+        let connection = Connection::open_with_flags(path, flags)?;
+        validate(&connection)?;
+        configure(&connection)?;
+        Ok(Self { connection })
     }
 
     pub fn insert(&self, audio: &AudioDoc) -> Result<(), AudioDbError> {
-        insert_with(&self.connection, audio)
+        insert_with(&self.connection, audio, now_unix_millis())
     }
 
     /// Updates only the parts of an existing audio that differ from its stored value.
     /// Returns `true` when at least one part changed and `false` for a no-op update.
     pub fn update(&self, audio: &AudioDoc) -> Result<bool, AudioDbError> {
-        update_with(&self.connection, audio)
+        update_with(&self.connection, audio, now_unix_millis())
     }
 
     pub fn query(&self, query: &AudioQuery) -> Result<Vec<AudioDoc>, AudioDbError> {
@@ -78,9 +97,10 @@ impl AudioDb {
 
     pub fn update_many(&mut self, audios: &[AudioDoc]) -> Result<usize, AudioDbError> {
         let transaction = self.connection.transaction()?;
+        let updated_at_ms = now_unix_millis();
         let mut updated = 0;
         for audio in audios {
-            updated += usize::from(update_with(&transaction, audio)?);
+            updated += usize::from(update_with(&transaction, audio, updated_at_ms)?);
         }
         transaction.commit()?;
         Ok(updated)
@@ -154,9 +174,14 @@ pub fn read_audio_db_info(path: impl AsRef<Path>) -> Result<AudioDbInfo, AudioDb
     })
 }
 
-fn insert_with(connection: &Connection, audio: &AudioDoc) -> Result<(), AudioDbError> {
+fn insert_with(
+    connection: &Connection,
+    audio: &AudioDoc,
+    timestamp_ms: i64,
+) -> Result<(), AudioDbError> {
     audio.validate()?;
     let source = encode(&audio.source)?;
+    let audio_info = encode(&audio.audio_info)?;
     let timeline = encode(audio.timelines())?;
     let metadata = serde_json::to_string(&audio.metadata)?;
     let duration = audio
@@ -165,12 +190,14 @@ fn insert_with(connection: &Connection, audio: &AudioDoc) -> Result<(), AudioDbE
     connection.execute_batch("SAVEPOINT asr_write")?;
     let result = (|| {
         connection.execute(
-            "INSERT INTO audios(audio_id, metadata, duration_ms) VALUES (?1, ?2, ?3)",
-            params![audio.id, metadata, duration],
+            "INSERT INTO audios(
+                 audio_id, metadata, duration_ms, created_at_ms, updated_at_ms
+             ) VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![audio.id, metadata, duration, timestamp_ms],
         )?;
         connection.execute(
-            "INSERT INTO audio_sources(audio_id, source) VALUES (?1, ?2)",
-            params![audio.id, source],
+            "INSERT INTO audio_sources(audio_id, source, audio_info) VALUES (?1, ?2, ?3)",
+            params![audio.id, source, audio_info],
         )?;
         connection.execute(
             "INSERT INTO timelines(audio_id, timeline) VALUES (?1, ?2)",
@@ -190,10 +217,15 @@ fn insert_with(connection: &Connection, audio: &AudioDoc) -> Result<(), AudioDbE
     }
 }
 
-fn update_with(connection: &Connection, audio: &AudioDoc) -> Result<bool, AudioDbError> {
+fn update_with(
+    connection: &Connection,
+    audio: &AudioDoc,
+    updated_at_ms: i64,
+) -> Result<bool, AudioDbError> {
     audio.validate()?;
     let audio_id = &audio.id;
     let source = encode(&audio.source)?;
+    let audio_info = encode(&audio.audio_info)?;
     let timeline = encode(audio.timelines())?;
     let metadata = serde_json::to_string(&audio.metadata)?;
     let duration = audio
@@ -225,9 +257,10 @@ fn update_with(connection: &Connection, audio: &AudioDoc) -> Result<bool, AudioD
         )? != 0;
         let source_changed = connection.execute(
             "UPDATE audio_sources
-             SET source = ?1
-             WHERE audio_id = ?2 AND source IS NOT ?1",
-            params![source, audio_id],
+             SET source = ?1, audio_info = ?2
+             WHERE audio_id = ?3
+               AND (source IS NOT ?1 OR audio_info IS NOT ?2)",
+            params![source, audio_info, audio_id],
         )? != 0;
         let timeline_changed = connection.execute(
             "UPDATE timelines
@@ -236,7 +269,16 @@ fn update_with(connection: &Connection, audio: &AudioDoc) -> Result<bool, AudioD
             params![timeline, audio_id],
         )? != 0;
 
-        Ok::<bool, AudioDbError>(audio_changed || source_changed || timeline_changed)
+        let changed = audio_changed || source_changed || timeline_changed;
+        if changed {
+            connection.execute(
+                "UPDATE audios
+                 SET updated_at_ms = MAX(updated_at_ms, ?1)
+                 WHERE audio_id = ?2",
+                params![updated_at_ms, audio_id],
+            )?;
+        }
+        Ok::<bool, AudioDbError>(changed)
     })();
     match result {
         Ok(changed) => {
@@ -267,10 +309,24 @@ fn query_with(connection: &Connection, query: &AudioQuery) -> Result<Vec<AudioDo
     {
         return Err(AudioDbError::InvalidDurationRange);
     }
+    if query
+        .created_from
+        .zip(query.created_until)
+        .is_some_and(|(start, end)| start > end)
+    {
+        return Err(AudioDbError::InvalidCreatedTimeRange);
+    }
+    if query
+        .updated_from
+        .zip(query.updated_until)
+        .is_some_and(|(start, end)| start > end)
+    {
+        return Err(AudioDbError::InvalidUpdatedTimeRange);
+    }
 
     let mut sql = String::from(
-        "SELECT audio_sources.source, timelines.timeline, audios.metadata,
-                audios.audio_id
+        "SELECT audio_sources.source, audio_sources.audio_info, timelines.timeline,
+                audios.metadata, audios.audio_id
          FROM audios
          JOIN audio_sources USING (audio_id)
          JOIN timelines USING (audio_id)",
@@ -291,6 +347,34 @@ fn query_with(connection: &Connection, query: &AudioQuery) -> Result<Vec<AudioDo
         let value = i64::try_from(maximum.0).unwrap_or(i64::MAX);
         let parameter = push_sql_parameter(&mut parameters, SqlValue::Integer(value));
         predicates.push(format!("audios.duration_ms <= {parameter}"));
+    }
+    if let Some(start) = query.created_from {
+        let parameter = push_sql_parameter(
+            &mut parameters,
+            SqlValue::Integer(system_time_to_query_boundary_millis(start)),
+        );
+        predicates.push(format!("audios.created_at_ms >= {parameter}"));
+    }
+    if let Some(end) = query.created_until {
+        let parameter = push_sql_parameter(
+            &mut parameters,
+            SqlValue::Integer(system_time_to_query_boundary_millis(end)),
+        );
+        predicates.push(format!("audios.created_at_ms < {parameter}"));
+    }
+    if let Some(start) = query.updated_from {
+        let parameter = push_sql_parameter(
+            &mut parameters,
+            SqlValue::Integer(system_time_to_query_boundary_millis(start)),
+        );
+        predicates.push(format!("audios.updated_at_ms >= {parameter}"));
+    }
+    if let Some(end) = query.updated_until {
+        let parameter = push_sql_parameter(
+            &mut parameters,
+            SqlValue::Integer(system_time_to_query_boundary_millis(end)),
+        );
+        predicates.push(format!("audios.updated_at_ms < {parameter}"));
     }
     for (key, value) in &query.metadata {
         let key_parameter = push_sql_parameter(&mut parameters, SqlValue::Text(key.clone()));
@@ -331,9 +415,27 @@ fn push_sql_parameter(parameters: &mut Vec<SqlValue>, value: SqlValue) -> String
     format!("?{}", parameters.len())
 }
 
+fn now_unix_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or_default()
+}
+
+fn system_time_to_query_boundary_millis(time: SystemTime) -> i64 {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => {
+            let millis =
+                duration.as_millis() + u128::from(duration.subsec_nanos() % 1_000_000 != 0);
+            i64::try_from(millis).unwrap_or(i64::MAX)
+        }
+        Err(error) => -i64::try_from(error.duration().as_millis()).unwrap_or(i64::MAX),
+    }
+}
+
 fn get_with(connection: &Connection, audio_id: &str) -> Result<Option<AudioDoc>, AudioDbError> {
-    let sql = "SELECT audio_sources.source, timelines.timeline, audios.metadata,
-                      audios.audio_id
+    let sql = "SELECT audio_sources.source, audio_sources.audio_info, timelines.timeline,
+                      audios.metadata, audios.audio_id
                FROM audios
                JOIN audio_sources USING (audio_id)
                JOIN timelines USING (audio_id)
@@ -346,16 +448,19 @@ fn get_with(connection: &Connection, audio_id: &str) -> Result<Option<AudioDoc>,
 
 fn decode_audio_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AudioDoc> {
     let source: Vec<u8> = row.get(0)?;
-    let timeline: Vec<u8> = row.get(1)?;
-    let metadata: String = row.get(2)?;
-    let audio_id: String = row.get(3)?;
+    let audio_info: Vec<u8> = row.get(1)?;
+    let timeline: Vec<u8> = row.get(2)?;
+    let metadata: String = row.get(3)?;
+    let audio_id: String = row.get(4)?;
     let source = decode(&source).map_err(sql_conversion_error)?;
+    let audio_info = decode(&audio_info).map_err(sql_conversion_error)?;
     let timelines: BTreeMap<AudioChannel, Timeline> =
         decode(&timeline).map_err(sql_conversion_error)?;
     let metadata = serde_json::from_str(&metadata).map_err(sql_conversion_error)?;
     let audio = AudioDoc {
         id: audio_id,
         source,
+        audio_info,
         timelines,
         metadata,
     };
