@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use asr_data::{
-    Annotation, AnnotationPayload, AnnotationStatus, Audio, AudioChannel, AudioDb, AudioDbError,
-    AudioDbMode, AudioDoc, AudioEncoding, AudioError, AudioFormat, AudioQuery, AudioSource,
-    DurationMs, MAX_QUERY_LIMIT, TextSpan, TimeRange, Timeline, Token, Transcription,
+    Annotation, AnnotationPayload, Audio, AudioChannel, AudioDb, AudioDbError, AudioDbMode,
+    AudioDoc, AudioEncoding, AudioError, AudioFormat, AudioQuery, AudioSource, DurationMs,
+    MAX_QUERY_LIMIT, TextSpan, TimeRange, Timeline, Token, Transcription,
     import_legacy_msgpack_to_db, read_legacy_msgpack,
 };
 
@@ -127,49 +127,65 @@ fn time_range_reports_duration_and_overlap() {
 }
 
 #[test]
-fn timeline_derives_transcript_from_final_text_annotations_only() {
+fn annotation_model_is_status_free() {
+    let mut timeline = Timeline::new("audio", DurationMs(100));
+    let annotation = Annotation::new(
+        TimeRange::new(DurationMs(0), DurationMs(100)),
+        AnnotationPayload::Transcription(Transcription::new("hello")),
+        None,
+    );
+
+    timeline.push_reference(annotation).unwrap();
+
+    assert_eq!(timeline.reference_transcript().text, "hello");
+}
+
+#[test]
+fn timeline_derives_transcript_from_all_text_annotations() {
     let mut timeline = Timeline::new("audio_1", DurationMs(100));
-    timeline.push_reference(Annotation::new(
-        TimeRange::new(DurationMs(0), DurationMs(100)),
-        AnnotationPayload::Transcription(Transcription {
-            text: "partial".to_string(),
-            tokens: vec![],
-            language: None,
-            confidence: None,
-        }),
-        None,
-        AnnotationStatus::Partial,
-    ));
-    timeline.push_reference(Annotation::new(
-        TimeRange::new(DurationMs(0), DurationMs(100)),
-        AnnotationPayload::Transcription(Transcription {
-            text: "hello".to_string(),
-            tokens: vec![
-                Token::new("hello").with_range(TimeRange::new(DurationMs(0), DurationMs(40))),
-            ],
-            language: Some("English".to_string()),
-            confidence: None,
-        }),
-        None,
-        AnnotationStatus::Final,
-    ));
-    timeline.push_reference(Annotation::new(
-        TimeRange::new(DurationMs(100), DurationMs(130)),
-        AnnotationPayload::Sentence(TextSpan {
-            text: "world".to_string(),
-            tokens: vec![],
-            language: None,
-        }),
-        None,
-        AnnotationStatus::Final,
-    ));
+    timeline
+        .push_reference(Annotation::new(
+            TimeRange::new(DurationMs(0), DurationMs(40)),
+            AnnotationPayload::Transcription(Transcription {
+                text: "partial".to_string(),
+                tokens: vec![],
+                language: None,
+                confidence: None,
+            }),
+            None,
+        ))
+        .unwrap();
+    timeline
+        .push_reference(Annotation::new(
+            TimeRange::new(DurationMs(40), DurationMs(100)),
+            AnnotationPayload::Transcription(Transcription {
+                text: "hello".to_string(),
+                tokens: vec![
+                    Token::new("hello").with_range(TimeRange::new(DurationMs(40), DurationMs(100))),
+                ],
+                language: Some("English".to_string()),
+                confidence: None,
+            }),
+            None,
+        ))
+        .unwrap();
+    timeline
+        .push_reference(Annotation::new(
+            TimeRange::new(DurationMs(100), DurationMs(130)),
+            AnnotationPayload::Sentence(TextSpan {
+                text: "world".to_string(),
+                tokens: vec![],
+                language: None,
+            }),
+            None,
+        ))
+        .unwrap();
 
     let transcript = timeline.reference_transcript();
 
-    assert_eq!(transcript.text, "hello world");
+    assert_eq!(transcript.text, "partial hello world");
     assert_eq!(transcript.language.as_deref(), Some("English"));
-    assert_eq!(transcript.segments.len(), 2);
-    assert_eq!(timeline.by_status(AnnotationStatus::Final).len(), 2);
+    assert_eq!(transcript.segments.len(), 3);
 }
 
 #[test]
@@ -180,18 +196,19 @@ fn audio_keeps_independent_channel_timelines() {
             TimeRange::new(DurationMs(0), DurationMs(100)),
             AnnotationPayload::Transcription(Transcription::new(text)),
             None,
-            AnnotationStatus::Final,
         )
     };
 
     audio
         .ensure_timeline(AudioChannel::Left, Some(DurationMs(100)))
         .expect("left timeline")
-        .push_reference(transcription("caller"));
+        .push_reference(transcription("caller"))
+        .unwrap();
     audio
         .ensure_timeline(AudioChannel::Right, None)
         .expect("right timeline")
-        .push_reference(transcription("agent"));
+        .push_reference(transcription("agent"))
+        .unwrap();
 
     assert_eq!(
         audio
@@ -280,12 +297,13 @@ fn waveform_low_energy_split_rejects_zero_duration() {
 
 fn annotated_audio() -> AudioDoc {
     let mut timeline = Timeline::new("audio_1", DurationMs(100));
-    timeline.push_reference(Annotation::new(
-        TimeRange::new(DurationMs(0), DurationMs(100)),
-        AnnotationPayload::Transcription(Transcription::new("hello")),
-        None,
-        AnnotationStatus::Final,
-    ));
+    timeline
+        .push_reference(Annotation::new(
+            TimeRange::new(DurationMs(0), DurationMs(100)),
+            AnnotationPayload::Transcription(Transcription::new("hello")),
+            None,
+        ))
+        .unwrap();
     let audio = AudioDoc::with_id("audio_1", AudioSource::from_encoded_bytes(vec![1, 2, 3, 4]))
         .with_timeline(timeline)
         .with_metadata_value("sha256", serde_json::json!("sha"));
@@ -370,8 +388,8 @@ fn audio_db_crud_and_difference_update() {
             TimeRange::new(DurationMs(0), DurationMs(100)),
             AnnotationPayload::Transcription(Transcription::new("caller")),
             None,
-            AnnotationStatus::Final,
-        ));
+        ))
+        .unwrap();
     first
         .ensure_timeline(AudioChannel::Right, None)
         .expect("right timeline")
@@ -379,8 +397,8 @@ fn audio_db_crud_and_difference_update() {
             TimeRange::new(DurationMs(0), DurationMs(100)),
             AnnotationPayload::Transcription(Transcription::new("agent")),
             None,
-            AnnotationStatus::Final,
-        ));
+        ))
+        .unwrap();
     let mut second = AudioDoc::with_id("second", AudioSource::from_encoded_bytes(vec![5, 6, 7]));
     second
         .ensure_timeline(AudioChannel::Mono, Some(DurationMs(250)))
@@ -685,122 +703,6 @@ fn audio_db_v3_is_decoded_read_only_with_top_level_identity_and_duration() {
     );
     loaded[0].validate().expect("valid migrated audio");
     drop(db);
-    std::fs::remove_file(path).ok();
-}
-
-#[test]
-fn audio_db_v4_flat_annotations_are_migrated_to_predictions() {
-    #[derive(serde::Serialize)]
-    struct FlatTimeline {
-        id: String,
-        audio_id: String,
-        duration: DurationMs,
-        annotations: Vec<Annotation>,
-    }
-
-    let path = std::env::temp_dir().join(format!(
-        "asr-db-v4-migration-{}.sqlite",
-        uuid::Uuid::new_v4().simple()
-    ));
-    let audio = annotated_audio();
-    let source = rmp_serde::to_vec_named(&audio.source).expect("encode source");
-    let prediction = Annotation::new(
-        TimeRange::new(DurationMs(0), DurationMs(100)),
-        AnnotationPayload::Transcription(Transcription {
-            text: "predicted".to_string(),
-            tokens: vec![],
-            language: None,
-            confidence: None,
-        }),
-        Some("whisper".to_string()),
-        AnnotationStatus::Final,
-    );
-    let source_less_prediction = Annotation::new(
-        TimeRange::new(DurationMs(0), DurationMs(100)),
-        AnnotationPayload::Transcription(Transcription {
-            text: "legacy import".to_string(),
-            tokens: vec![],
-            language: None,
-            confidence: None,
-        }),
-        None,
-        AnnotationStatus::Final,
-    );
-    let timelines = BTreeMap::from([(
-        AudioChannel::Mono,
-        FlatTimeline {
-            id: "timeline-v4".to_string(),
-            audio_id: audio.id.clone(),
-            duration: DurationMs(100),
-            annotations: vec![prediction, source_less_prediction],
-        },
-    )]);
-    let timelines = rmp_serde::to_vec_named(&timelines).expect("encode v4 timelines");
-    let metadata = serde_json::to_string(&audio.metadata).expect("encode metadata");
-    {
-        let connection = rusqlite::Connection::open(&path).expect("open v4 fixture");
-        connection
-            .execute_batch(
-                "PRAGMA application_id = 0x56415352;
-                 PRAGMA user_version = 4;
-                 CREATE TABLE metadata (
-                     key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL
-                 ) STRICT;
-                 CREATE TABLE audios (
-                     audio_id TEXT PRIMARY KEY NOT NULL,
-                     metadata TEXT NOT NULL,
-                     duration_ms INTEGER
-                 ) STRICT;
-                 CREATE TABLE audio_sources (
-                     audio_id TEXT PRIMARY KEY NOT NULL REFERENCES audios(audio_id),
-                     source BLOB NOT NULL
-                 ) STRICT;
-                 CREATE TABLE timelines (
-                     audio_id TEXT PRIMARY KEY NOT NULL REFERENCES audios(audio_id),
-                     timeline BLOB NOT NULL
-                 ) STRICT;",
-            )
-            .expect("create v4 schema");
-        connection
-            .execute(
-                "INSERT INTO audios(audio_id, metadata, duration_ms) VALUES (?1, ?2, ?3)",
-                rusqlite::params![audio.audio_id(), metadata, 100_i64],
-            )
-            .expect("insert audio");
-        connection
-            .execute(
-                "INSERT INTO audio_sources(audio_id, source) VALUES (?1, ?2)",
-                rusqlite::params![audio.audio_id(), source],
-            )
-            .expect("insert source");
-        connection
-            .execute(
-                "INSERT INTO timelines(audio_id, timeline) VALUES (?1, ?2)",
-                rusqlite::params![audio.audio_id(), timelines],
-            )
-            .expect("insert timelines");
-    }
-
-    let db = AudioDb::open(&path, AudioDbMode::ReadWrite).expect("migrate v4 database");
-    let loaded = db.get(&audio.id).expect("query migrated v4").unwrap();
-    let timeline = loaded.mono_timeline().unwrap();
-    assert!(timeline.reference.is_empty());
-    assert_eq!(timeline.prediction.len(), 2);
-    assert_eq!(timeline.prediction[0].source.as_deref(), Some("whisper"));
-    assert_eq!(timeline.prediction[1].source.as_deref(), Some("import"));
-    assert_eq!(timeline.prediction_transcript("whisper").text, "predicted");
-    assert_eq!(
-        timeline.prediction_transcript("import").text,
-        "legacy import"
-    );
-    drop(db);
-
-    let connection = rusqlite::Connection::open(&path).expect("inspect migrated database");
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .expect("version");
-    assert_eq!(version, 5);
-    drop(connection);
     std::fs::remove_file(path).ok();
 }
 

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use super::{Annotation, AnnotationPayload, AnnotationStatus, Timeline};
+use super::{Annotation, AnnotationPayload, Timeline};
 use crate::metrics::{
     CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh,
 };
@@ -250,17 +250,15 @@ impl Timeline {
 }
 
 fn is_final_text_annotation(annotation: &Annotation) -> bool {
-    annotation.status == AnnotationStatus::Final
-        && match &annotation.payload {
-            AnnotationPayload::Transcription(_) | AnnotationPayload::Sentence(_) => true,
-            AnnotationPayload::Speaker(speaker) => speaker.transcription.is_some(),
-            _ => false,
-        }
+    match &annotation.payload {
+        AnnotationPayload::Transcription(_) | AnnotationPayload::Sentence(_) => true,
+        AnnotationPayload::Speaker(speaker) => speaker.transcription.is_some(),
+        _ => false,
+    }
 }
 
 fn merged_speech_ranges<'a>(annotations: impl Iterator<Item = &'a Annotation>) -> Vec<TimeRange> {
     let mut ranges = annotations
-        .filter(|annotation| annotation.status == AnnotationStatus::Final)
         .filter(|annotation| matches!(annotation.payload, AnnotationPayload::Speech))
         .map(|annotation| annotation.range)
         .filter(|range| range.end > range.start)
@@ -322,7 +320,7 @@ fn harmonic_mean(left: f64, right: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timeline::{Annotation, AnnotationStatus};
+    use crate::timeline::Annotation;
     use crate::utils::DurationMs;
 
     fn speech(start: u64, end: u64, source: Option<&str>) -> Annotation {
@@ -330,16 +328,15 @@ mod tests {
             TimeRange::new(DurationMs(start), DurationMs(end)),
             AnnotationPayload::Speech,
             source.map(str::to_owned),
-            AnnotationStatus::Final,
         )
     }
 
     #[test]
     fn evaluates_merged_speech_ranges() {
         let mut timeline = Timeline::new("audio", DurationMs(1_000));
-        timeline.push_reference(speech(100, 500, None));
-        timeline.push_reference(speech(400, 600, None));
-        timeline.push_prediction(speech(200, 700, Some("vad")));
+        timeline.reference.push(speech(100, 500, None));
+        timeline.reference.push(speech(400, 600, None));
+        timeline.prediction.push(speech(200, 700, Some("vad")));
         let result = timeline
             .evaluate(&TimelineEvalConfig::new().with_speech("vad"))
             .unwrap()
@@ -362,18 +359,20 @@ mod tests {
         use crate::timeline::Transcription;
 
         let mut timeline = Timeline::new("audio", DurationMs(1_000));
-        timeline.push_reference(Annotation::new(
-            TimeRange::new(DurationMs(0), DurationMs(1_000)),
-            AnnotationPayload::Transcription(Transcription::new("交易停滞")),
-            None,
-            AnnotationStatus::Final,
-        ));
-        timeline.push_prediction(Annotation::new(
-            TimeRange::new(DurationMs(0), DurationMs(1_000)),
-            AnnotationPayload::Transcription(Transcription::new("交易停止")),
-            Some("asr".to_owned()),
-            AnnotationStatus::Final,
-        ));
+        timeline
+            .push_reference(Annotation::new(
+                TimeRange::new(DurationMs(0), DurationMs(1_000)),
+                AnnotationPayload::Transcription(Transcription::new("交易停滞")),
+                None,
+            ))
+            .unwrap();
+        timeline
+            .push_prediction(Annotation::new(
+                TimeRange::new(DurationMs(0), DurationMs(1_000)),
+                AnnotationPayload::Transcription(Transcription::new("交易停止")),
+                Some("asr".to_owned()),
+            ))
+            .unwrap();
         let config = TimelineEvalConfig::new()
             .with_transcription("asr")
             .with_transcription_normalization(TranscriptionNormalization::None);

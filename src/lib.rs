@@ -21,8 +21,8 @@ pub use doc::{
 };
 pub use metrics::{CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh};
 pub use timeline::{
-    AcousticEvent, Annotation, AnnotationId, AnnotationPayload, AnnotationStatus, AudioId,
-    LanguageTag, SpeakerId, SpeakerPayload, SpeechEvaluation, TextSpan, Timeline,
+    AcousticEvent, Annotation, AnnotationId, AnnotationPayload, AudioId, LanguageTag, SpeakerId,
+    SpeakerPayload, SpeechEvaluation, TextSpan, Timeline, TimelineAnnotationError,
     TimelineEvalConfig, TimelineEvalError, TimelineEvaluation, TimelineId, Token, Transcript,
     Transcription, TranscriptionEvaluation, TranscriptionNormalization,
 };

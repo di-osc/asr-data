@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::annotation::{Annotation, AnnotationPayload, AnnotationStatus, AudioId, TimelineId};
+use super::annotation::{Annotation, AnnotationId, AnnotationPayload, AudioId, TimelineId};
 use super::segment::{TextSpan, Transcript};
 use crate::utils::DurationMs;
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Timeline {
     pub id: TimelineId,
     pub audio_id: AudioId,
@@ -14,56 +14,10 @@ pub struct Timeline {
     pub prediction: Vec<Annotation>,
 }
 
-impl<'de> Deserialize<'de> for Timeline {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Wire {
-            #[serde(default)]
-            id: TimelineId,
-            #[serde(default)]
-            audio_id: AudioId,
-            #[serde(default, deserialize_with = "deserialize_duration")]
-            duration: DurationMs,
-            #[serde(default)]
-            reference: Vec<Annotation>,
-            #[serde(default)]
-            prediction: Vec<Annotation>,
-            #[serde(default)]
-            annotations: Vec<Annotation>,
-        }
-
-        let mut wire = Wire::deserialize(deserializer)?;
-        // Timelines written before reference/prediction separation had one flat
-        // collection. Preserve those records as predictions because their role
-        // was not represented explicitly.
-        for annotation in &mut wire.annotations {
-            if annotation
-                .source
-                .as_deref()
-                .is_none_or(|source| source.trim().is_empty())
-            {
-                annotation.source = Some("import".to_string());
-            }
-        }
-        wire.prediction.append(&mut wire.annotations);
-        Ok(Self {
-            id: wire.id,
-            audio_id: wire.audio_id,
-            duration: wire.duration,
-            reference: wire.reference,
-            prediction: wire.prediction,
-        })
-    }
-}
-
-fn deserialize_duration<'de, D>(deserializer: D) -> Result<DurationMs, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<DurationMs>::deserialize(deserializer)?.unwrap_or_default())
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum TimelineAnnotationError {
+    #[error("prediction annotation {annotation_id:?} must have a non-empty source")]
+    PredictionMissingSource { annotation_id: AnnotationId },
 }
 
 impl Timeline {
@@ -77,22 +31,28 @@ impl Timeline {
         }
     }
 
-    pub fn push_reference(&mut self, mut annotation: Annotation) {
+    pub fn push_reference(
+        &mut self,
+        mut annotation: Annotation,
+    ) -> Result<&Annotation, TimelineAnnotationError> {
         annotation.source = None;
-        self.reference.push(annotation);
+        Ok(push_unique(&mut self.reference, annotation))
     }
 
-    pub fn push_prediction(&mut self, annotation: Annotation) {
-        self.prediction.push(annotation);
-    }
-
-    pub fn push_reference_unique(&mut self, mut annotation: Annotation) -> &Annotation {
-        annotation.source = None;
-        push_unique(&mut self.reference, annotation)
-    }
-
-    pub fn push_prediction_unique(&mut self, annotation: Annotation) -> &Annotation {
-        push_unique(&mut self.prediction, annotation)
+    pub fn push_prediction(
+        &mut self,
+        annotation: Annotation,
+    ) -> Result<&Annotation, TimelineAnnotationError> {
+        if annotation
+            .source
+            .as_deref()
+            .is_none_or(|source| source.trim().is_empty())
+        {
+            return Err(TimelineAnnotationError::PredictionMissingSource {
+                annotation_id: annotation.id,
+            });
+        }
+        Ok(push_unique(&mut self.prediction, annotation))
     }
 
     pub fn all_annotations(&self) -> impl Iterator<Item = &Annotation> {
@@ -101,12 +61,6 @@ impl Timeline {
 
     pub fn annotation_count(&self) -> usize {
         self.reference.len() + self.prediction.len()
-    }
-
-    pub fn by_status(&self, status: AnnotationStatus) -> Vec<&Annotation> {
-        self.all_annotations()
-            .filter(|annotation| annotation.status == status)
-            .collect()
     }
 
     pub fn predictions_by_source<'a>(
@@ -173,7 +127,6 @@ fn transcript_from_annotations<'a>(
     annotations: impl Iterator<Item = &'a Annotation>,
 ) -> Transcript {
     let mut segments = annotations
-        .filter(|annotation| annotation.status == AnnotationStatus::Final)
         .filter_map(|annotation| match &annotation.payload {
             AnnotationPayload::Transcription(transcription) => Some((
                 annotation.range.start,
