@@ -24,7 +24,7 @@ pub enum AudioError {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Audio {
+pub struct Waveform {
     pub samples: Vec<f32>,
     pub sample_rate: u32,
     pub channels: u16,
@@ -53,7 +53,7 @@ pub struct AudioChunks {
     next_frame: usize,
 }
 
-impl Audio {
+impl Waveform {
     pub fn new(samples: Vec<f32>, sample_rate: u32) -> Self {
         Self::new_with_channels(samples, sample_rate, 1)
     }
@@ -152,19 +152,19 @@ impl Audio {
     }
 
     pub fn from_path(path: impl AsRef<std::path::Path>) -> anyhow::Result<Self> {
-        AudioSource::from_path(path.as_ref().to_path_buf()).load()
+        AudioSource::from_path(path.as_ref().to_path_buf()).decode_waveform()
     }
 
     pub fn from_url(url: impl Into<String>) -> anyhow::Result<Self> {
-        AudioSource::from_url(url).load()
+        AudioSource::from_url(url).decode_waveform()
     }
 
     pub fn from_encoded_bytes(bytes: impl Into<Vec<u8>>) -> anyhow::Result<Self> {
-        AudioSource::from_encoded_bytes(bytes).load()
+        AudioSource::from_encoded_bytes(bytes).decode_waveform()
     }
 
     pub fn from_base64(data: impl Into<String>) -> anyhow::Result<Self> {
-        AudioSource::from_base64(data).load()
+        AudioSource::from_base64(data).decode_waveform()
     }
 
     pub fn from_pcm_s16le(
@@ -172,15 +172,18 @@ impl Audio {
         sample_rate: u32,
         channels: u16,
     ) -> anyhow::Result<Self> {
-        AudioSource::from_pcm_s16le(bytes, sample_rate, channels).load()
+        AudioSource::from_pcm_s16le(bytes, sample_rate, channels).decode_waveform()
     }
 
     pub fn from_source(source: &AudioSource) -> anyhow::Result<Self> {
-        source.load()
+        source.decode_waveform()
     }
 
     pub async fn aload_from_source(source: &AudioSource) -> anyhow::Result<Self> {
-        source.aload().await
+        let source = source.clone();
+        tokio::task::spawn_blocking(move || source.decode_waveform())
+            .await
+            .map_err(|error| anyhow::anyhow!("waveform loader worker failed: {error}"))?
     }
 
     pub fn duration_ms(&self) -> f64 {
@@ -296,7 +299,7 @@ impl Audio {
             .collect()
     }
 
-    pub fn append(&mut self, other: &Audio) -> Result<(), AudioError> {
+    pub fn append(&mut self, other: &Waveform) -> Result<(), AudioError> {
         if self.sample_rate == 0 || other.sample_rate == 0 || self.sample_rate != other.sample_rate
         {
             return Err(AudioError::InvalidSampleRate);
@@ -450,7 +453,7 @@ fn lowest_energy_boundary(
         .map(|(offset, _)| best_start + offset)
 }
 
-impl Default for Audio {
+impl Default for Waveform {
     fn default() -> Self {
         Self::new(Vec::new(), 16_000)
     }

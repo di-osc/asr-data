@@ -2,8 +2,8 @@ use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::audio::{
-    Audio as RustAudio, AudioChunk as RustAudioChunk, AudioFormat as RustAudioFormat,
-    AudioInfo as RustAudioInfo, AudioSource as RustAudioSource,
+    AudioChunk as RustAudioChunk, AudioFormat as RustAudioFormat, AudioInfo as RustAudioInfo,
+    AudioSource as RustAudioSource, Waveform as RustWaveform,
 };
 use crate::utils::DurationMs;
 use numpy::{IntoPyArray, PyArray1, PyArrayMethods, ndarray::ArrayView1};
@@ -13,8 +13,11 @@ use pyo3::types::{PyAny, PyBytes, PyDict};
 
 use super::AsrDataError;
 use super::common::{
-    encoding_name, format_duration_ms, poisoned, py_error, summarize_url, truncate,
+    SharedAudio, audio_channel, encoding_name, format_duration_ms, poisoned, py_error,
+    summarize_url, truncate,
 };
+use super::doc::PyAudio;
+use super::timeline::PyTimeline;
 
 /// 音频编码、采样率和声道数组成的格式信息。
 #[pyclass(name = "AudioFormat", frozen)]
@@ -133,39 +136,42 @@ impl PyAudioInfo {
 ///
 /// Examples:
 ///     >>> import numpy as np
-///     >>> from asr_data import Audio
-///     >>> audio = Audio(np.zeros(16000, dtype=np.float32), 16000)
+///     >>> from asr_data import Waveform
+///     >>> audio = Waveform(np.zeros(16000, dtype=np.float32), 16000)
 ///     >>> audio.duration_ms
 ///     1000.0
-#[pyclass(name = "Audio")]
-pub(super) struct PyAudio {
-    inner: RustAudio,
+#[pyclass(name = "Waveform")]
+pub(super) struct PyWaveform {
+    inner: RustWaveform,
     numpy_owner: Option<Py<PyArray1<f32>>>,
 }
 
-impl PyAudio {
-    fn from_rust(inner: RustAudio) -> Self {
+impl PyWaveform {
+    pub(super) fn from_rust(inner: RustWaveform) -> Self {
         Self {
             inner,
             numpy_owner: None,
         }
     }
 
-    fn materialize(&self, py: Python<'_>) -> PyResult<RustAudio> {
+    fn materialize(&self, py: Python<'_>) -> PyResult<RustWaveform> {
         let Some(owner) = &self.numpy_owner else {
             return Ok(self.inner.clone());
         };
         let samples = owner.bind(py).readonly().as_slice()?.to_vec();
-        let mut audio =
-            RustAudio::try_new_with_channels(samples, self.inner.sample_rate, self.inner.channels)
-                .map_err(py_error)?;
+        let mut audio = RustWaveform::try_new_with_channels(
+            samples,
+            self.inner.sample_rate,
+            self.inner.channels,
+        )
+        .map_err(py_error)?;
         audio.source_format = self.inner.source_format.clone();
         Ok(audio)
     }
 }
 
 #[pymethods]
-impl PyAudio {
+impl PyWaveform {
     #[new]
     #[pyo3(signature = (samples, sample_rate, channels=1))]
     fn new(samples: &Bound<'_, PyAny>, sample_rate: u32, channels: u16) -> PyResult<Self> {
@@ -195,7 +201,7 @@ impl PyAudio {
                 ));
             }
             Ok(Self {
-                inner: RustAudio::new_with_channels(Vec::new(), sample_rate, channels),
+                inner: RustWaveform::new_with_channels(Vec::new(), sample_rate, channels),
                 numpy_owner: Some(samples),
             })
         }
@@ -207,7 +213,7 @@ impl PyAudio {
     ///     path: 本地音频文件路径。
     ///
     /// Returns:
-    ///     解码后的完整 Audio。
+    ///     解码后的完整 Waveform。
     ///
     /// Raises:
     ///     AsrDataError: 文件无法读取或音频无法解码。
@@ -215,14 +221,14 @@ impl PyAudio {
     /// Examples:
     ///     >>> from tempfile import NamedTemporaryFile
     ///     >>> from urllib.request import urlretrieve
-    ///     >>> from asr_data import Audio
+    ///     >>> from asr_data import Waveform
     ///     >>> url = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
     ///     >>> with NamedTemporaryFile(suffix=".wav") as file:
     ///     ...     _ = urlretrieve(url, file.name)
-    ///     ...     audio = Audio.from_path(file.name)
+    ///     ...     audio = Waveform.from_path(file.name)
     #[staticmethod]
     fn from_path(py: Python<'_>, path: String) -> PyResult<Self> {
-        py.detach(move || RustAudio::from_path(path))
+        py.detach(move || RustWaveform::from_path(path))
             .map(Self::from_rust)
             .map_err(py_error)
     }
@@ -233,19 +239,19 @@ impl PyAudio {
     ///     url: 音频 URL。
     ///
     /// Returns:
-    ///     解码后的完整 Audio。
+    ///     解码后的完整 Waveform。
     ///
     /// Raises:
     ///     AsrDataError: 请求失败或音频无法解码。
     ///
     /// Examples:
-    ///     >>> from asr_data import Audio
-    ///     >>> audio = Audio.from_url(
+    ///     >>> from asr_data import Waveform
+    ///     >>> audio = Waveform.from_url(
     ///     ...     "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
     ///     ... )
     #[staticmethod]
     fn from_url(py: Python<'_>, url: String) -> PyResult<Self> {
-        py.detach(move || RustAudio::from_url(url))
+        py.detach(move || RustWaveform::from_url(url))
             .map(Self::from_rust)
             .map_err(py_error)
     }
@@ -256,20 +262,20 @@ impl PyAudio {
     ///     data: 包含音频容器或编码信息的字节。
     ///
     /// Returns:
-    ///     解码后的完整 Audio。
+    ///     解码后的完整 Waveform。
     ///
     /// Raises:
     ///     AsrDataError: 字节不是受支持的音频。
     ///
     /// Examples:
     ///     >>> from urllib.request import urlopen
-    ///     >>> from asr_data import Audio
+    ///     >>> from asr_data import Waveform
     ///     >>> url = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
-    ///     >>> audio = Audio.from_bytes(urlopen(url).read())
+    ///     >>> audio = Waveform.from_bytes(urlopen(url).read())
     #[staticmethod]
     fn from_bytes(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<Self> {
         let bytes = data.as_bytes().to_vec();
-        py.detach(move || RustAudio::from_encoded_bytes(bytes))
+        py.detach(move || RustWaveform::from_encoded_bytes(bytes))
             .map(Self::from_rust)
             .map_err(py_error)
     }
@@ -280,7 +286,7 @@ impl PyAudio {
     ///     data: base64 字符串或 data URL。
     ///
     /// Returns:
-    ///     解码后的完整 Audio。
+    ///     解码后的完整 Waveform。
     ///
     /// Raises:
     ///     AsrDataError: base64 或音频编码无效。
@@ -288,13 +294,13 @@ impl PyAudio {
     /// Examples:
     ///     >>> import base64
     ///     >>> from urllib.request import urlopen
-    ///     >>> from asr_data import Audio
+    ///     >>> from asr_data import Waveform
     ///     >>> url = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
     ///     >>> data = base64.b64encode(urlopen(url).read()).decode()
-    ///     >>> audio = Audio.from_base64(data)
+    ///     >>> audio = Waveform.from_base64(data)
     #[staticmethod]
     fn from_base64(py: Python<'_>, data: String) -> PyResult<Self> {
-        py.detach(move || RustAudio::from_base64(data))
+        py.detach(move || RustWaveform::from_base64(data))
             .map(Self::from_rust)
             .map_err(py_error)
     }
@@ -307,14 +313,14 @@ impl PyAudio {
     ///     channels: 声道数，默认为 1。
     ///
     /// Returns:
-    ///     转换为 float32 样本的 Audio。
+    ///     转换为 float32 样本的 Waveform。
     ///
     /// Raises:
     ///     ValueError: PCM 参数或帧长度无效。
     ///
     /// Examples:
-    ///     >>> from asr_data import Audio
-    ///     >>> Audio.from_pcm(b"\0\0" * 16000, 16000).duration_ms
+    ///     >>> from asr_data import Waveform
+    ///     >>> Waveform.from_pcm(b"\0\0" * 16000, 16000).duration_ms
     ///     1000.0
     #[staticmethod]
     #[pyo3(signature = (data, sample_rate, channels=1))]
@@ -325,7 +331,7 @@ impl PyAudio {
         channels: u16,
     ) -> PyResult<Self> {
         let bytes = data.as_bytes().to_vec();
-        py.detach(move || RustAudio::from_pcm_s16le(bytes, sample_rate, channels))
+        py.detach(move || RustWaveform::from_pcm_s16le(bytes, sample_rate, channels))
             .map(Self::from_rust)
             .map_err(py_error)
     }
@@ -336,20 +342,20 @@ impl PyAudio {
     ///     source: 要加载的 AudioSource。
     ///
     /// Returns:
-    ///     解码后的完整 Audio。
+    ///     解码后的完整 Waveform。
     ///
     /// Raises:
     ///     AsrDataError: 来源无法读取或解码。
     ///
     /// Examples:
-    ///     >>> from asr_data import Audio, AudioSource
+    ///     >>> from asr_data import Waveform, AudioSource
     ///     >>> source = AudioSource.from_pcm(b"\0\0" * 10, 16000)
-    ///     >>> Audio.from_source(source).frame_count
+    ///     >>> Waveform.from_source(source).frame_count
     ///     10
     #[staticmethod]
     fn from_source(py: Python<'_>, source: &Bound<'_, PyAny>) -> PyResult<Self> {
         let source = rust_source_from_py(source)?;
-        py.detach(move || RustAudio::from_source(&source))
+        py.detach(move || RustWaveform::from_source(&source))
             .map(Self::from_rust)
             .map_err(py_error)
     }
@@ -414,7 +420,7 @@ impl PyAudio {
             return Ok(view);
         }
         let view = ArrayView1::from(&audio.inner.samples);
-        // SAFETY: the returned ndarray keeps `this` as its base owner. PyAudio is
+        // SAFETY: the returned ndarray keeps `this` as its base owner. PyWaveform is
         // frozen from Python and none of its Rust methods mutate/reallocate samples.
         let array = unsafe { PyArray1::borrow_from_array(&view, this.into_any()) };
         array.call_method1("setflags", (false,))?;
@@ -437,8 +443,8 @@ impl PyAudio {
     ///
     /// Examples:
     ///     >>> import numpy as np
-    ///     >>> from asr_data import Audio
-    ///     >>> audio = Audio(np.zeros(16000), 16000)
+    ///     >>> from asr_data import Waveform
+    ///     >>> audio = Waveform(np.zeros(16000), 16000)
     ///     >>> audio.display(start_ms=0, end_ms=500)
     #[pyo3(signature = (start_ms=None, end_ms=None, autoplay=false))]
     fn display(
@@ -457,7 +463,7 @@ impl PyAudio {
         }
         let ipython = py.import("IPython.display").map_err(|_| {
             AsrDataError::new_err(
-                "Audio.display() requires IPython; install it with `pip install ipython`",
+                "Waveform.display() requires IPython; install it with `pip install ipython`",
             )
         })?;
         let materialized = self.materialize(py)?;
@@ -489,15 +495,15 @@ impl PyAudio {
         Ok(())
     }
 
-    /// 混合所有声道并返回新的单声道 Audio。
+    /// 混合所有声道并返回新的单声道 Waveform。
     ///
     /// Returns:
-    ///     不修改原对象的新 Audio。
+    ///     不修改原对象的新 Waveform。
     ///
     /// Examples:
     ///     >>> import numpy as np
-    ///     >>> from asr_data import Audio
-    ///     >>> Audio(np.zeros(20), 16000, 2).to_mono().channels
+    ///     >>> from asr_data import Waveform
+    ///     >>> Waveform(np.zeros(20), 16000, 2).to_mono().channels
     ///     1
     fn to_mono(&self, py: Python<'_>) -> PyResult<Self> {
         Ok(Self::from_rust(
@@ -505,21 +511,21 @@ impl PyAudio {
         ))
     }
 
-    /// 提取指定声道并返回新的单声道 Audio。
+    /// 提取指定声道并返回新的单声道 Waveform。
     ///
     /// Args:
     ///     index: 从 0 开始的声道索引。
     ///
     /// Returns:
-    ///     提取出的单声道 Audio。
+    ///     提取出的单声道 Waveform。
     ///
     /// Raises:
     ///     AsrDataError: 索引超出范围。
     ///
     /// Examples:
     ///     >>> import numpy as np
-    ///     >>> from asr_data import Audio
-    ///     >>> Audio(np.zeros(20), 16000, 2).channel(0).channels
+    ///     >>> from asr_data import Waveform
+    ///     >>> Waveform(np.zeros(20), 16000, 2).channel(0).channels
     ///     1
     fn channel(&self, py: Python<'_>, index: u16) -> PyResult<Self> {
         Ok(Self::from_rust(
@@ -527,21 +533,21 @@ impl PyAudio {
         ))
     }
 
-    /// 重采样并返回新的 Audio。
+    /// 重采样并返回新的 Waveform。
     ///
     /// Args:
     ///     sample_rate: 目标采样率。
     ///
     /// Returns:
-    ///     不修改原对象的新 Audio。
+    ///     不修改原对象的新 Waveform。
     ///
     /// Raises:
     ///     ValueError: 目标采样率为零。
     ///
     /// Examples:
     ///     >>> import numpy as np
-    ///     >>> from asr_data import Audio
-    ///     >>> Audio(np.zeros(160), 16000).resample(8000).sample_rate
+    ///     >>> from asr_data import Waveform
+    ///     >>> Waveform(np.zeros(160), 16000).resample(8000).sample_rate
     ///     8000
     fn resample(&self, py: Python<'_>, sample_rate: u32) -> PyResult<Self> {
         let waveform = self.materialize(py)?;
@@ -550,19 +556,19 @@ impl PyAudio {
             .map_err(py_error)
     }
 
-    /// 按半开毫秒范围截取并返回新的 Audio。
+    /// 按半开毫秒范围截取并返回新的 Waveform。
     ///
     /// Args:
     ///     start_ms: 起始时间，包含。
     ///     end_ms: 结束时间，不包含。
     ///
     /// Returns:
-    ///     截取后的新 Audio。
+    ///     截取后的新 Waveform。
     ///
     /// Examples:
     ///     >>> import numpy as np
-    ///     >>> from asr_data import Audio
-    ///     >>> Audio(np.zeros(16000), 16000).slice_ms(0, 500).duration_ms
+    ///     >>> from asr_data import Waveform
+    ///     >>> Waveform(np.zeros(16000), 16000).slice_ms(0, 500).duration_ms
     ///     500.0
     fn slice_ms(&self, py: Python<'_>, start_ms: u64, end_ms: u64) -> PyResult<Self> {
         Ok(Self::from_rust(
@@ -576,15 +582,15 @@ impl PyAudio {
     ///     max_duration_ms: 每段的最大目标时长。
     ///
     /// Returns:
-    ///     保持原顺序的 Audio 列表。
+    ///     保持原顺序的 Waveform 列表。
     ///
     /// Raises:
     ///     ValueError: max_duration_ms 为零。
     ///
     /// Examples:
     ///     >>> import numpy as np
-    ///     >>> from asr_data import Audio
-    ///     >>> len(Audio(np.zeros(32000), 16000).split_at_low_energy(1000))
+    ///     >>> from asr_data import Waveform
+    ///     >>> len(Waveform(np.zeros(32000), 16000).split_at_low_energy(1000))
     ///     3
     fn split_at_low_energy(&self, py: Python<'_>, max_duration_ms: u64) -> PyResult<Vec<Self>> {
         self.materialize(py)?
@@ -607,7 +613,7 @@ impl PyAudio {
             |format| format!("{:?}", format.__str__()),
         );
         format!(
-            "Audio(frames={}, duration={}, sample_rate={}, channels={}, source_format={})",
+            "Waveform(frames={}, duration={}, sample_rate={}, channels={}, source_format={})",
             self.frame_count(py),
             format_duration_ms(self.duration_ms(py)),
             self.sample_rate(),
@@ -618,7 +624,7 @@ impl PyAudio {
 
     fn __str__(&self, py: Python<'_>) -> String {
         format!(
-            "Audio({}, {}Hz, {}ch)",
+            "Waveform({}, {}Hz, {}ch)",
             format_duration_ms(self.duration_ms(py)),
             self.sample_rate(),
             self.channels()
@@ -626,7 +632,7 @@ impl PyAudio {
     }
 }
 
-type AsyncLoadResult = Arc<Mutex<Option<Result<RustAudio, String>>>>;
+type AsyncLoadResult = Arc<Mutex<Option<Result<RustWaveform, String>>>>;
 type AsyncProbeResult = Arc<Mutex<Option<Result<RustAudioInfo, String>>>>;
 
 pub(super) fn async_runtime() -> &'static tokio::runtime::Runtime {
@@ -654,7 +660,7 @@ impl PyAudioLoadTask {
             .is_some())
     }
 
-    fn result(&self) -> PyResult<PyAudio> {
+    fn result(&self) -> PyResult<PyWaveform> {
         let result = self
             .result
             .lock()
@@ -662,7 +668,7 @@ impl PyAudioLoadTask {
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("audio load has not completed"))?;
         result
-            .map(PyAudio::from_rust)
+            .map(PyWaveform::from_rust)
             .map_err(AsrDataError::new_err)
     }
 }
@@ -715,10 +721,12 @@ fn spawn_source_aload(
     let result: AsyncLoadResult = Arc::new(Mutex::new(None));
     let task_result = Arc::clone(&result);
     async_runtime().spawn(async move {
-        let loaded = source
-            .aload_with(sample_rate, mono)
-            .await
-            .map_err(|error| format!("{error:#}"));
+        let loaded = tokio::task::spawn_blocking(move || {
+            crate::audio::transform_loaded_audio(source.decode_waveform()?, sample_rate, mono)
+        })
+        .await
+        .map_err(|error| format!("waveform loader worker failed: {error}"))
+        .and_then(|result| result.map_err(|error| format!("{error:#}")));
         if let Ok(mut slot) = task_result.lock() {
             *slot = Some(loaded);
         }
@@ -762,7 +770,7 @@ impl PyAudioStreamTask {
             .pending
             .take()
             .transpose()
-            .map(|chunk| chunk.map(|inner| PyAudioChunk { inner }))
+            .map(|chunk| chunk.map(|inner| PyAudioChunk { inner, audio: None }))
             .map_err(AsrDataError::new_err)
     }
 
@@ -776,6 +784,7 @@ impl PyAudioStreamTask {
     }
 }
 
+#[allow(dead_code)]
 fn spawn_source_astream(
     source: RustAudioSource,
     chunk_size_ms: u64,
@@ -818,9 +827,27 @@ fn spawn_source_astream(
 }
 
 /// 同步产生 AudioChunk 的音频流迭代器。
-#[pyclass(name = "AudioIterator", unsendable)]
-struct PyAudioIterator {
-    chunks: crate::audio::stream::SourceAudioStream,
+#[pyclass(name = "AudioIterator")]
+pub(super) struct PyAudioIterator {
+    chunks: Mutex<AudioIteratorChunks>,
+    audio: Option<SharedAudio>,
+    accumulated: Vec<f32>,
+    position_ms: u64,
+    finished: bool,
+}
+
+enum AudioIteratorChunks {
+    Source(Box<crate::audio::stream::SourceAudioStream>),
+    Loaded(crate::audio::AudioChunks),
+}
+
+impl AudioIteratorChunks {
+    fn next_chunk(&mut self) -> Option<anyhow::Result<RustAudioChunk>> {
+        match self {
+            Self::Source(chunks) => chunks.next(),
+            Self::Loaded(chunks) => chunks.next().map(Ok),
+        }
+    }
 }
 
 /// 流式音频中的一个连续解码片段。
@@ -828,6 +855,7 @@ struct PyAudioIterator {
 #[derive(Clone)]
 struct PyAudioChunk {
     inner: RustAudioChunk,
+    audio: Option<SharedAudio>,
 }
 
 #[pymethods]
@@ -868,6 +896,111 @@ impl PyAudioChunk {
         self.inner.duration_ms()
     }
 
+    /// 片段结束位置，使用完整 Audio 的全局毫秒坐标。
+    #[getter]
+    fn end_ms(&self) -> u64 {
+        self.inner
+            .offset_ms
+            .saturating_add(self.inner.duration_ms().ceil() as u64)
+    }
+
+    /// 将片段局部时间范围转换为完整 Audio 的全局时间范围。
+    ///
+    /// Args:
+    ///     start_ms: chunk 内的局部起始时间。
+    ///     end_ms: chunk 内的局部结束时间。
+    ///
+    /// Returns:
+    ///     ``(start_ms, end_ms)`` 全局时间范围。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 1600, 16000).open()
+    ///     >>> chunk = next(audio.stream(50))
+    ///     >>> chunk.to_global_span(0, 10)
+    ///     (0, 10)
+    fn to_global_span(&self, start_ms: u64, end_ms: u64) -> PyResult<(u64, u64)> {
+        if end_ms < start_ms || end_ms as f64 > self.inner.duration_ms().ceil() {
+            return Err(PyValueError::new_err(
+                "local span must be ordered and contained in the chunk",
+            ));
+        }
+        Ok((
+            self.inner.offset_ms.saturating_add(start_ms),
+            self.inner.offset_ms.saturating_add(end_ms),
+        ))
+    }
+
+    /// 返回该片段的 Waveform，可选提取指定声道。
+    ///
+    /// Args:
+    ///     channel: 可选的 mono、left、right 或声道索引。
+    ///
+    /// Returns:
+    ///     当前 chunk 的 Waveform。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 1600, 16000).open()
+    ///     >>> chunk = next(audio.stream(50))
+    ///     >>> chunk.as_waveform().duration_ms
+    ///     50.0
+    #[pyo3(signature = (channel=None))]
+    fn as_waveform(&self, channel: Option<&Bound<'_, PyAny>>) -> PyResult<PyWaveform> {
+        let waveform = RustWaveform::new_with_channels(
+            self.inner.samples.clone(),
+            self.inner.sample_rate,
+            self.inner.channels,
+        );
+        let waveform = match channel {
+            None => waveform,
+            Some(value) => match audio_channel(value)? {
+                crate::audio::AudioChannel::Mono => waveform.to_mono().map_err(py_error)?,
+                crate::audio::AudioChannel::Left => waveform.channel(0).map_err(py_error)?,
+                crate::audio::AudioChannel::Right => waveform.channel(1).map_err(py_error)?,
+                crate::audio::AudioChannel::Channel(index) => {
+                    waveform.channel(index).map_err(py_error)?
+                }
+            },
+        };
+        Ok(PyWaveform::from_rust(waveform))
+    }
+
+    /// 返回父 Audio 的完整 Timeline，而不是 chunk 局部时间轴。
+    ///
+    /// Args:
+    ///     channel: mono、left、right 或声道索引。
+    ///
+    /// Returns:
+    ///     父 Audio 的完整 Timeline。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 1600, 16000).open()
+    ///     >>> chunk = next(audio.stream(50))
+    ///     >>> chunk.timeline("mono").duration_ms
+    ///     100
+    fn timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<PyTimeline> {
+        let audio = self
+            .audio
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("this chunk is not bound to an Audio"))?;
+        let channel = audio_channel(channel)?;
+        let exists = audio
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .timeline(channel)
+            .map_err(py_error)?
+            .is_some();
+        if !exists {
+            return Err(PyValueError::new_err("selected timeline does not exist"));
+        }
+        Ok(PyTimeline {
+            audio: audio.clone(),
+            channel,
+        })
+    }
+
     /// 解码前检测到的可选原始格式。
     #[getter]
     fn source_format(&self) -> Option<PyAudioFormat> {
@@ -897,13 +1030,16 @@ impl PyAudioChunk {
     ///
     /// Examples:
     ///     >>> from asr_data import AudioSource
-    ///     >>> chunk = next(AudioSource.from_pcm(b"\0\0" * 10, 16000).stream())
+    ///     >>> chunk = next(AudioSource.from_pcm(b"\0\0" * 10, 16000).open().stream())
     ///     >>> chunk.to_mono().channels
     ///     1
     fn to_mono(&self) -> PyResult<Self> {
         self.inner
             .to_mono()
-            .map(|inner| Self { inner })
+            .map(|inner| Self {
+                inner,
+                audio: self.audio.clone(),
+            })
             .map_err(py_error)
     }
 
@@ -921,12 +1057,15 @@ impl PyAudioChunk {
     /// Examples:
     ///     >>> from asr_data import AudioSource
     ///     >>> source = AudioSource.from_pcm(b"\0\0\0\0" * 10, 16000, 2)
-    ///     >>> next(source.stream()).channel(0).channels
+    ///     >>> next(source.open().stream()).channel(0).channels
     ///     1
     fn channel(&self, index: u16) -> PyResult<Self> {
         self.inner
             .channel(index)
-            .map(|inner| Self { inner })
+            .map(|inner| Self {
+                inner,
+                audio: self.audio.clone(),
+            })
             .map_err(py_error)
     }
 
@@ -943,13 +1082,16 @@ impl PyAudioChunk {
     ///
     /// Examples:
     ///     >>> from asr_data import AudioSource
-    ///     >>> chunk = next(AudioSource.from_pcm(b"\0\0" * 100, 16000).stream())
+    ///     >>> chunk = next(AudioSource.from_pcm(b"\0\0" * 100, 16000).open().stream())
     ///     >>> chunk.resample(8000).sample_rate
     ///     8000
     fn resample(&self, py: Python<'_>, sample_rate: u32) -> PyResult<Self> {
         let chunk = self.inner.clone();
         py.detach(move || chunk.resample(sample_rate))
-            .map(|inner| Self { inner })
+            .map(|inner| Self {
+                inner,
+                audio: self.audio.clone(),
+            })
             .map_err(py_error)
     }
 
@@ -964,12 +1106,13 @@ impl PyAudioChunk {
     ///
     /// Examples:
     ///     >>> from asr_data import AudioSource
-    ///     >>> chunk = next(AudioSource.from_pcm(b"\0\0" * 16000, 16000).stream())
+    ///     >>> chunk = next(AudioSource.from_pcm(b"\0\0" * 16000, 16000).open().stream())
     ///     >>> chunk.slice_ms(0, 50).duration_ms
     ///     50.0
     fn slice_ms(&self, start_ms: u64, end_ms: u64) -> Self {
         Self {
             inner: self.inner.slice_ms(start_ms, end_ms),
+            audio: self.audio.clone(),
         }
     }
 
@@ -997,14 +1140,94 @@ impl PyAudioIterator {
     }
 
     fn __next__(&mut self) -> PyResult<Option<PyAudioChunk>> {
-        self.chunks
-            .next()
+        if self.finished {
+            return Ok(None);
+        }
+        let next = self
+            .chunks
+            .get_mut()
+            .map_err(|_| poisoned("audio iterator"))?
+            .next_chunk()
             .transpose()
-            .map(|chunk| chunk.map(|inner| PyAudioChunk { inner }))
-            .map_err(py_error)
+            .map_err(py_error)?;
+        let Some(inner) = next else {
+            self.finish(false)?;
+            return Ok(None);
+        };
+        self.position_ms = inner
+            .offset_ms
+            .saturating_add(inner.duration_ms().ceil() as u64);
+        if self.audio.is_some() {
+            self.accumulated.extend_from_slice(&inner.samples);
+        }
+        if inner.is_final {
+            self.finish(true)?;
+        }
+        Ok(Some(PyAudioChunk {
+            inner,
+            audio: self.audio.clone(),
+        }))
+    }
+
+    #[getter]
+    fn position_ms(&self) -> u64 {
+        self.position_ms
+    }
+
+    #[getter]
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn close(&mut self) -> PyResult<()> {
+        self.finish(false)
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &mut self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.close()
     }
 }
 
+impl PyAudioIterator {
+    fn finish(&mut self, complete: bool) -> PyResult<()> {
+        if self.finished {
+            return Ok(());
+        }
+        self.finished = true;
+        if let Some(audio) = &self.audio {
+            let mut audio = audio.write().map_err(|_| poisoned("audio"))?;
+            if complete && !audio.is_loaded() {
+                let waveform = RustWaveform::try_new_with_channels(
+                    std::mem::take(&mut self.accumulated),
+                    audio.info.sample_rate,
+                    audio.info.channels,
+                )
+                .map_err(py_error)?
+                .with_source_format(audio.info.source_format.clone());
+                audio.waveform = Some(waveform);
+            }
+            audio.end_stream();
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PyAudioIterator {
+    fn drop(&mut self) {
+        let _ = self.finish(false);
+    }
+}
+
+#[allow(dead_code)]
 fn stream_source(
     py: Python<'_>,
     source: RustAudioSource,
@@ -1017,18 +1240,68 @@ fn stream_source(
             crate::audio::stream::SourceAudioStream::new(source, chunk_size_ms, sample_rate, mono)
         })
         .map_err(py_error)?;
-    Ok(PyAudioIterator { chunks })
+    Ok(PyAudioIterator {
+        chunks: Mutex::new(AudioIteratorChunks::Source(Box::new(chunks))),
+        audio: None,
+        accumulated: Vec::new(),
+        position_ms: 0,
+        finished: false,
+    })
 }
 
+pub(super) fn stream_audio(
+    py: Python<'_>,
+    audio: SharedAudio,
+    chunk_size_ms: u64,
+) -> PyResult<PyAudioIterator> {
+    let chunks_result = {
+        let mut value = audio.write().map_err(|_| poisoned("audio"))?;
+        value.begin_stream().map_err(py_error)?;
+        if let Some(waveform) = value.waveform.clone() {
+            waveform
+                .into_chunks_ms(chunk_size_ms)
+                .map(AudioIteratorChunks::Loaded)
+                .map_err(py_error)
+        } else {
+            let source = value.source.clone();
+            drop(value);
+            py.detach(move || {
+                crate::audio::stream::SourceAudioStream::new(source, chunk_size_ms, None, None)
+            })
+            .map(|stream| AudioIteratorChunks::Source(Box::new(stream)))
+            .map_err(py_error)
+        }
+    };
+    let chunks = match chunks_result {
+        Ok(chunks) => chunks,
+        Err(error) => {
+            if let Ok(mut value) = audio.write() {
+                value.end_stream();
+            }
+            return Err(error);
+        }
+    };
+    Ok(PyAudioIterator {
+        chunks: Mutex::new(chunks),
+        audio: Some(audio),
+        accumulated: Vec::new(),
+        position_ms: 0,
+        finished: false,
+    })
+}
+
+#[allow(dead_code)]
 fn load_source(
     py: Python<'_>,
     source: RustAudioSource,
     sample_rate: Option<u32>,
     mono: Option<bool>,
-) -> PyResult<PyAudio> {
-    py.detach(move || source.load_with(sample_rate, mono))
-        .map(PyAudio::from_rust)
-        .map_err(py_error)
+) -> PyResult<PyWaveform> {
+    py.detach(move || {
+        crate::audio::transform_loaded_audio(source.decode_waveform()?, sample_rate, mono)
+    })
+    .map(PyWaveform::from_rust)
+    .map_err(py_error)
 }
 
 /// 尚未解码的音频来源描述。
@@ -1225,15 +1498,37 @@ impl PyAudioSource {
         }
     }
 
-    #[pyo3(signature = (*, sample_rate=None, mono=None))]
-    /// 同步加载并解码完整音频。
+    #[pyo3(signature = (*, id=None))]
+    /// 探测来源并创建尚未加载波形的 Audio。
     ///
     /// Args:
-    ///     sample_rate: 可选目标采样率。
-    ///     mono: 设为 True 时混合为单声道。
+    ///     id: 可选稳定 Audio ID。
     ///
     /// Returns:
-    ///     解码后的完整 Audio。
+    ///     尚未加载波形但已经包含 info 和 timelines 的 Audio。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> _ = AudioSource.from_pcm(b"\0\0", 16000).open(id="sample")
+    fn open(&self, py: Python<'_>, id: Option<String>) -> PyResult<PyAudio> {
+        let source = self.inner.clone();
+        let audio = py
+            .detach(move || match id {
+                Some(id) => source.open_with_id(id),
+                None => source.open(),
+            })
+            .map_err(py_error)?;
+        PyAudio::from_rust(py, audio)
+    }
+
+    #[pyo3(signature = (*, id=None))]
+    /// 同步解码来源并返回已加载的 Audio。
+    ///
+    /// Args:
+    ///     id: 可选稳定 Audio ID。
+    ///
+    /// Returns:
+    ///     已携带完整波形和 timeline 的 Audio。
     ///
     /// Raises:
     ///     AsrDataError: 来源无法读取、解码或转换。
@@ -1241,15 +1536,17 @@ impl PyAudioSource {
     /// Examples:
     ///     >>> from asr_data import AudioSource
     ///     >>> source = AudioSource.from_pcm(b"\0\0" * 16000, 16000)
-    ///     >>> source.load().duration_ms
+    ///     >>> source.load().as_waveform().duration_ms
     ///     1000.0
-    fn load(
-        &self,
-        py: Python<'_>,
-        sample_rate: Option<u32>,
-        mono: Option<bool>,
-    ) -> PyResult<PyAudio> {
-        load_source(py, self.inner.clone(), sample_rate, mono)
+    fn load(&self, py: Python<'_>, id: Option<String>) -> PyResult<PyAudio> {
+        let source = self.inner.clone();
+        let audio = py
+            .detach(move || match id {
+                Some(id) => source.load_with_id(id),
+                None => source.load(),
+            })
+            .map_err(py_error)?;
+        PyAudio::from_rust(py, audio)
     }
 
     /// 读取格式和时长信息，但不解码为浮点采样。
@@ -1273,55 +1570,6 @@ impl PyAudioSource {
 
     fn _start_aprobe(&self) -> PyAudioProbeTask {
         spawn_source_aprobe(self.inner.clone())
-    }
-
-    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
-    /// 同步流式解码并返回 AudioChunk 迭代器。
-    ///
-    /// Args:
-    ///     chunk_size_ms: 每个片段的目标时长。
-    ///     sample_rate: 可选目标采样率。
-    ///     mono: 设为 True 时混合为单声道。
-    ///
-    /// Returns:
-    ///     按时间顺序产生 AudioChunk 的迭代器。
-    ///
-    /// Raises:
-    ///     ValueError: chunk_size_ms 为零。
-    ///     AsrDataError: 来源无法读取、解码或转换。
-    ///
-    /// Examples:
-    ///     >>> from asr_data import AudioSource
-    ///     >>> source = AudioSource.from_pcm(b"\0\0" * 16000, 16000)
-    ///     >>> [chunk.is_final for chunk in source.stream(500)]
-    ///     [False, True]
-    fn stream(
-        &self,
-        py: Python<'_>,
-        chunk_size_ms: u64,
-        sample_rate: Option<u32>,
-        mono: Option<bool>,
-    ) -> PyResult<PyAudioIterator> {
-        stream_source(py, self.inner.clone(), chunk_size_ms, sample_rate, mono)
-    }
-
-    #[pyo3(signature = (*, sample_rate=None, mono=None))]
-    fn _start_aload(
-        &self,
-        sample_rate: Option<u32>,
-        mono: Option<bool>,
-    ) -> PyResult<PyAudioLoadTask> {
-        spawn_source_aload(self.inner.clone(), sample_rate, mono)
-    }
-
-    #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
-    fn _start_astream(
-        &self,
-        chunk_size_ms: u64,
-        sample_rate: Option<u32>,
-        mono: Option<bool>,
-    ) -> PyResult<PyAudioStreamTask> {
-        spawn_source_astream(self.inner.clone(), chunk_size_ms, sample_rate, mono)
     }
 
     fn __repr__(&self) -> String {
@@ -1374,7 +1622,7 @@ pub(super) fn py_source_from_rust(py: Python<'_>, source: &RustAudioSource) -> P
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAudioFormat>()?;
     module.add_class::<PyAudioInfo>()?;
-    module.add_class::<PyAudio>()?;
+    module.add_class::<PyWaveform>()?;
     module.add_class::<PyAudioChunk>()?;
     module.add_class::<PyAudioSource>()?;
     module.add_class::<PyAudioLoadTask>()?;

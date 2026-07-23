@@ -1,39 +1,40 @@
 use crate::audio::AudioChannel as RustAudioChannel;
-use crate::doc::AudioDoc as RustAudioDoc;
+use crate::doc::Audio as RustAudio;
 use crate::timeline::{
-    Annotation as RustAnnotation, AnnotationPayload, SpeakerPayload,
-    SpeechEvaluation as RustSpeechEvaluation, Timeline as RustTimeline, TimelineEvalConfig,
-    TimelineEvaluation as RustTimelineEvaluation, Transcript as RustTranscript,
-    Transcription as RustTranscription, TranscriptionEvaluation as RustTranscriptionEvaluation,
-    TranscriptionNormalization,
+    ActivityEvaluation as RustActivityEvaluation,
+    ActivityEventEvaluation as RustActivityEventEvaluation, Annotation, TimeSpan as RustTimeSpan,
+    Timeline as RustTimeline, TimelineEvalConfig, TimelineEvaluation as RustTimelineEvaluation,
+    Transcript as RustTranscript, Transcription as RustTranscription,
+    TranscriptionEvaluation as RustTranscriptionEvaluation, TranscriptionNormalization,
 };
 use crate::utils::{DurationMs, TimeRange};
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
-use super::annotation::{PySpeaker, PyToken, PyTranscription};
+use super::annotation::{PyAudioActivity, PySpeaker, PyToken, PyTranscription};
+use super::audio::PyWaveform;
 use super::common::{SharedAudio, format_duration_ms, poisoned, py_error, truncate};
 
 /// Timeline 上一条带时间范围的标注记录。
 ///
-/// payload 可整体替换；替换操作会重新校验类型、token 范围和重叠规则。
-#[pyclass(name = "Annotation")]
+/// annotation 可整体替换；替换操作会重新校验类型、token 范围和重叠规则。
+#[pyclass(name = "TimeSpan")]
 #[derive(Clone)]
-struct PyAnnotation {
+struct PyTimeSpan {
     audio: SharedAudio,
     channel: RustAudioChannel,
-    group: AnnotationGroup,
+    group: SpanGroup,
     annotation_id: String,
 }
 
 #[derive(Clone, Copy)]
-enum AnnotationGroup {
+enum SpanGroup {
     Reference,
     Prediction,
 }
 
 #[pymethods]
-impl PyAnnotation {
+impl PyTimeSpan {
     /// 自动生成且稳定的 annotation ID。
     #[getter]
     fn id(&self) -> String {
@@ -64,33 +65,25 @@ impl PyAnnotation {
         Ok(self.snapshot()?.source)
     }
 
-    /// AnnotationKind 字符串。
+    /// 当前 annotation。
     #[getter]
-    fn kind(&self) -> PyResult<&'static str> {
-        Ok(annotation_kind(&self.snapshot()?.payload))
-    }
-
-    /// 当前 payload；Speech 返回 None。
-    #[getter]
-    fn payload(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(match self.snapshot()?.payload {
-            AnnotationPayload::Speech => py.None(),
-            AnnotationPayload::Token(inner) => Py::new(py, PyToken { inner })?.into_any(),
-            AnnotationPayload::Transcription(inner) => {
-                Py::new(py, PyTranscription { inner })?.into_any()
+    fn annotation(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Ok(match self.snapshot()?.annotation {
+            Annotation::Activity(inner) => Py::new(py, PyAudioActivity { inner })?.into_any(),
+            Annotation::Token(inner) => Py::new(py, PyToken { inner })?.into_any(),
+            Annotation::Transcription(inner) => Py::new(py, PyTranscription { inner })?.into_any(),
+            Annotation::Speaker(inner) => Py::new(py, PySpeaker { inner })?.into_any(),
+            annotation @ (Annotation::Sentence(_) | Annotation::Language(_)) => {
+                pythonize::pythonize(py, &annotation)
+                    .map_err(py_error)?
+                    .unbind()
             }
-            AnnotationPayload::Speaker(inner) => Py::new(py, PySpeaker { inner })?.into_any(),
-            payload @ (AnnotationPayload::Sentence(_)
-            | AnnotationPayload::Language(_)
-            | AnnotationPayload::AcousticEvent(_)) => pythonize::pythonize(py, &payload)
-                .map_err(py_error)?
-                .unbind(),
         })
     }
 
-    /// 整体替换 payload，并原子执行完整校验。
+    /// 整体替换 annotation，并原子执行完整校验。
     #[setter]
-    fn set_payload(&self, payload: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn set_annotation(&self, annotation: &Bound<'_, PyAny>) -> PyResult<()> {
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
         let timeline = audio
             .timeline_mut(self.channel)
@@ -103,18 +96,20 @@ impl PyAnnotation {
             .position(|annotation| annotation.id == self.annotation_id)
             .ok_or_else(|| PyRuntimeError::new_err("annotation no longer exists"))?;
         let annotation_range = annotations[index].range;
-        match &mut annotations[index].payload {
-            AnnotationPayload::Speech => {
-                if !payload.is_none() {
-                    return Err(PyValueError::new_err(
-                        "a speech annotation payload must be None",
-                    ));
-                }
+        match &mut annotations[index].annotation {
+            Annotation::Activity(current) => {
+                let activity =
+                    annotation
+                        .extract::<PyRef<'_, PyAudioActivity>>()
+                        .map_err(|_| {
+                            PyValueError::new_err("an activity annotation must be AudioActivity")
+                        })?;
+                *current = activity.inner.clone();
             }
-            AnnotationPayload::Token(current) => {
-                let token = payload.extract::<PyRef<'_, PyToken>>().map_err(|_| {
-                    PyValueError::new_err("a token annotation payload must be Token")
-                })?;
+            Annotation::Token(current) => {
+                let token = annotation
+                    .extract::<PyRef<'_, PyToken>>()
+                    .map_err(|_| PyValueError::new_err("a token annotation must be Token"))?;
                 if let Some(range) = token.inner.range
                     && (range.start < annotation_range.start || range.end > annotation_range.end)
                 {
@@ -124,13 +119,13 @@ impl PyAnnotation {
                 }
                 *current = token.inner.clone();
             }
-            AnnotationPayload::Transcription(current) => {
+            Annotation::Transcription(current) => {
                 let transcription =
-                    payload
+                    annotation
                         .extract::<PyRef<'_, PyTranscription>>()
                         .map_err(|_| {
                             PyValueError::new_err(
-                                "a transcription annotation payload must be Transcription",
+                                "a transcription annotation must be Transcription",
                             )
                         })?;
                 validate_transcription_range(
@@ -140,18 +135,16 @@ impl PyAnnotation {
                 )?;
                 *current = transcription.inner.clone();
             }
-            AnnotationPayload::Speaker(current) => {
-                let speaker = payload.extract::<PyRef<'_, PySpeaker>>().map_err(|_| {
-                    PyValueError::new_err("a speaker annotation payload must be Speaker")
-                })?;
+            Annotation::Speaker(current) => {
+                let speaker = annotation
+                    .extract::<PyRef<'_, PySpeaker>>()
+                    .map_err(|_| PyValueError::new_err("a speaker annotation must be Speaker"))?;
                 validate_speaker_transcription(annotation_range, &speaker.inner.transcription)?;
                 *current = speaker.inner.clone();
             }
-            AnnotationPayload::Sentence(_)
-            | AnnotationPayload::Language(_)
-            | AnnotationPayload::AcousticEvent(_) => {
+            Annotation::Sentence(_) | Annotation::Language(_) => {
                 return Err(PyValueError::new_err(
-                    "this annotation payload type cannot be replaced from Python",
+                    "this annotation type cannot be replaced from Python",
                 ));
             }
         }
@@ -159,19 +152,44 @@ impl PyAnnotation {
         let updated = annotations[index].clone();
         annotations
             .retain(|annotation| annotation.id == updated.id || !annotation.content_eq(&updated));
-        candidate.validate_annotations().map_err(py_error)?;
+        candidate.validate_spans().map_err(py_error)?;
         *timeline = candidate;
         Ok(())
     }
 
+    /// 返回该时间范围对应的波形视图。
+    ///
+    /// Returns:
+    ///     从父 Timeline 截取的 Waveform。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> from asr_data.annotation import AudioActivity
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 1600, 16000).open()
+    ///     >>> timeline = audio.timeline("mono")
+    ///     >>> span = timeline.reference.annotate_span(
+    ///     ...     0, timeline.duration_ms, AudioActivity(event="speech")
+    ///     ... )
+    ///     >>> span.as_waveform().duration_ms
+    ///     100.0
+    fn as_waveform(&self) -> PyResult<PyWaveform> {
+        let span = self.snapshot()?;
+        let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
+        let waveform = audio
+            .waveform_for_channel(self.channel)
+            .map(|waveform| waveform.slice_ms(span.range.start.0, span.range.end.0))
+            .map_err(py_error)?;
+        Ok(PyWaveform::from_rust(waveform))
+    }
+
     fn __repr__(&self) -> PyResult<String> {
         let annotation = self.snapshot()?;
-        let text = match &annotation.payload {
-            AnnotationPayload::Transcription(transcription) => {
+        let text = match &annotation.annotation {
+            Annotation::Transcription(transcription) => {
                 format!(", text={:?}", truncate(&transcription.text, 60))
             }
-            AnnotationPayload::Sentence(span) => format!(", text={:?}", truncate(&span.text, 60)),
-            AnnotationPayload::Token(token) => {
+            Annotation::Sentence(span) => format!(", text={:?}", truncate(&span.text, 60)),
+            Annotation::Token(token) => {
                 format!(", text={:?}", truncate(&token.text, 60))
             }
             _ => String::new(),
@@ -180,8 +198,8 @@ impl PyAnnotation {
             .confidence
             .map(|value| format!(", confidence={value:.3}"))
             .unwrap_or_default();
-        let speaker = match &annotation.payload {
-            AnnotationPayload::Speaker(speaker) => {
+        let speaker = match &annotation.annotation {
+            Annotation::Speaker(speaker) => {
                 let transcription = speaker
                     .transcription
                     .as_ref()
@@ -197,10 +215,18 @@ impl PyAnnotation {
             }
             _ => String::new(),
         };
+        let event = match &annotation.annotation {
+            Annotation::Activity(activity) => activity
+                .event
+                .as_ref()
+                .map(|event| format!(", event={event:?}"))
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
         Ok(format!(
-            "Annotation(id={:?}, kind={:?}, range={}..{}ms{speaker}{text}{confidence})",
+            "TimeSpan(id={:?}, annotation={}, range={}..{}ms{event}{speaker}{text}{confidence})",
             truncate(&annotation.id, 20),
-            annotation_kind(&annotation.payload),
+            annotation_kind(&annotation.annotation),
             annotation.range.start.0,
             annotation.range.end.0,
         ))
@@ -208,44 +234,41 @@ impl PyAnnotation {
 
     fn __str__(&self) -> PyResult<String> {
         let annotation = self.snapshot()?;
-        let text = match &annotation.payload {
-            AnnotationPayload::Transcription(transcription) => {
+        let text = match &annotation.annotation {
+            Annotation::Transcription(transcription) => {
                 format!(": {:?}", truncate(&transcription.text, 60))
             }
-            AnnotationPayload::Sentence(span) => format!(": {:?}", truncate(&span.text, 60)),
-            AnnotationPayload::Token(token) => {
+            Annotation::Sentence(span) => format!(": {:?}", truncate(&span.text, 60)),
+            Annotation::Token(token) => {
                 format!(": {:?}", truncate(&token.text, 60))
             }
             _ => String::new(),
         };
         Ok(format!(
             "{} [{}..{}ms]{text}",
-            annotation_kind(&annotation.payload),
+            annotation_kind(&annotation.annotation),
             annotation.range.start.0,
             annotation.range.end.0
         ))
     }
 }
 
-fn annotations(timeline: &RustTimeline, group: AnnotationGroup) -> &Vec<RustAnnotation> {
+fn annotations(timeline: &RustTimeline, group: SpanGroup) -> &Vec<RustTimeSpan> {
     match group {
-        AnnotationGroup::Reference => &timeline.reference,
-        AnnotationGroup::Prediction => &timeline.prediction,
+        SpanGroup::Reference => &timeline.reference,
+        SpanGroup::Prediction => &timeline.prediction,
     }
 }
 
-fn annotations_mut(
-    timeline: &mut RustTimeline,
-    group: AnnotationGroup,
-) -> &mut Vec<RustAnnotation> {
+fn annotations_mut(timeline: &mut RustTimeline, group: SpanGroup) -> &mut Vec<RustTimeSpan> {
     match group {
-        AnnotationGroup::Reference => &mut timeline.reference,
-        AnnotationGroup::Prediction => &mut timeline.prediction,
+        SpanGroup::Reference => &mut timeline.reference,
+        SpanGroup::Prediction => &mut timeline.prediction,
     }
 }
 
-impl PyAnnotation {
-    fn snapshot(&self) -> PyResult<RustAnnotation> {
+impl PyTimeSpan {
+    fn snapshot(&self) -> PyResult<RustTimeSpan> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
         let timeline = audio
             .timeline(self.channel)
@@ -259,8 +282,35 @@ impl PyAnnotation {
     }
 }
 
-fn annotation_kind(payload: &AnnotationPayload) -> &'static str {
-    payload.kind()
+fn annotation_kind(annotation: &Annotation) -> &'static str {
+    annotation.source_group()
+}
+
+fn annotation_from_py(value: &Bound<'_, PyAny>, range: TimeRange) -> PyResult<Annotation> {
+    if let Ok(activity) = value.extract::<PyRef<'_, PyAudioActivity>>() {
+        return Ok(Annotation::Activity(activity.inner.clone()));
+    }
+    if let Ok(transcription) = value.extract::<PyRef<'_, PyTranscription>>() {
+        validate_transcription_range(range, &transcription.inner, "time span")?;
+        return Ok(Annotation::Transcription(transcription.inner.clone()));
+    }
+    if let Ok(speaker) = value.extract::<PyRef<'_, PySpeaker>>() {
+        validate_speaker_transcription(range, &speaker.inner.transcription)?;
+        return Ok(Annotation::Speaker(speaker.inner.clone()));
+    }
+    if let Ok(token) = value.extract::<PyRef<'_, PyToken>>() {
+        if let Some(token_range) = token.inner.range
+            && (token_range.start < range.start || token_range.end > range.end)
+        {
+            return Err(PyValueError::new_err(
+                "token range must be within the time span",
+            ));
+        }
+        return Ok(Annotation::Token(token.inner.clone()));
+    }
+    Err(PyTypeError::new_err(
+        "annotation must be AudioActivity, Transcription, Speaker, or Token",
+    ))
 }
 
 fn validate_speaker_transcription(
@@ -451,70 +501,70 @@ impl PyTranscriptionEvaluation {
     }
 }
 
-/// 单个 prediction source 的 timeline Speech 评测结果。
-#[pyclass(name = "SpeechEvaluation", frozen)]
+/// 单个事件的 timeline 区间评测结果。
+#[pyclass(name = "ActivityEventEvaluation", frozen)]
 #[derive(Clone)]
-struct PySpeechEvaluation {
-    inner: RustSpeechEvaluation,
+struct PyActivityEventEvaluation {
+    inner: RustActivityEventEvaluation,
 }
 
 #[pymethods]
-impl PySpeechEvaluation {
-    /// Prediction source。
+impl PyActivityEventEvaluation {
+    /// 事件名称。
     #[getter]
-    fn source(&self) -> String {
-        self.inner.source.clone()
+    fn event(&self) -> String {
+        self.inner.event.clone()
     }
 
-    /// Reference 人声总时长，单位为毫秒。
+    /// Reference 事件总时长，单位为毫秒。
     #[getter]
     fn reference_ms(&self) -> u64 {
         self.inner.reference_ms
     }
 
-    /// Prediction 人声总时长，单位为毫秒。
+    /// Prediction 事件总时长，单位为毫秒。
     #[getter]
     fn predicted_ms(&self) -> u64 {
         self.inner.predicted_ms
     }
 
-    /// 正确预测为人声的时长。
+    /// 正确预测该事件的时长。
     #[getter]
     fn true_positive_ms(&self) -> u64 {
         self.inner.true_positive_ms
     }
 
-    /// 正确预测为静音的时长。
+    /// 正确预测为非该事件的时长。
     #[getter]
     fn true_negative_ms(&self) -> u64 {
         self.inner.true_negative_ms
     }
 
-    /// 误报人声的时长。
+    /// 误报该事件的时长。
     #[getter]
     fn false_positive_ms(&self) -> u64 {
         self.inner.false_positive_ms
     }
 
-    /// 漏报人声的时长。
+    /// 漏报该事件的时长。
     #[getter]
     fn false_negative_ms(&self) -> u64 {
         self.inner.false_negative_ms
     }
 
-    /// Speech precision。
+    /// 事件 precision。
     #[getter]
     fn precision(&self) -> f64 {
         self.inner.precision()
     }
 
-    /// Speech recall。
+    /// 事件 recall。
     #[getter]
     fn recall(&self) -> f64 {
         self.inner.recall()
     }
 
-    /// Speech F1。
+    /// 事件 F1。
     #[getter]
     fn f1(&self) -> f64 {
         self.inner.f1()
@@ -528,12 +578,117 @@ impl PySpeechEvaluation {
 
     fn __repr__(&self) -> String {
         format!(
-            "SpeechEvaluation(source={:?}, precision={:.4}, recall={:.4}, f1={:.4}, iou={:.4})",
+            "ActivityEventEvaluation(event={:?}, precision={:.4}, recall={:.4}, f1={:.4}, iou={:.4})",
+            self.inner.event,
+            self.inner.precision(),
+            self.inner.recall(),
+            self.inner.f1(),
+            self.inner.iou(),
+        )
+    }
+}
+
+/// 单个 prediction source 的 timeline Activity 评测结果。
+#[pyclass(name = "ActivityEvaluation", frozen)]
+#[derive(Clone)]
+struct PyActivityEvaluation {
+    inner: RustActivityEvaluation,
+}
+
+#[pymethods]
+impl PyActivityEvaluation {
+    /// Prediction source。
+    #[getter]
+    fn source(&self) -> String {
+        self.inner.source.clone()
+    }
+
+    /// Reference Activity 总时长，单位为毫秒。
+    #[getter]
+    fn reference_ms(&self) -> u64 {
+        self.inner.reference_ms
+    }
+
+    /// Prediction Activity 总时长，单位为毫秒。
+    #[getter]
+    fn predicted_ms(&self) -> u64 {
+        self.inner.predicted_ms
+    }
+
+    /// 正确预测为 Activity 的时长。
+    #[getter]
+    fn true_positive_ms(&self) -> u64 {
+        self.inner.true_positive_ms
+    }
+
+    /// 正确预测为非 Activity 的时长。
+    #[getter]
+    fn true_negative_ms(&self) -> u64 {
+        self.inner.true_negative_ms
+    }
+
+    /// 误报 Activity 的时长。
+    #[getter]
+    fn false_positive_ms(&self) -> u64 {
+        self.inner.false_positive_ms
+    }
+
+    /// 漏报 Activity 的时长。
+    #[getter]
+    fn false_negative_ms(&self) -> u64 {
+        self.inner.false_negative_ms
+    }
+
+    /// Activity precision。
+    #[getter]
+    fn precision(&self) -> f64 {
+        self.inner.precision()
+    }
+
+    /// Activity recall。
+    #[getter]
+    fn recall(&self) -> f64 {
+        self.inner.recall()
+    }
+
+    /// Activity F1。
+    #[getter]
+    fn f1(&self) -> f64 {
+        self.inner.f1()
+    }
+
+    /// Reference 与 prediction 的区间 IoU。
+    #[getter]
+    fn iou(&self) -> f64 {
+        self.inner.iou()
+    }
+
+    /// 按 event 分组的事件区间评测。
+    #[getter]
+    fn events(&self) -> std::collections::BTreeMap<String, PyActivityEventEvaluation> {
+        self.inner
+            .events
+            .iter()
+            .map(|(event, inner)| {
+                (
+                    event.clone(),
+                    PyActivityEventEvaluation {
+                        inner: inner.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ActivityEvaluation(source={:?}, precision={:.4}, recall={:.4}, f1={:.4}, iou={:.4}, events={})",
             self.inner.source,
             self.inner.precision(),
             self.inner.recall(),
             self.inner.f1(),
             self.inner.iou(),
+            self.inner.events.len(),
         )
     }
 }
@@ -564,16 +719,16 @@ impl PyTimelineEvaluation {
             .collect()
     }
 
-    /// 按 prediction source 分组的 Speech 结果。
+    /// 按 prediction source 分组的 Activity 结果。
     #[getter]
-    fn speech(&self) -> std::collections::BTreeMap<String, PySpeechEvaluation> {
+    fn activity(&self) -> std::collections::BTreeMap<String, PyActivityEvaluation> {
         self.inner
-            .speech
+            .activity
             .iter()
             .map(|(source, inner)| {
                 (
                     source.clone(),
-                    PySpeechEvaluation {
+                    PyActivityEvaluation {
                         inner: inner.clone(),
                     },
                 )
@@ -583,9 +738,9 @@ impl PyTimelineEvaluation {
 
     fn __repr__(&self) -> String {
         format!(
-            "TimelineEvaluation(transcription={}, speech={})",
+            "TimelineEvaluation(transcription={}, activity={})",
             self.inner.transcription.len(),
-            self.inner.speech.len(),
+            self.inner.activity.len(),
         )
     }
 }
@@ -607,14 +762,14 @@ impl PyTimeline {
         Ok(self.selected(&audio)?.id.clone())
     }
 
-    /// 所属 AudioDoc ID。
+    /// 所属 Audio ID。
     #[getter]
     fn audio_id(&self) -> PyResult<String> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
         Ok(self.selected(&audio)?.audio_id.clone())
     }
 
-    /// 修改所属 AudioDoc ID。
+    /// 修改所属 Audio ID。
     #[setter]
     fn set_audio_id(&self, value: String) -> PyResult<()> {
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
@@ -629,19 +784,39 @@ impl PyTimeline {
         Ok(self.selected(&audio)?.duration.0)
     }
 
+    /// 返回当前声道的完整波形。
+    ///
+    /// Returns:
+    ///     当前 Timeline 声道的 Waveform。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 1600, 16000).open()
+    ///     >>> audio.timeline("mono").as_waveform().duration_ms
+    ///     100.0
+    fn as_waveform(&self) -> PyResult<PyWaveform> {
+        let waveform = self
+            .audio
+            .write()
+            .map_err(|_| poisoned("audio"))?
+            .waveform_for_channel(self.channel)
+            .map_err(py_error)?;
+        Ok(PyWaveform::from_rust(waveform))
+    }
+
     /// 不带 source 的 reference 标注集合。
     #[getter]
-    fn reference(&self) -> PyReferenceAnnotations {
-        PyReferenceAnnotations {
-            core: AnnotationCollectionCore::new(self, AnnotationGroup::Reference),
+    fn reference(&self) -> PyReferenceSpans {
+        PyReferenceSpans {
+            core: SpanCollectionCore::new(self, SpanGroup::Reference),
         }
     }
 
     /// 必须带 source 的 prediction 标注集合。
     #[getter]
-    fn prediction(&self) -> PyPredictionAnnotations {
-        PyPredictionAnnotations {
-            core: AnnotationCollectionCore::new(self, AnnotationGroup::Prediction),
+    fn prediction(&self) -> PyPredictionSpans {
+        PyPredictionSpans {
+            core: SpanCollectionCore::new(self, SpanGroup::Prediction),
         }
     }
 
@@ -652,7 +827,7 @@ impl PyTimeline {
     ///
     /// Args:
     ///     transcription: 转写来源或来源名称列表。
-    ///     speech: Speech 来源或来源名称列表。
+    ///     activity: Activity 来源或来源名称列表。
     ///     normalize: 是否在计算 CER 前执行中文文本标准化。
     ///
     /// Returns:
@@ -664,25 +839,25 @@ impl PyTimeline {
     ///     ValueError: source 是空字符串。
     ///
     /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> from asr_data import Audio, AudioSource
     ///     >>> from asr_data.annotation import Transcription
-    ///     >>> timeline = AudioDoc(
+    ///     >>> timeline = Audio(
     ///     ...     AudioSource.from_pcm(b"\0\0" * 10, 16000)
     ///     ... ).timeline("mono")
-    ///     >>> _ = timeline.reference.add_transcription(
+    ///     >>> _ = timeline.reference.annotate_span(
     ///     ...     0, timeline.duration_ms, Transcription("你好")
     ///     ... )
-    ///     >>> _ = timeline.prediction.add_transcription(
+    ///     >>> _ = timeline.prediction.annotate_span(
     ///     ...     0, timeline.duration_ms, Transcription("你好"), source="qwen-asr"
     ///     ... )
     ///     >>> result = timeline.eval()
     ///     >>> result.transcription["qwen-asr"].cer
     ///     0.0
-    #[pyo3(signature = (*, transcription=None, speech=None, normalize=true))]
+    #[pyo3(signature = (*, transcription=None, activity=None, normalize=true))]
     fn eval(
         &self,
         transcription: Option<&Bound<'_, PyAny>>,
-        speech: Option<&Bound<'_, PyAny>>,
+        activity: Option<&Bound<'_, PyAny>>,
         normalize: bool,
     ) -> PyResult<PyTimelineEvaluation> {
         let normalization = if normalize {
@@ -692,7 +867,7 @@ impl PyTimeline {
         };
         let config = TimelineEvalConfig {
             transcription_sources: extract_eval_sources(transcription, "transcription")?,
-            speech_sources: extract_eval_sources(speech, "speech")?,
+            activity_sources: extract_eval_sources(activity, "activity")?,
             transcription_normalization: normalization,
         };
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
@@ -748,7 +923,7 @@ pub(super) fn extract_eval_sources(
 }
 
 impl PyTimeline {
-    fn selected<'a>(&self, audio: &'a RustAudioDoc) -> PyResult<&'a RustTimeline> {
+    fn selected<'a>(&self, audio: &'a RustAudio) -> PyResult<&'a RustTimeline> {
         audio
             .timeline(self.channel)
             .map_err(py_error)?
@@ -757,14 +932,14 @@ impl PyTimeline {
 }
 
 #[derive(Clone)]
-struct AnnotationCollectionCore {
+struct SpanCollectionCore {
     audio: SharedAudio,
     channel: RustAudioChannel,
-    group: AnnotationGroup,
+    group: SpanGroup,
 }
 
-impl AnnotationCollectionCore {
-    fn new(timeline: &PyTimeline, group: AnnotationGroup) -> Self {
+impl SpanCollectionCore {
+    fn new(timeline: &PyTimeline, group: SpanGroup) -> Self {
         Self {
             audio: timeline.audio.clone(),
             channel: timeline.channel,
@@ -772,8 +947,8 @@ impl AnnotationCollectionCore {
         }
     }
 
-    fn annotation_handle(&self, annotation_id: String) -> PyAnnotation {
-        PyAnnotation {
+    fn span_handle(&self, annotation_id: String) -> PyTimeSpan {
+        PyTimeSpan {
             audio: self.audio.clone(),
             channel: self.channel,
             group: self.group,
@@ -781,25 +956,25 @@ impl AnnotationCollectionCore {
         }
     }
 
-    fn selected<'a>(&self, audio: &'a RustAudioDoc) -> PyResult<&'a RustTimeline> {
+    fn selected<'a>(&self, audio: &'a RustAudio) -> PyResult<&'a RustTimeline> {
         audio
             .timeline(self.channel)
             .map_err(py_error)?
             .ok_or_else(|| PyRuntimeError::new_err("selected timeline does not exist"))
     }
 
-    fn selected_mut<'a>(&self, audio: &'a mut RustAudioDoc) -> PyResult<&'a mut RustTimeline> {
+    fn selected_mut<'a>(&self, audio: &'a mut RustAudio) -> PyResult<&'a mut RustTimeline> {
         audio
             .timeline_mut(self.channel)
             .map_err(py_error)?
             .ok_or_else(|| PyRuntimeError::new_err("selected timeline does not exist"))
     }
 
-    fn all(&self) -> PyResult<Vec<PyAnnotation>> {
+    fn all(&self) -> PyResult<Vec<PyTimeSpan>> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
         Ok(annotations(self.selected(&audio)?, self.group)
             .iter()
-            .map(|annotation| self.annotation_handle(annotation.id.clone()))
+            .map(|annotation| self.span_handle(annotation.id.clone()))
             .collect())
     }
 
@@ -808,20 +983,20 @@ impl AnnotationCollectionCore {
         Ok(annotations(self.selected(&audio)?, self.group).len())
     }
 
-    fn add_payload(
+    fn annotate_span_inner(
         &self,
         start_ms: u64,
         end_ms: u64,
-        payload: AnnotationPayload,
+        annotation: Annotation,
         source: Option<&str>,
         confidence: Option<f32>,
-    ) -> PyResult<PyAnnotation> {
+    ) -> PyResult<PyTimeSpan> {
         if end_ms < start_ms {
             return Err(PyValueError::new_err("end_ms must be >= start_ms"));
         }
-        let mut annotation = RustAnnotation::new(
+        let mut annotation = RustTimeSpan::new(
             TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
-            payload,
+            annotation,
             source.map(str::to_string),
         );
         annotation.confidence = confidence;
@@ -834,159 +1009,34 @@ impl AnnotationCollectionCore {
             )));
         }
         let annotation_id = match self.group {
-            AnnotationGroup::Reference => timeline.push_reference(annotation),
-            AnnotationGroup::Prediction => timeline.push_prediction(annotation),
+            SpanGroup::Reference => timeline.push_reference(annotation),
+            SpanGroup::Prediction => timeline.push_prediction(annotation),
         }
         .map_err(py_error)?
         .id
         .clone();
-        Ok(self.annotation_handle(annotation_id))
+        Ok(self.span_handle(annotation_id))
     }
 }
 
 /// Timeline 的参考真值标注集合。
-#[pyclass(name = "ReferenceAnnotations")]
+#[pyclass(name = "ReferenceSpans")]
 #[derive(Clone)]
-struct PyReferenceAnnotations {
-    core: AnnotationCollectionCore,
+struct PyReferenceSpans {
+    core: SpanCollectionCore,
 }
 
-#[pymethods]
-impl PyReferenceAnnotations {
-    /// 全部 reference annotation 句柄。
-    #[getter]
-    fn annotations(&self) -> PyResult<Vec<PyAnnotation>> {
-        self.core.all()
-    }
-
-    #[pyo3(signature = (start_ms, end_ms, confidence=None))]
-    /// 添加 Speech 区间。
-    ///
-    /// Args:
-    ///     start_ms: 起始时间，包含。
-    ///     end_ms: 结束时间，不包含。
-    ///     confidence: 可选置信度。
-    ///
-    /// Returns:
-    ///     新建或已有的 Annotation。
-    ///
-    /// Raises:
-    ///     ValueError: 时间范围无效。
-    ///     AsrDataError: 与已有 reference Speech 重叠。
-    ///
-    /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
-    ///     >>> annotation = timeline.reference.add_speech(0, timeline.duration_ms)
-    fn add_speech(
-        &self,
-        start_ms: u64,
-        end_ms: u64,
-        confidence: Option<f32>,
-    ) -> PyResult<PyAnnotation> {
-        self.core.add_payload(
-            start_ms,
-            end_ms,
-            AnnotationPayload::Speech,
-            None,
-            confidence,
-        )
-    }
-
-    #[pyo3(signature = (start_ms, end_ms, transcription, confidence=None))]
-    /// 添加完整转写 reference。
-    ///
-    /// Args:
-    ///     start_ms: 起始时间。
-    ///     end_ms: 结束时间。
-    ///     transcription: Transcription payload。
-    ///     confidence: 可选 annotation 级置信度。
-    ///
-    /// Raises:
-    ///     ValueError: 时间范围或 token 范围无效。
-    ///     AsrDataError: 与已有标注冲突。
-    ///
-    /// Returns:
-    ///     新建或已有的 Annotation。
-    ///
-    /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> from asr_data.annotation import Transcription
-    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
-    ///     >>> item = timeline.reference.add_transcription(
-    ///     ...     0, timeline.duration_ms, Transcription("你好")
-    ///     ... )
-    fn add_transcription(
-        &self,
-        start_ms: u64,
-        end_ms: u64,
-        transcription: PyRef<'_, PyTranscription>,
-        confidence: Option<f32>,
-    ) -> PyResult<PyAnnotation> {
-        validate_transcription_range(
-            TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
-            &transcription.inner,
-            "transcription annotation",
-        )?;
-        self.core.add_payload(
-            start_ms,
-            end_ms,
-            AnnotationPayload::Transcription(transcription.inner.clone()),
-            None,
-            confidence,
-        )
-    }
-
-    #[pyo3(signature = (start_ms, end_ms, speaker, confidence=None))]
-    /// 添加一次说话人发话 reference。
-    ///
-    /// Args:
-    ///     start_ms: 起始时间。
-    ///     end_ms: 结束时间。
-    ///     speaker: Speaker payload。
-    ///     confidence: 可选 annotation 级置信度。
-    ///
-    /// Returns:
-    ///     新建或已有的 Annotation。
-    ///
-    /// Raises:
-    ///     ValueError: 时间或内嵌 token 范围无效。
-    ///     AsrDataError: 与同名说话人已有发话冲突。
-    ///
-    /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> from asr_data.annotation import Speaker
-    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
-    ///     >>> item = timeline.reference.add_speaker(
-    ///     ...     0, timeline.duration_ms, Speaker("agent")
-    ///     ... )
-    fn add_speaker(
-        &self,
-        start_ms: u64,
-        end_ms: u64,
-        speaker: PyRef<'_, PySpeaker>,
-        confidence: Option<f32>,
-    ) -> PyResult<PyAnnotation> {
-        add_speaker(
-            &self.core,
-            start_ms,
-            end_ms,
-            &speaker.inner,
-            None,
-            confidence,
-        )
-    }
-
+impl PyReferenceSpans {
     /// 按时间顺序组合全部 reference 文本。
     ///
     /// Returns:
     ///     组合后的 Transcript。
     ///
     /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> from asr_data import Audio, AudioSource
     ///     >>> from asr_data.annotation import Transcription
-    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
-    ///     >>> _ = timeline.reference.add_transcription(
+    ///     >>> timeline = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> _ = timeline.reference.annotate_span(
     ///     ...     0, timeline.duration_ms, Transcription("你好")
     ///     ... )
     ///     >>> timeline.reference.transcript().text
@@ -997,6 +1047,68 @@ impl PyReferenceAnnotations {
             inner: self.core.selected(&audio)?.reference_transcript(),
         })
     }
+}
+
+#[pymethods]
+impl PyReferenceSpans {
+    /// 当前 reference 中的全部时间范围。
+    #[getter]
+    fn spans(&self) -> PyResult<Vec<PyTimeSpan>> {
+        self.core.all()
+    }
+
+    /// 在 reference 中添加一条带时间范围的标注。
+    ///
+    /// Args:
+    ///     start_ms: 全局起始时间，单位为毫秒。
+    ///     end_ms: 全局结束时间，单位为毫秒。
+    ///     annotation: AudioActivity、Transcription、Speaker 或 Token。
+    ///     confidence: 可选的 span 级置信度。
+    ///
+    /// Returns:
+    ///     新建或去重后已有的 TimeSpan。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> from asr_data.annotation import AudioActivity
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).open().timeline("mono")
+    ///     >>> span = timeline.reference.annotate_span(
+    ///     ...     0, timeline.duration_ms, AudioActivity(event="speech")
+    ///     ... )
+    #[pyo3(signature = (start_ms, end_ms, annotation, *, confidence=None))]
+    fn annotate_span(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        annotation: &Bound<'_, PyAny>,
+        confidence: Option<f32>,
+    ) -> PyResult<PyTimeSpan> {
+        let range = TimeRange::new(DurationMs(start_ms), DurationMs(end_ms));
+        self.core.annotate_span_inner(
+            start_ms,
+            end_ms,
+            annotation_from_py(annotation, range)?,
+            None,
+            confidence,
+        )
+    }
+
+    #[pyo3(name = "transcript")]
+    /// 按时间顺序组合 reference 文本。
+    ///
+    /// Returns:
+    ///     组合后的 Transcript。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> from asr_data.annotation import Transcription
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).open().timeline("mono")
+    ///     >>> _ = timeline.reference.annotate_span(0, 10, Transcription("你好"))
+    ///     >>> timeline.reference.transcript().text
+    ///     '你好'
+    fn py_transcript(&self) -> PyResult<PyTranscript> {
+        self.transcript()
+    }
 
     fn __len__(&self) -> PyResult<usize> {
         self.core.len()
@@ -1004,187 +1116,32 @@ impl PyReferenceAnnotations {
 }
 
 /// Timeline 的模型 prediction 标注集合。
-#[pyclass(name = "PredictionAnnotations")]
+#[pyclass(name = "PredictionSpans")]
 #[derive(Clone)]
-struct PyPredictionAnnotations {
-    core: AnnotationCollectionCore,
+struct PyPredictionSpans {
+    core: SpanCollectionCore,
 }
 
-#[pymethods]
-impl PyPredictionAnnotations {
-    /// 全部 prediction annotation 句柄。
-    #[getter]
-    fn annotations(&self) -> PyResult<Vec<PyAnnotation>> {
-        self.core.all()
-    }
-
-    /// 按 AnnotationKind 分组、排序并去重的 source 字典。
-    #[getter]
-    fn sources(&self) -> PyResult<std::collections::BTreeMap<&'static str, Vec<String>>> {
-        let audio = self.core.audio.read().map_err(|_| poisoned("audio"))?;
-        Ok(self
-            .core
-            .selected(&audio)?
-            .prediction_sources()
-            .into_iter()
-            .map(|(kind, sources)| {
-                (
-                    kind,
-                    sources.into_iter().map(str::to_string).collect::<Vec<_>>(),
-                )
-            })
-            .collect())
-    }
-
-    #[pyo3(signature = (start_ms, end_ms, *, source, confidence=None))]
-    /// 添加指定 source 的 Speech prediction。
-    ///
-    /// Args:
-    ///     start_ms: 起始时间。
-    ///     end_ms: 结束时间。
-    ///     source: 模型或流程名称。
-    ///     confidence: 可选置信度。
-    ///
-    /// Returns:
-    ///     新建或已有的 Annotation。
-    ///
-    /// Raises:
-    ///     ValueError: source 或时间范围无效。
-    ///     AsrDataError: 与同 source Speech 重叠。
-    ///
-    /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
-    ///     >>> item = timeline.prediction.add_speech(
-    ///     ...     0, timeline.duration_ms, source="vad"
-    ///     ... )
-    fn add_speech(
-        &self,
-        start_ms: u64,
-        end_ms: u64,
-        source: &str,
-        confidence: Option<f32>,
-    ) -> PyResult<PyAnnotation> {
-        self.add_simple(
-            start_ms,
-            end_ms,
-            AnnotationPayload::Speech,
-            source,
-            confidence,
-        )
-    }
-
-    #[pyo3(signature = (start_ms, end_ms, transcription, *, source, confidence=None))]
-    #[allow(clippy::too_many_arguments)]
-    /// 添加指定 source 的完整转写 prediction。
-    ///
-    /// Args:
-    ///     start_ms: 起始时间。
-    ///     end_ms: 结束时间。
-    ///     transcription: Transcription payload。
-    ///     source: 模型或流程名称。
-    ///     confidence: 可选置信度。
-    ///
-    /// Returns:
-    ///     新建或已有的 Annotation。
-    ///
-    /// Raises:
-    ///     ValueError: source、时间或 token 范围无效。
-    ///     AsrDataError: 与同 source 文本冲突。
-    ///
-    /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> from asr_data.annotation import Transcription
-    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
-    ///     >>> item = timeline.prediction.add_transcription(
-    ///     ...     0, timeline.duration_ms, Transcription("你好"), source="asr"
-    ///     ... )
-    fn add_transcription(
-        &self,
-        start_ms: u64,
-        end_ms: u64,
-        transcription: PyRef<'_, PyTranscription>,
-        source: &str,
-        confidence: Option<f32>,
-    ) -> PyResult<PyAnnotation> {
-        validate_source(source)?;
-        validate_transcription_range(
-            TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
-            &transcription.inner,
-            "transcription annotation",
-        )?;
-        self.core.add_payload(
-            start_ms,
-            end_ms,
-            AnnotationPayload::Transcription(transcription.inner.clone()),
-            Some(source),
-            confidence,
-        )
-    }
-
-    #[pyo3(signature = (start_ms, end_ms, speaker, *, source, confidence=None))]
-    #[allow(clippy::too_many_arguments)]
-    /// 添加指定 source 的说话人发话 prediction。
-    ///
-    /// Args:
-    ///     start_ms: 起始时间。
-    ///     end_ms: 结束时间。
-    ///     speaker: Speaker payload。
-    ///     source: 模型或流程名称。
-    ///     confidence: 可选置信度。
-    ///
-    /// Returns:
-    ///     新建或已有的 Annotation。
-    ///
-    /// Raises:
-    ///     ValueError: source、时间或内嵌 token 范围无效。
-    ///     AsrDataError: 与同 source、同名说话人发话冲突。
-    ///
-    /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> from asr_data.annotation import Speaker
-    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
-    ///     >>> item = timeline.prediction.add_speaker(
-    ///     ...     0, timeline.duration_ms, Speaker("agent"), source="diarization"
-    ///     ... )
-    fn add_speaker(
-        &self,
-        start_ms: u64,
-        end_ms: u64,
-        speaker: PyRef<'_, PySpeaker>,
-        source: &str,
-        confidence: Option<f32>,
-    ) -> PyResult<PyAnnotation> {
-        validate_source(source)?;
-        add_speaker(
-            &self.core,
-            start_ms,
-            end_ms,
-            &speaker.inner,
-            Some(source),
-            confidence,
-        )
-    }
-
+impl PyPredictionSpans {
     /// 返回指定 source 的全部 prediction annotation。
     ///
     /// Args:
     ///     source: 要查询的来源。
     ///
     /// Returns:
-    ///     保持存储顺序的 Annotation 列表。
+    ///     保持存储顺序的 TimeSpan 列表。
     ///
     /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> from asr_data import Audio, AudioSource
+    ///     >>> timeline = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
     ///     >>> items = timeline.prediction.by_source("asr")
-    fn by_source(&self, source: &str) -> PyResult<Vec<PyAnnotation>> {
+    fn by_source(&self, source: &str) -> PyResult<Vec<PyTimeSpan>> {
         let audio = self.core.audio.read().map_err(|_| poisoned("audio"))?;
         Ok(self
             .core
             .selected(&audio)?
             .predictions_by_source(source)
-            .map(|annotation| self.core.annotation_handle(annotation.id.clone()))
+            .map(|annotation| self.core.span_handle(annotation.id.clone()))
             .collect())
     }
 
@@ -1197,8 +1154,8 @@ impl PyPredictionAnnotations {
     ///     组合后的 Transcript。
     ///
     /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> from asr_data import Audio, AudioSource
+    ///     >>> timeline = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
     ///     >>> text = timeline.prediction.transcript("asr").text
     fn transcript(&self, source: &str) -> PyResult<PyTranscript> {
         let audio = self.core.audio.read().map_err(|_| poisoned("audio"))?;
@@ -1216,8 +1173,8 @@ impl PyPredictionAnnotations {
     ///     删除的 annotation 数量。
     ///
     /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> from asr_data import Audio, AudioSource
+    ///     >>> timeline = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
     ///     >>> removed = timeline.prediction.remove_by_source("asr")
     fn remove_by_source(&self, source: &str) -> PyResult<usize> {
         let mut audio = self.core.audio.write().map_err(|_| poisoned("audio"))?;
@@ -1241,8 +1198,8 @@ impl PyPredictionAnnotations {
     ///     AsrDataError: 重命名后会产生重叠冲突。
     ///
     /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> from asr_data import Audio, AudioSource
+    ///     >>> timeline = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
     ///     >>> changed = timeline.prediction.relabel_source("asr", "asr-v2")
     fn relabel_source(&self, from_source: &str, to_source: &str) -> PyResult<usize> {
         validate_source(to_source)?;
@@ -1252,46 +1209,149 @@ impl PyPredictionAnnotations {
             .relabel_prediction_source(from_source, to_source)
             .map_err(py_error)
     }
+}
+
+#[pymethods]
+impl PyPredictionSpans {
+    /// 当前 prediction 中的全部时间范围。
+    #[getter]
+    fn spans(&self) -> PyResult<Vec<PyTimeSpan>> {
+        self.core.all()
+    }
+
+    /// 在 prediction 中添加一条带模型来源的标注。
+    ///
+    /// Args:
+    ///     start_ms: 全局起始时间，单位为毫秒。
+    ///     end_ms: 全局结束时间，单位为毫秒。
+    ///     annotation: AudioActivity、Transcription、Speaker 或 Token。
+    ///     source: 模型或导入流程名称。
+    ///     confidence: 可选的 span 级置信度。
+    ///
+    /// Returns:
+    ///     新建或去重后已有的 TimeSpan。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> from asr_data.annotation import Transcription
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).open().timeline("mono")
+    ///     >>> span = timeline.prediction.annotate_span(
+    ///     ...     0, timeline.duration_ms, Transcription("你好"), source="asr"
+    ///     ... )
+    #[pyo3(signature = (start_ms, end_ms, annotation, *, source, confidence=None))]
+    fn annotate_span(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        annotation: &Bound<'_, PyAny>,
+        source: &str,
+        confidence: Option<f32>,
+    ) -> PyResult<PyTimeSpan> {
+        validate_source(source)?;
+        let range = TimeRange::new(DurationMs(start_ms), DurationMs(end_ms));
+        self.core.annotate_span_inner(
+            start_ms,
+            end_ms,
+            annotation_from_py(annotation, range)?,
+            Some(source),
+            confidence,
+        )
+    }
+
+    /// 按 Annotation 类型分组的 prediction source。
+    #[getter]
+    fn sources(&self) -> PyResult<std::collections::BTreeMap<&'static str, Vec<String>>> {
+        let audio = self.core.audio.read().map_err(|_| poisoned("audio"))?;
+        Ok(self
+            .core
+            .selected(&audio)?
+            .prediction_sources()
+            .into_iter()
+            .map(|(kind, sources)| {
+                (
+                    kind,
+                    sources.into_iter().map(str::to_string).collect::<Vec<_>>(),
+                )
+            })
+            .collect())
+    }
+
+    #[pyo3(name = "by_source")]
+    /// 返回指定 source 的全部 prediction span。
+    ///
+    /// Args:
+    ///     source: 模型或流程名称。
+    ///
+    /// Returns:
+    ///     保持存储顺序的 TimeSpan 列表。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).open().timeline("mono")
+    ///     >>> timeline.prediction.by_source("asr")
+    ///     []
+    fn py_by_source(&self, source: &str) -> PyResult<Vec<PyTimeSpan>> {
+        self.by_source(source)
+    }
+
+    #[pyo3(name = "transcript")]
+    /// 按时间顺序组合指定 source 的预测文本。
+    ///
+    /// Args:
+    ///     source: 模型或流程名称。
+    ///
+    /// Returns:
+    ///     组合后的 Transcript。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).open().timeline("mono")
+    ///     >>> timeline.prediction.transcript("asr").text
+    ///     ''
+    fn py_transcript(&self, source: &str) -> PyResult<PyTranscript> {
+        self.transcript(source)
+    }
+
+    #[pyo3(name = "remove_by_source")]
+    /// 删除指定 source 的全部 prediction span。
+    ///
+    /// Args:
+    ///     source: 模型或流程名称。
+    ///
+    /// Returns:
+    ///     删除数量。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).open().timeline("mono")
+    ///     >>> timeline.prediction.remove_by_source("asr")
+    ///     0
+    fn py_remove_by_source(&self, source: &str) -> PyResult<usize> {
+        self.remove_by_source(source)
+    }
+
+    #[pyo3(name = "relabel_source")]
+    /// 原子修改 prediction source。
+    ///
+    /// Args:
+    ///     from_source: 原 source。
+    ///     to_source: 新 source。
+    ///
+    /// Returns:
+    ///     修改数量。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).open().timeline("mono")
+    ///     >>> timeline.prediction.relabel_source("asr", "asr-v2")
+    ///     0
+    fn py_relabel_source(&self, from_source: &str, to_source: &str) -> PyResult<usize> {
+        self.relabel_source(from_source, to_source)
+    }
 
     fn __len__(&self) -> PyResult<usize> {
         self.core.len()
     }
-}
-
-impl PyPredictionAnnotations {
-    fn add_simple(
-        &self,
-        start_ms: u64,
-        end_ms: u64,
-        payload: AnnotationPayload,
-        source: &str,
-        confidence: Option<f32>,
-    ) -> PyResult<PyAnnotation> {
-        validate_source(source)?;
-        self.core
-            .add_payload(start_ms, end_ms, payload, Some(source), confidence)
-    }
-}
-
-fn add_speaker(
-    core: &AnnotationCollectionCore,
-    start_ms: u64,
-    end_ms: u64,
-    speaker: &SpeakerPayload,
-    source: Option<&str>,
-    confidence: Option<f32>,
-) -> PyResult<PyAnnotation> {
-    validate_speaker_transcription(
-        TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
-        &speaker.transcription,
-    )?;
-    core.add_payload(
-        start_ms,
-        end_ms,
-        AnnotationPayload::Speaker(speaker.clone()),
-        source,
-        confidence,
-    )
 }
 
 fn validate_source(source: &str) -> PyResult<()> {
@@ -1304,13 +1364,14 @@ fn validate_source(source: &str) -> PyResult<()> {
 }
 
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyAnnotation>()?;
+    module.add_class::<PyTimeSpan>()?;
     module.add_class::<PyTranscript>()?;
     module.add_class::<PyTranscriptionEvaluation>()?;
-    module.add_class::<PySpeechEvaluation>()?;
+    module.add_class::<PyActivityEventEvaluation>()?;
+    module.add_class::<PyActivityEvaluation>()?;
     module.add_class::<PyTimelineEvaluation>()?;
-    module.add_class::<PyReferenceAnnotations>()?;
-    module.add_class::<PyPredictionAnnotations>()?;
+    module.add_class::<PyReferenceSpans>()?;
+    module.add_class::<PyPredictionSpans>()?;
     module.add_class::<PyTimeline>()?;
     Ok(())
 }

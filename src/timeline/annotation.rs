@@ -1,18 +1,30 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::segment::TextSpan;
+use super::segment::Sentence;
 use crate::utils::TimeRange;
 
 pub type AudioId = String;
 pub type TimelineId = String;
-pub type AnnotationId = String;
+pub type TimeSpanId = String;
 pub type SpeakerId = String;
 pub type LanguageTag = String;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcousticEvent {
-    pub label: String,
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AudioActivity {
+    #[serde(default)]
+    pub event: Option<String>,
+}
+
+impl AudioActivity {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_event(mut self, event: impl Into<String>) -> Self {
+        self.event = Some(event.into());
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,47 +93,45 @@ impl SpeakerPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum AnnotationPayload {
-    Speech,
+pub enum Annotation {
+    Activity(AudioActivity),
     Token(Token),
     Transcription(Transcription),
-    Sentence(TextSpan),
+    Sentence(Sentence),
     Speaker(SpeakerPayload),
     Language(LanguageTag),
-    AcousticEvent(AcousticEvent),
 }
 
-impl AnnotationPayload {
-    pub fn kind(&self) -> &'static str {
+impl Annotation {
+    pub(crate) fn source_group(&self) -> &'static str {
         match self {
-            Self::Speech => "speech",
+            Self::Activity(_) => "activity",
             Self::Token(_) => "token",
             Self::Transcription(_) => "transcription",
             Self::Sentence(_) => "sentence",
             Self::Speaker(_) => "speaker",
             Self::Language(_) => "language",
-            Self::AcousticEvent(_) => "acoustic_event",
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Annotation {
-    pub id: AnnotationId,
+pub struct TimeSpan {
+    pub id: TimeSpanId,
     pub range: TimeRange,
     pub source: Option<String>,
     pub confidence: Option<f32>,
-    pub payload: AnnotationPayload,
+    pub annotation: Annotation,
 }
 
-impl Annotation {
-    pub fn new(range: TimeRange, payload: AnnotationPayload, source: Option<String>) -> Self {
+impl TimeSpan {
+    pub fn new(range: TimeRange, annotation: Annotation, source: Option<String>) -> Self {
         Self {
-            id: format!("ann_{}", Uuid::new_v4().simple()),
+            id: format!("span_{}", Uuid::new_v4().simple()),
             range,
             source,
             confidence: None,
-            payload,
+            annotation,
         }
     }
 
@@ -135,6 +145,6 @@ impl Annotation {
         self.range == other.range
             && self.source == other.source
             && self.confidence == other.confidence
-            && self.payload == other.payload
+            && self.annotation == other.annotation
     }
 }

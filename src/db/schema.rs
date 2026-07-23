@@ -27,7 +27,7 @@ pub(super) fn initialize(connection: &Connection) -> Result<(), AudioDbError> {
              audio_id TEXT PRIMARY KEY NOT NULL
                  REFERENCES audios(audio_id) ON DELETE CASCADE,
              source     BLOB NOT NULL,
-             audio_info BLOB NOT NULL
+             info BLOB NOT NULL
          ) STRICT;
          CREATE TABLE timelines (
              audio_id TEXT PRIMARY KEY NOT NULL

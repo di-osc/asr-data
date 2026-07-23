@@ -3,14 +3,14 @@ use serde::{Deserialize, Serialize};
 use super::annotation::Token;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TextSpan {
+pub struct Sentence {
     pub text: String,
     #[serde(default)]
     pub tokens: Vec<Token>,
     pub language: Option<String>,
 }
 
-impl TextSpan {
+impl Sentence {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
@@ -25,5 +25,5 @@ pub struct Transcript {
     pub text: String,
     pub language: Option<String>,
     #[serde(default)]
-    pub segments: Vec<TextSpan>,
+    pub segments: Vec<Sentence>,
 }

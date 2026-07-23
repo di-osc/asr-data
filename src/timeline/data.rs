@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 use std::fmt;
 use uuid::Uuid;
 
-use super::annotation::{Annotation, AnnotationId, AnnotationPayload, AudioId, TimelineId};
-use super::segment::{TextSpan, Transcript};
+use super::annotation::{Annotation, AudioId, TimeSpan, TimeSpanId, TimelineId};
+use super::segment::{Sentence, Transcript};
 use crate::utils::{DurationMs, TimeRange};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnnotationConflictKind {
-    Speech,
+pub enum TimeSpanConflictKind {
+    Activity,
     Speaker,
     Transcription,
 }
@@ -19,22 +19,22 @@ pub struct Timeline {
     pub id: TimelineId,
     pub audio_id: AudioId,
     pub duration: DurationMs,
-    pub reference: Vec<Annotation>,
-    pub prediction: Vec<Annotation>,
+    pub reference: Vec<TimeSpan>,
+    pub prediction: Vec<TimeSpan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnnotationOverlap {
-    pub kind: AnnotationConflictKind,
+pub struct TimeSpanOverlap {
+    pub kind: TimeSpanConflictKind,
     pub source: Option<String>,
     pub speaker: Option<String>,
-    pub first_id: AnnotationId,
+    pub first_id: TimeSpanId,
     pub first_range: TimeRange,
-    pub second_id: AnnotationId,
+    pub second_id: TimeSpanId,
     pub second_range: TimeRange,
 }
 
-impl fmt::Display for AnnotationOverlap {
+impl fmt::Display for TimeSpanOverlap {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -51,13 +51,15 @@ impl fmt::Display for AnnotationOverlap {
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
-pub enum TimelineAnnotationError {
+pub enum TimelineSpanError {
     #[error("prediction annotation {annotation_id:?} must have a non-empty source")]
-    PredictionMissingSource { annotation_id: AnnotationId },
+    PredictionMissingSource { annotation_id: TimeSpanId },
     #[error("prediction source must contain at least one non-whitespace character")]
     InvalidPredictionSource,
+    #[error("activity event must contain at least one non-whitespace character")]
+    InvalidActivityEvent,
     #[error("{0}")]
-    Overlap(Box<AnnotationOverlap>),
+    Overlap(Box<TimeSpanOverlap>),
 }
 
 impl Timeline {
@@ -73,40 +75,40 @@ impl Timeline {
 
     pub fn push_reference(
         &mut self,
-        mut annotation: Annotation,
-    ) -> Result<&Annotation, TimelineAnnotationError> {
+        mut annotation: TimeSpan,
+    ) -> Result<&TimeSpan, TimelineSpanError> {
         annotation.source = None;
         push_validated(&mut self.reference, annotation, false)
     }
 
     pub fn push_prediction(
         &mut self,
-        annotation: Annotation,
-    ) -> Result<&Annotation, TimelineAnnotationError> {
+        annotation: TimeSpan,
+    ) -> Result<&TimeSpan, TimelineSpanError> {
         if annotation
             .source
             .as_deref()
             .is_none_or(|source| source.trim().is_empty())
         {
-            return Err(TimelineAnnotationError::PredictionMissingSource {
+            return Err(TimelineSpanError::PredictionMissingSource {
                 annotation_id: annotation.id,
             });
         }
         push_validated(&mut self.prediction, annotation, true)
     }
 
-    pub fn all_annotations(&self) -> impl Iterator<Item = &Annotation> {
+    pub fn all_spans(&self) -> impl Iterator<Item = &TimeSpan> {
         self.reference.iter().chain(&self.prediction)
     }
 
-    pub fn annotation_count(&self) -> usize {
+    pub fn span_count(&self) -> usize {
         self.reference.len() + self.prediction.len()
     }
 
     pub fn predictions_by_source<'a>(
         &'a self,
         source: &'a str,
-    ) -> impl Iterator<Item = &'a Annotation> + 'a {
+    ) -> impl Iterator<Item = &'a TimeSpan> + 'a {
         self.prediction
             .iter()
             .filter(move |annotation| annotation.source.as_deref() == Some(source))
@@ -114,13 +116,12 @@ impl Timeline {
 
     pub fn prediction_sources(&self) -> BTreeMap<&'static str, Vec<&str>> {
         let mut sources = [
-            "speech",
+            "activity",
             "token",
             "transcription",
             "sentence",
             "speaker",
             "language",
-            "acoustic_event",
         ]
         .into_iter()
         .map(|kind| (kind, Vec::new()))
@@ -128,7 +129,7 @@ impl Timeline {
         for annotation in &self.prediction {
             if let Some(source) = annotation.source.as_deref() {
                 sources
-                    .get_mut(annotation.payload.kind())
+                    .get_mut(annotation.annotation.source_group())
                     .expect("every annotation kind has a source group")
                     .push(source);
             }
@@ -159,9 +160,9 @@ impl Timeline {
         &mut self,
         from: &str,
         to: &str,
-    ) -> Result<usize, TimelineAnnotationError> {
+    ) -> Result<usize, TimelineSpanError> {
         if to.trim().is_empty() {
-            return Err(TimelineAnnotationError::InvalidPredictionSource);
+            return Err(TimelineSpanError::InvalidPredictionSource);
         }
         let mut candidate = self.prediction.clone();
         let mut changed = 0;
@@ -176,17 +177,18 @@ impl Timeline {
         Ok(changed)
     }
 
-    pub fn validate_annotations(&self) -> Result<(), TimelineAnnotationError> {
+    pub fn validate_spans(&self) -> Result<(), TimelineSpanError> {
         validate_reference_slice(&self.reference)?;
         validate_prediction_slice(&self.prediction)
     }
 }
 
 fn push_validated(
-    annotations: &mut Vec<Annotation>,
-    annotation: Annotation,
+    annotations: &mut Vec<TimeSpan>,
+    annotation: TimeSpan,
     prediction: bool,
-) -> Result<&Annotation, TimelineAnnotationError> {
+) -> Result<&TimeSpan, TimelineSpanError> {
+    validate_activity_event(&annotation)?;
     if let Some(index) = annotations
         .iter()
         .position(|existing| existing.content_eq(&annotation))
@@ -195,17 +197,15 @@ fn push_validated(
     }
     for existing in annotations.iter() {
         if let Some((kind, speaker)) = overlap_conflict(existing, &annotation, prediction) {
-            return Err(TimelineAnnotationError::Overlap(Box::new(
-                AnnotationOverlap {
-                    kind,
-                    source: annotation.source.clone(),
-                    speaker,
-                    first_id: existing.id.clone(),
-                    first_range: existing.range,
-                    second_id: annotation.id.clone(),
-                    second_range: annotation.range,
-                },
-            )));
+            return Err(TimelineSpanError::Overlap(Box::new(TimeSpanOverlap {
+                kind,
+                source: annotation.source.clone(),
+                speaker,
+                first_id: existing.id.clone(),
+                first_range: existing.range,
+                second_id: annotation.id.clone(),
+                second_range: annotation.range,
+            })));
         }
     }
     annotations.push(annotation);
@@ -214,18 +214,18 @@ fn push_validated(
         .expect("the annotation was just inserted"))
 }
 
-fn validate_reference_slice(annotations: &[Annotation]) -> Result<(), TimelineAnnotationError> {
+fn validate_reference_slice(annotations: &[TimeSpan]) -> Result<(), TimelineSpanError> {
     validate_slice(annotations, false)
 }
 
-fn validate_prediction_slice(annotations: &[Annotation]) -> Result<(), TimelineAnnotationError> {
+fn validate_prediction_slice(annotations: &[TimeSpan]) -> Result<(), TimelineSpanError> {
     for annotation in annotations {
         if annotation
             .source
             .as_deref()
             .is_none_or(|source| source.trim().is_empty())
         {
-            return Err(TimelineAnnotationError::PredictionMissingSource {
+            return Err(TimelineSpanError::PredictionMissingSource {
                 annotation_id: annotation.id.clone(),
             });
         }
@@ -233,58 +233,68 @@ fn validate_prediction_slice(annotations: &[Annotation]) -> Result<(), TimelineA
     validate_slice(annotations, true)
 }
 
-fn validate_slice(
-    annotations: &[Annotation],
-    prediction: bool,
-) -> Result<(), TimelineAnnotationError> {
+fn validate_slice(annotations: &[TimeSpan], prediction: bool) -> Result<(), TimelineSpanError> {
+    for annotation in annotations {
+        validate_activity_event(annotation)?;
+    }
     for (index, first) in annotations.iter().enumerate() {
         for second in &annotations[index + 1..] {
             if let Some((kind, speaker)) = overlap_conflict(first, second, prediction) {
-                return Err(TimelineAnnotationError::Overlap(Box::new(
-                    AnnotationOverlap {
-                        kind,
-                        source: second.source.clone(),
-                        speaker,
-                        first_id: first.id.clone(),
-                        first_range: first.range,
-                        second_id: second.id.clone(),
-                        second_range: second.range,
-                    },
-                )));
+                return Err(TimelineSpanError::Overlap(Box::new(TimeSpanOverlap {
+                    kind,
+                    source: second.source.clone(),
+                    speaker,
+                    first_id: first.id.clone(),
+                    first_range: first.range,
+                    second_id: second.id.clone(),
+                    second_range: second.range,
+                })));
             }
         }
     }
     Ok(())
 }
 
+fn validate_activity_event(annotation: &TimeSpan) -> Result<(), TimelineSpanError> {
+    if let Annotation::Activity(activity) = &annotation.annotation
+        && activity
+            .event
+            .as_deref()
+            .is_some_and(|event| event.trim().is_empty())
+    {
+        return Err(TimelineSpanError::InvalidActivityEvent);
+    }
+    Ok(())
+}
+
 fn overlap_conflict(
-    first: &Annotation,
-    second: &Annotation,
+    first: &TimeSpan,
+    second: &TimeSpan,
     prediction: bool,
-) -> Option<(AnnotationConflictKind, Option<String>)> {
+) -> Option<(TimeSpanConflictKind, Option<String>)> {
     if !first.range.overlaps(&second.range)
         || prediction && first.source.as_deref() != second.source.as_deref()
     {
         return None;
     }
-    match (&first.payload, &second.payload) {
-        (AnnotationPayload::Speech, AnnotationPayload::Speech) => {
-            Some((AnnotationConflictKind::Speech, None))
-        }
-        (AnnotationPayload::Speaker(first), AnnotationPayload::Speaker(second))
-            if first.name == second.name =>
+    match (&first.annotation, &second.annotation) {
+        (Annotation::Activity(first), Annotation::Activity(second))
+            if first.event == second.event =>
         {
-            Some((AnnotationConflictKind::Speaker, Some(first.name.clone())))
+            Some((TimeSpanConflictKind::Activity, None))
         }
-        (AnnotationPayload::Transcription(_), AnnotationPayload::Transcription(_)) => {
-            Some((AnnotationConflictKind::Transcription, None))
+        (Annotation::Speaker(first), Annotation::Speaker(second)) if first.name == second.name => {
+            Some((TimeSpanConflictKind::Speaker, Some(first.name.clone())))
         }
-        (AnnotationPayload::Transcription(_), AnnotationPayload::Speaker(speaker))
-        | (AnnotationPayload::Speaker(speaker), AnnotationPayload::Transcription(_))
+        (Annotation::Transcription(_), Annotation::Transcription(_)) => {
+            Some((TimeSpanConflictKind::Transcription, None))
+        }
+        (Annotation::Transcription(_), Annotation::Speaker(speaker))
+        | (Annotation::Speaker(speaker), Annotation::Transcription(_))
             if speaker.transcription.is_some() =>
         {
             Some((
-                AnnotationConflictKind::Transcription,
+                TimeSpanConflictKind::Transcription,
                 Some(speaker.name.clone()),
             ))
         }
@@ -292,24 +302,22 @@ fn overlap_conflict(
     }
 }
 
-fn transcript_from_annotations<'a>(
-    annotations: impl Iterator<Item = &'a Annotation>,
-) -> Transcript {
+fn transcript_from_annotations<'a>(annotations: impl Iterator<Item = &'a TimeSpan>) -> Transcript {
     let mut segments = annotations
-        .filter_map(|annotation| match &annotation.payload {
-            AnnotationPayload::Transcription(transcription) => Some((
+        .filter_map(|annotation| match &annotation.annotation {
+            Annotation::Transcription(transcription) => Some((
                 annotation.range.start,
-                TextSpan {
+                Sentence {
                     text: transcription.text.clone(),
                     tokens: transcription.tokens.clone(),
                     language: transcription.language.clone(),
                 },
             )),
-            AnnotationPayload::Sentence(segment) => Some((annotation.range.start, segment.clone())),
-            AnnotationPayload::Speaker(speaker) => speaker.transcription.as_ref().map(|value| {
+            Annotation::Sentence(segment) => Some((annotation.range.start, segment.clone())),
+            Annotation::Speaker(speaker) => speaker.transcription.as_ref().map(|value| {
                 (
                     annotation.range.start,
-                    TextSpan {
+                    Sentence {
                         text: value.text.clone(),
                         tokens: value.tokens.clone(),
                         language: value.language.clone(),
@@ -318,7 +326,7 @@ fn transcript_from_annotations<'a>(
             }),
             _ => None,
         })
-        .collect::<Vec<(DurationMs, TextSpan)>>();
+        .collect::<Vec<(DurationMs, Sentence)>>();
 
     segments.sort_by_key(|(start, _)| *start);
     let segments = segments

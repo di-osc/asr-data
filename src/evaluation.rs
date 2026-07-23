@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 use crate::db::{AudioDb, AudioDbError, AudioQuery};
-use crate::doc::AudioDoc;
+use crate::doc::Audio;
 use crate::metrics::CerStats;
 use crate::timeline::{
-    AnnotationPayload, Timeline, TimelineEvalConfig, TimelineEvalError, TranscriptionNormalization,
+    Annotation, Timeline, TimelineEvalConfig, TimelineEvalError, TranscriptionNormalization,
 };
 
 #[derive(Debug, Error)]
@@ -24,7 +24,7 @@ pub struct DatasetEvaluation {
     pub documents: usize,
     pub timelines: usize,
     pub transcription: BTreeMap<String, DatasetTranscriptionEvaluation>,
-    pub speech: BTreeMap<String, DatasetSpeechEvaluation>,
+    pub activity: BTreeMap<String, DatasetActivityEvaluation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -81,7 +81,42 @@ impl DatasetTranscriptionEvaluation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DatasetSpeechEvaluation {
+pub struct DatasetActivityEventEvaluation {
+    pub event: String,
+    pub evaluated_documents: usize,
+    pub evaluated_timelines: usize,
+    pub reference_ms: u64,
+    pub predicted_ms: u64,
+    pub true_positive_ms: u64,
+    pub true_negative_ms: u64,
+    pub false_positive_ms: u64,
+    pub false_negative_ms: u64,
+}
+
+impl DatasetActivityEventEvaluation {
+    pub fn precision(&self) -> f64 {
+        interval_precision(self.true_positive_ms, self.false_positive_ms)
+    }
+
+    pub fn recall(&self) -> f64 {
+        interval_recall(self.true_positive_ms, self.false_negative_ms)
+    }
+
+    pub fn f1(&self) -> f64 {
+        harmonic_mean(self.precision(), self.recall())
+    }
+
+    pub fn iou(&self) -> f64 {
+        interval_iou(
+            self.true_positive_ms,
+            self.false_positive_ms,
+            self.false_negative_ms,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatasetActivityEvaluation {
     pub source: String,
     pub evaluated_documents: usize,
     pub evaluated_timelines: usize,
@@ -95,21 +130,16 @@ pub struct DatasetSpeechEvaluation {
     pub true_negative_ms: u64,
     pub false_positive_ms: u64,
     pub false_negative_ms: u64,
+    pub events: BTreeMap<String, DatasetActivityEventEvaluation>,
 }
 
-impl DatasetSpeechEvaluation {
+impl DatasetActivityEvaluation {
     pub fn precision(&self) -> f64 {
-        ratio(
-            self.true_positive_ms as usize,
-            (self.true_positive_ms + self.false_positive_ms) as usize,
-        )
+        interval_precision(self.true_positive_ms, self.false_positive_ms)
     }
 
     pub fn recall(&self) -> f64 {
-        ratio(
-            self.true_positive_ms as usize,
-            (self.true_positive_ms + self.false_negative_ms) as usize,
-        )
+        interval_recall(self.true_positive_ms, self.false_negative_ms)
     }
 
     pub fn f1(&self) -> f64 {
@@ -117,9 +147,10 @@ impl DatasetSpeechEvaluation {
     }
 
     pub fn iou(&self) -> f64 {
-        ratio(
-            self.true_positive_ms as usize,
-            (self.true_positive_ms + self.false_positive_ms + self.false_negative_ms) as usize,
+        interval_iou(
+            self.true_positive_ms,
+            self.false_positive_ms,
+            self.false_negative_ms,
         )
     }
 
@@ -135,54 +166,54 @@ impl DatasetSpeechEvaluation {
 pub struct DatasetEvaluator {
     config: TimelineEvalConfig,
     transcription_selection: Option<Vec<String>>,
-    speech_selection: Option<Vec<String>>,
+    activity_selection: Option<Vec<String>>,
     documents: usize,
     timelines: usize,
     transcription_eligible: BTreeSet<String>,
-    speech_eligible: BTreeSet<String>,
+    activity_eligible: BTreeSet<String>,
     transcription_unannotated: BTreeSet<String>,
-    speech_unannotated: BTreeSet<String>,
+    activity_unannotated: BTreeSet<String>,
     transcription: BTreeMap<String, TranscriptionAccumulator>,
-    speech: BTreeMap<String, SpeechAccumulator>,
+    activity: BTreeMap<String, ActivityAccumulator>,
 }
 
 impl DatasetEvaluator {
     pub fn new(config: TimelineEvalConfig) -> Self {
-        let auto_all = config.transcription_sources.is_none() && config.speech_sources.is_none();
+        let auto_all = config.transcription_sources.is_none() && config.activity_sources.is_none();
         let transcription_selection = if auto_all {
             Some(Vec::new())
         } else {
             config.transcription_sources.clone()
         };
-        let speech_selection = if auto_all {
+        let activity_selection = if auto_all {
             Some(Vec::new())
         } else {
-            config.speech_sources.clone()
+            config.activity_sources.clone()
         };
         let transcription = selected_accumulators(transcription_selection.as_deref());
-        let speech = selected_accumulators(speech_selection.as_deref());
+        let activity = selected_accumulators(activity_selection.as_deref());
         Self {
             config,
             transcription_selection,
-            speech_selection,
+            activity_selection,
             documents: 0,
             timelines: 0,
             transcription_eligible: BTreeSet::new(),
-            speech_eligible: BTreeSet::new(),
+            activity_eligible: BTreeSet::new(),
             transcription_unannotated: BTreeSet::new(),
-            speech_unannotated: BTreeSet::new(),
+            activity_unannotated: BTreeSet::new(),
             transcription,
-            speech,
+            activity,
         }
     }
 
-    pub fn push(&mut self, doc: &AudioDoc) -> Result<(), DatasetEvalError> {
+    pub fn push(&mut self, doc: &Audio) -> Result<(), DatasetEvalError> {
         self.documents += 1;
         for (channel, timeline) in doc.timelines() {
             self.timelines += 1;
             let timeline_key = format!("{}:{}", doc.id, channel.name());
             self.push_transcription(doc, timeline, &timeline_key)?;
-            self.push_speech(doc, timeline, &timeline_key)?;
+            self.push_activity(doc, timeline, &timeline_key)?;
         }
         Ok(())
     }
@@ -194,21 +225,25 @@ impl DatasetEvaluator {
             &self.transcription_unannotated,
             self.config.transcription_normalization,
         )?;
-        let speech = finish_speech(self.speech, &self.speech_eligible, &self.speech_unannotated)?;
-        if transcription.is_empty() && speech.is_empty() {
+        let activity = finish_activity(
+            self.activity,
+            &self.activity_eligible,
+            &self.activity_unannotated,
+        )?;
+        if transcription.is_empty() && activity.is_empty() {
             return Err(DatasetEvalError::NoEvaluableAnnotations);
         }
         Ok(DatasetEvaluation {
             documents: self.documents,
             timelines: self.timelines,
             transcription,
-            speech,
+            activity,
         })
     }
 
     fn push_transcription(
         &mut self,
-        doc: &AudioDoc,
+        doc: &Audio,
         timeline: &Timeline,
         timeline_key: &str,
     ) -> Result<(), DatasetEvalError> {
@@ -243,33 +278,33 @@ impl DatasetEvaluator {
         Ok(())
     }
 
-    fn push_speech(
+    fn push_activity(
         &mut self,
-        doc: &AudioDoc,
+        doc: &Audio,
         timeline: &Timeline,
         timeline_key: &str,
     ) -> Result<(), DatasetEvalError> {
-        let Some(selection) = self.speech_selection.as_deref() else {
+        let Some(selection) = self.activity_selection.as_deref() else {
             return Ok(());
         };
         let has_reference = timeline
             .reference
             .iter()
-            .any(|annotation| matches!(annotation.payload, AnnotationPayload::Speech));
+            .any(|annotation| matches!(annotation.annotation, Annotation::Activity(_)));
         if !has_reference {
-            self.speech_unannotated.insert(timeline_key.to_owned());
+            self.activity_unannotated.insert(timeline_key.to_owned());
             return Ok(());
         }
-        self.speech_eligible.insert(timeline_key.to_owned());
-        let available = timeline.speech_sources();
+        self.activity_eligible.insert(timeline_key.to_owned());
+        let available = timeline.activity_sources();
         for source in sources_for_timeline(selection, &available) {
             let mut result = timeline
-                .eval(&TimelineEvalConfig::new().with_speech(&source))?
-                .speech;
+                .eval(&TimelineEvalConfig::new().with_activity(&source))?
+                .activity;
             let result = result
                 .remove(&source)
-                .expect("a selected speech source produced a result");
-            self.speech
+                .expect("a selected activity source produced a result");
+            self.activity
                 .entry(source.clone())
                 .or_default()
                 .add(&doc.id, timeline_key, &result);
@@ -279,7 +314,7 @@ impl DatasetEvaluator {
 }
 
 pub fn evaluate_dataset<'a>(
-    docs: impl IntoIterator<Item = &'a AudioDoc>,
+    docs: impl IntoIterator<Item = &'a Audio>,
     config: &TimelineEvalConfig,
 ) -> Result<DatasetEvaluation, DatasetEvalError> {
     let mut evaluator = DatasetEvaluator::new(config.clone());
@@ -303,7 +338,7 @@ impl AudioDb {
             if page.is_empty() {
                 break;
             }
-            page_query.after = page.last().map(AudioDoc::audio_id);
+            page_query.after = page.last().map(Audio::audio_id);
             for doc in &page {
                 evaluator.push(doc)?;
             }
@@ -343,7 +378,7 @@ impl TranscriptionAccumulator {
 }
 
 #[derive(Debug, Default)]
-struct SpeechAccumulator {
+struct ActivityEventAccumulator {
     evaluated_documents: BTreeSet<String>,
     evaluated_timelines: BTreeSet<String>,
     reference_ms: u64,
@@ -354,12 +389,12 @@ struct SpeechAccumulator {
     false_negative_ms: u64,
 }
 
-impl SpeechAccumulator {
+impl ActivityEventAccumulator {
     fn add(
         &mut self,
         audio_id: &str,
         timeline_id: &str,
-        result: &crate::timeline::SpeechEvaluation,
+        result: &crate::timeline::ActivityEventEvaluation,
     ) {
         self.evaluated_documents.insert(audio_id.to_owned());
         self.evaluated_timelines.insert(timeline_id.to_owned());
@@ -377,6 +412,51 @@ impl SpeechAccumulator {
         self.false_negative_ms = self
             .false_negative_ms
             .saturating_add(result.false_negative_ms);
+    }
+}
+
+#[derive(Debug, Default)]
+struct ActivityAccumulator {
+    evaluated_documents: BTreeSet<String>,
+    evaluated_timelines: BTreeSet<String>,
+    reference_ms: u64,
+    predicted_ms: u64,
+    true_positive_ms: u64,
+    true_negative_ms: u64,
+    false_positive_ms: u64,
+    false_negative_ms: u64,
+    events: BTreeMap<String, ActivityEventAccumulator>,
+}
+
+impl ActivityAccumulator {
+    fn add(
+        &mut self,
+        audio_id: &str,
+        timeline_id: &str,
+        result: &crate::timeline::ActivityEvaluation,
+    ) {
+        self.evaluated_documents.insert(audio_id.to_owned());
+        self.evaluated_timelines.insert(timeline_id.to_owned());
+        self.reference_ms = self.reference_ms.saturating_add(result.reference_ms);
+        self.predicted_ms = self.predicted_ms.saturating_add(result.predicted_ms);
+        self.true_positive_ms = self
+            .true_positive_ms
+            .saturating_add(result.true_positive_ms);
+        self.true_negative_ms = self
+            .true_negative_ms
+            .saturating_add(result.true_negative_ms);
+        self.false_positive_ms = self
+            .false_positive_ms
+            .saturating_add(result.false_positive_ms);
+        self.false_negative_ms = self
+            .false_negative_ms
+            .saturating_add(result.false_negative_ms);
+        for (event, evaluation) in &result.events {
+            self.events
+                .entry(event.clone())
+                .or_default()
+                .add(audio_id, timeline_id, evaluation);
+        }
     }
 }
 
@@ -441,11 +521,11 @@ fn finish_transcription(
         .collect()
 }
 
-fn finish_speech(
-    accumulators: BTreeMap<String, SpeechAccumulator>,
+fn finish_activity(
+    accumulators: BTreeMap<String, ActivityAccumulator>,
     eligible: &BTreeSet<String>,
     unannotated: &BTreeSet<String>,
-) -> Result<BTreeMap<String, DatasetSpeechEvaluation>, DatasetEvalError> {
+) -> Result<BTreeMap<String, DatasetActivityEvaluation>, DatasetEvalError> {
     if eligible.is_empty() {
         return Ok(BTreeMap::new());
     }
@@ -454,7 +534,7 @@ fn finish_speech(
         .map(|(source, accumulator)| {
             if accumulator.evaluated_timelines.is_empty() {
                 return Err(TimelineEvalError::MissingPrediction {
-                    kind: "speech",
+                    kind: "activity",
                     prediction_source: source,
                 }
                 .into());
@@ -463,7 +543,27 @@ fn finish_speech(
                 .difference(&accumulator.evaluated_timelines)
                 .cloned()
                 .collect::<Vec<_>>();
-            let result = DatasetSpeechEvaluation {
+            let events = accumulator
+                .events
+                .into_iter()
+                .map(|(event, value)| {
+                    (
+                        event.clone(),
+                        DatasetActivityEventEvaluation {
+                            event,
+                            evaluated_documents: value.evaluated_documents.len(),
+                            evaluated_timelines: value.evaluated_timelines.len(),
+                            reference_ms: value.reference_ms,
+                            predicted_ms: value.predicted_ms,
+                            true_positive_ms: value.true_positive_ms,
+                            true_negative_ms: value.true_negative_ms,
+                            false_positive_ms: value.false_positive_ms,
+                            false_negative_ms: value.false_negative_ms,
+                        },
+                    )
+                })
+                .collect();
+            let result = DatasetActivityEvaluation {
                 source: source.clone(),
                 evaluated_documents: accumulator.evaluated_documents.len(),
                 evaluated_timelines: accumulator.evaluated_timelines.len(),
@@ -477,16 +577,17 @@ fn finish_speech(
                 true_negative_ms: accumulator.true_negative_ms,
                 false_positive_ms: accumulator.false_positive_ms,
                 false_negative_ms: accumulator.false_negative_ms,
+                events,
             };
             Ok((source, result))
         })
         .collect()
 }
 
-fn is_text_annotation(annotation: &crate::timeline::Annotation) -> bool {
-    match &annotation.payload {
-        AnnotationPayload::Transcription(_) | AnnotationPayload::Sentence(_) => true,
-        AnnotationPayload::Speaker(speaker) => speaker.transcription.is_some(),
+fn is_text_annotation(annotation: &crate::timeline::TimeSpan) -> bool {
+    match &annotation.annotation {
+        Annotation::Transcription(_) | Annotation::Sentence(_) => true,
+        Annotation::Speaker(speaker) => speaker.transcription.is_some(),
         _ => false,
     }
 }
@@ -505,4 +606,25 @@ fn harmonic_mean(left: f64, right: f64) -> f64 {
     } else {
         2.0 * left * right / (left + right)
     }
+}
+
+fn interval_precision(true_positive_ms: u64, false_positive_ms: u64) -> f64 {
+    ratio(
+        true_positive_ms as usize,
+        (true_positive_ms + false_positive_ms) as usize,
+    )
+}
+
+fn interval_recall(true_positive_ms: u64, false_negative_ms: u64) -> f64 {
+    ratio(
+        true_positive_ms as usize,
+        (true_positive_ms + false_negative_ms) as usize,
+    )
+}
+
+fn interval_iou(true_positive_ms: u64, false_positive_ms: u64, false_negative_ms: u64) -> f64 {
+    ratio(
+        true_positive_ms as usize,
+        (true_positive_ms + false_positive_ms + false_negative_ms) as usize,
+    )
 }

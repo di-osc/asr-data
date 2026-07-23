@@ -1,11 +1,4 @@
-from typing import Literal, TypeAlias
+"""Internal typing helpers.
 
-AnnotationKind: TypeAlias = Literal[
-    "speech",
-    "token",
-    "transcription",
-    "sentence",
-    "speaker",
-    "language",
-    "acoustic_event",
-]
+Public annotation types are defined by :mod:`asr_data.annotation`.
+"""

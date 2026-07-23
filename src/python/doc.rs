@@ -1,14 +1,15 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::audio::AudioSource as RustAudioSource;
-use crate::doc::AudioDoc as RustAudioDoc;
+use crate::doc::Audio as RustAudio;
 use crate::utils::DurationMs;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 
 use super::audio::{
-    PyAudioInfo, async_runtime, py_audio_info_from_rust, py_source_from_rust, rust_source_from_py,
+    PyAudioInfo, PyAudioIterator, PyWaveform, async_runtime, py_audio_info_from_rust,
+    py_source_from_rust, rust_source_from_py, stream_audio,
 };
 use super::common::{
     SharedAudio, audio_channel, audio_channel_name, format_duration_ms, format_source_field,
@@ -28,19 +29,19 @@ use super::timeline::PyTimeline;
 ///     AsrDataError: 来源无法探测。
 ///
 /// Examples:
-///     >>> from asr_data import AudioDoc, AudioSource
+///     >>> from asr_data import Audio, AudioSource
 ///     >>> source = AudioSource.from_pcm(b"\0\0" * 16000, 16000)
-///     >>> doc = AudioDoc(source, id="sample-1")
-///     >>> doc.timeline("mono").duration_ms
+///     >>> audio = Audio(source, id="sample-1")
+///     >>> audio.timeline("mono").duration_ms
 ///     1000
-#[pyclass(name = "AudioDoc")]
-pub(super) struct PyAudioDoc {
+#[pyclass(name = "Audio")]
+pub(super) struct PyAudio {
     inner: SharedAudio,
     metadata: Py<PyDict>,
 }
 
-impl PyAudioDoc {
-    pub(super) fn from_rust(py: Python<'_>, audio: RustAudioDoc) -> PyResult<Self> {
+impl PyAudio {
+    pub(super) fn from_rust(py: Python<'_>, audio: RustAudio) -> PyResult<Self> {
         let metadata = PyDict::new(py);
         for (key, value) in &audio.metadata {
             metadata.set_item(key, pythonize::pythonize(py, value).map_err(py_error)?)?;
@@ -54,14 +55,14 @@ impl PyAudioDoc {
     fn build(py: Python<'_>, source: RustAudioSource, id: Option<String>) -> PyResult<Self> {
         let audio = py
             .detach(move || match id {
-                Some(id) => RustAudioDoc::with_id_from_source(id, source),
-                None => RustAudioDoc::from_source(source),
+                Some(id) => RustAudio::with_id_from_source(id, source),
+                None => RustAudio::from_source(source),
             })
             .map_err(py_error)?;
         Self::from_rust(py, audio)
     }
 
-    pub(super) fn cloned_inner(&self, py: Python<'_>) -> PyResult<RustAudioDoc> {
+    pub(super) fn cloned_inner(&self, py: Python<'_>) -> PyResult<RustAudio> {
         let mut audio = self.inner.read().map_err(|_| poisoned("audio"))?.clone();
         audio.metadata =
             pythonize::depythonize(self.metadata.bind(py).as_any()).map_err(py_error)?;
@@ -69,15 +70,15 @@ impl PyAudioDoc {
     }
 }
 
-type AsyncDocResult = Arc<Mutex<Option<Result<RustAudioDoc, String>>>>;
+type AsyncAudioResult = Arc<Mutex<Option<Result<RustAudio, String>>>>;
 
-#[pyclass(name = "_AudioDocTask")]
-struct PyAudioDocTask {
-    result: AsyncDocResult,
+#[pyclass(name = "_AudioTask")]
+struct PyAudioTask {
+    result: AsyncAudioResult,
 }
 
 #[pymethods]
-impl PyAudioDocTask {
+impl PyAudioTask {
     fn done(&self) -> PyResult<bool> {
         Ok(self
             .result
@@ -86,35 +87,35 @@ impl PyAudioDocTask {
             .is_some())
     }
 
-    fn result(&self, py: Python<'_>) -> PyResult<PyAudioDoc> {
+    fn result(&self, py: Python<'_>) -> PyResult<PyAudio> {
         let result = self
             .result
             .lock()
             .map_err(|_| poisoned("audio document task"))?
             .take()
             .ok_or_else(|| PyRuntimeError::new_err("audio document has not completed"))?;
-        PyAudioDoc::from_rust(py, result.map_err(super::AsrDataError::new_err)?)
+        PyAudio::from_rust(py, result.map_err(super::AsrDataError::new_err)?)
     }
 }
 
-fn spawn_doc_from_source(source: RustAudioSource, id: Option<String>) -> PyAudioDocTask {
-    let result: AsyncDocResult = Arc::new(Mutex::new(None));
+fn spawn_audio_from_source(source: RustAudioSource, id: Option<String>) -> PyAudioTask {
+    let result: AsyncAudioResult = Arc::new(Mutex::new(None));
     let task_result = Arc::clone(&result);
     async_runtime().spawn(async move {
-        let doc = match id {
-            Some(id) => RustAudioDoc::with_id_afrom_source(id, source).await,
-            None => RustAudioDoc::afrom_source(source).await,
+        let audio = match id {
+            Some(id) => RustAudio::with_id_afrom_source(id, source).await,
+            None => RustAudio::afrom_source(source).await,
         }
         .map_err(|error| format!("{error:#}"));
         if let Ok(mut slot) = task_result.lock() {
-            *slot = Some(doc);
+            *slot = Some(audio);
         }
     });
-    PyAudioDocTask { result }
+    PyAudioTask { result }
 }
 
 #[pymethods]
-impl PyAudioDoc {
+impl PyAudio {
     #[new]
     #[pyo3(signature = (source, id=None))]
     fn new(py: Python<'_>, source: &Bound<'_, PyAny>, id: Option<String>) -> PyResult<Self> {
@@ -124,11 +125,8 @@ impl PyAudioDoc {
 
     #[staticmethod]
     #[pyo3(signature = (source, id=None))]
-    fn _start_afrom_source(
-        source: &Bound<'_, PyAny>,
-        id: Option<String>,
-    ) -> PyResult<PyAudioDocTask> {
-        Ok(spawn_doc_from_source(rust_source_from_py(source)?, id))
+    fn _start_afrom_source(source: &Bound<'_, PyAny>, id: Option<String>) -> PyResult<PyAudioTask> {
+        Ok(spawn_audio_from_source(rust_source_from_py(source)?, id))
     }
 
     /// 创建文档时保存的 AudioSource。
@@ -140,15 +138,82 @@ impl PyAudioDoc {
 
     /// 不含解码样本的 AudioInfo。
     #[getter]
-    fn audio_info(&self) -> PyResult<PyAudioInfo> {
+    fn info(&self) -> PyResult<PyAudioInfo> {
         let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
-        Ok(py_audio_info_from_rust(&audio.audio_info))
+        Ok(py_audio_info_from_rust(&audio.info))
     }
 
     /// 文档唯一 ID。
     #[getter]
     fn id(&self) -> PyResult<String> {
         Ok(self.inner.read().map_err(|_| poisoned("audio"))?.id.clone())
+    }
+
+    /// 解码后的波形是否已经保留在内存中。
+    #[getter]
+    fn is_loaded(&self) -> PyResult<bool> {
+        Ok(self
+            .inner
+            .read()
+            .map_err(|_| poisoned("audio"))?
+            .is_loaded())
+    }
+
+    /// 返回完整波形；尚未加载时会按需解码。
+    ///
+    /// Returns:
+    ///     当前 Audio 的完整 Waveform。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 10, 16000).open()
+    ///     >>> audio.as_waveform().frame_count
+    ///     10
+    fn as_waveform(&self) -> PyResult<PyWaveform> {
+        let waveform = self
+            .inner
+            .write()
+            .map_err(|_| poisoned("audio"))?
+            .as_waveform()
+            .map_err(py_error)?;
+        Ok(PyWaveform::from_rust(waveform))
+    }
+
+    /// 释放运行时波形缓存，保留 info、timeline 和标注。
+    ///
+    /// Returns:
+    ///     None。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0", 16000).load()
+    ///     >>> audio.unload()
+    fn unload(&self) -> PyResult<()> {
+        self.inner.write().map_err(|_| poisoned("audio"))?.unload();
+        Ok(())
+    }
+
+    /// 按固定时长顺序读取 AudioChunk。
+    ///
+    /// Args:
+    ///     chunk_size_ms: 每个 chunk 的目标时长，单位为毫秒。
+    ///
+    /// Returns:
+    ///     可迭代的 AudioIterator。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 16000, 16000).open()
+    ///     >>> len(list(audio.stream(500)))
+    ///     2
+    #[pyo3(signature = (chunk_size_ms=100))]
+    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
+        if chunk_size_ms == 0 {
+            return Err(PyValueError::new_err(
+                "chunk_size_ms must be greater than zero",
+            ));
+        }
+        stream_audio(py, self.inner.clone(), chunk_size_ms)
     }
 
     /// 查询指定声道的 timeline，不存在时返回 None。
@@ -163,9 +228,9 @@ impl PyAudioDoc {
     ///     ValueError: 声道名称或索引无效。
     ///
     /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000))
-    ///     >>> doc.timeline("mono").duration_ms
+    ///     >>> from asr_data import Audio, AudioSource
+    ///     >>> audio = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
+    ///     >>> audio.timeline("mono").duration_ms
     ///     1
     fn timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<Option<PyTimeline>> {
         let channel = audio_channel(channel)?;
@@ -196,9 +261,9 @@ impl PyAudioDoc {
     ///     ValueError: 时长无效或与文档不一致。
     ///
     /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000))
-    ///     >>> doc.ensure_timeline("mono") is not None
+    ///     >>> from asr_data import Audio, AudioSource
+    ///     >>> audio = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
+    ///     >>> audio.ensure_timeline("mono") is not None
     ///     True
     fn ensure_timeline(
         &self,
@@ -239,9 +304,9 @@ impl PyAudioDoc {
     ///     ValueError: 声道无效。
     ///
     /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000))
-    ///     >>> doc.remove_timeline("mono")
+    ///     >>> from asr_data import Audio, AudioSource
+    ///     >>> audio = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
+    ///     >>> audio.remove_timeline("mono")
     ///     True
     fn remove_timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<bool> {
         let channel = audio_channel(channel)?;
@@ -263,9 +328,9 @@ impl PyAudioDoc {
     ///     None。
     ///
     /// Examples:
-    ///     >>> from asr_data import AudioDoc, AudioSource
-    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000))
-    ///     >>> doc.validate() is None
+    ///     >>> from asr_data import Audio, AudioSource
+    ///     >>> audio = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
+    ///     >>> audio.validate() is None
     ///     True
     fn validate(&self) -> PyResult<()> {
         self.inner
@@ -320,15 +385,15 @@ impl PyAudioDoc {
                 format_duration_ms(duration.0 as f64)
             ));
         }
-        let annotation_count = audio
+        let span_count = audio
             .timelines()
             .values()
-            .map(|timeline| timeline.annotation_count())
+            .map(|timeline| timeline.span_count())
             .sum::<usize>();
-        if annotation_count != 0 {
-            fields.push(format!("annotations={annotation_count}"));
+        if span_count != 0 {
+            fields.push(format!("annotations={span_count}"));
         }
-        Ok(format!("AudioDoc({})", fields.join(", ")))
+        Ok(format!("Audio({})", fields.join(", ")))
     }
 
     fn __str__(&self) -> PyResult<String> {
@@ -336,19 +401,15 @@ impl PyAudioDoc {
         let id = truncate(&audio.id, 40);
         Ok(match audio.timeline_duration() {
             Some(duration) => {
-                format!(
-                    "AudioDoc {:?} ({})",
-                    id,
-                    format_duration_ms(duration.0 as f64)
-                )
+                format!("Audio {:?} ({})", id, format_duration_ms(duration.0 as f64))
             }
-            None => format!("AudioDoc {id:?}"),
+            None => format!("Audio {id:?}"),
         })
     }
 }
 
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_class::<PyAudioDoc>()?;
-    module.add_class::<PyAudioDocTask>()?;
+    module.add_class::<PyAudio>()?;
+    module.add_class::<PyAudioTask>()?;
     Ok(())
 }

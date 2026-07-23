@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::audio::AudioChannel;
-use crate::doc::AudioDoc;
+use crate::doc::Audio;
 use crate::timeline::Timeline;
 use crate::utils::DurationMs;
 use rusqlite::{
@@ -58,21 +58,21 @@ impl AudioDb {
         Ok(Self { connection })
     }
 
-    pub fn insert(&self, audio: &AudioDoc) -> Result<(), AudioDbError> {
+    pub fn insert(&self, audio: &Audio) -> Result<(), AudioDbError> {
         insert_with(&self.connection, audio, now_unix_millis())
     }
 
     /// Updates only the parts of an existing audio that differ from its stored value.
     /// Returns `true` when at least one part changed and `false` for a no-op update.
-    pub fn update(&self, audio: &AudioDoc) -> Result<bool, AudioDbError> {
+    pub fn update(&self, audio: &Audio) -> Result<bool, AudioDbError> {
         update_with(&self.connection, audio, now_unix_millis())
     }
 
-    pub fn query(&self, query: &AudioQuery) -> Result<Vec<AudioDoc>, AudioDbError> {
+    pub fn query(&self, query: &AudioQuery) -> Result<Vec<Audio>, AudioDbError> {
         query_with(&self.connection, query)
     }
 
-    pub fn get(&self, audio_id: &str) -> Result<Option<AudioDoc>, AudioDbError> {
+    pub fn get(&self, audio_id: &str) -> Result<Option<Audio>, AudioDbError> {
         get_with(&self.connection, audio_id)
     }
 
@@ -95,7 +95,7 @@ impl AudioDb {
             != 0)
     }
 
-    pub fn update_many(&mut self, audios: &[AudioDoc]) -> Result<usize, AudioDbError> {
+    pub fn update_many(&mut self, audios: &[Audio]) -> Result<usize, AudioDbError> {
         let transaction = self.connection.transaction()?;
         let updated_at_ms = now_unix_millis();
         let mut updated = 0;
@@ -176,12 +176,12 @@ pub fn read_audio_db_info(path: impl AsRef<Path>) -> Result<AudioDbInfo, AudioDb
 
 fn insert_with(
     connection: &Connection,
-    audio: &AudioDoc,
+    audio: &Audio,
     timestamp_ms: i64,
 ) -> Result<(), AudioDbError> {
     audio.validate()?;
     let source = encode(&audio.source)?;
-    let audio_info = encode(&audio.audio_info)?;
+    let info = encode(&audio.info)?;
     let timeline = encode(audio.timelines())?;
     let metadata = serde_json::to_string(&audio.metadata)?;
     let duration = audio
@@ -196,8 +196,8 @@ fn insert_with(
             params![audio.id, metadata, duration, timestamp_ms],
         )?;
         connection.execute(
-            "INSERT INTO audio_sources(audio_id, source, audio_info) VALUES (?1, ?2, ?3)",
-            params![audio.id, source, audio_info],
+            "INSERT INTO audio_sources(audio_id, source, info) VALUES (?1, ?2, ?3)",
+            params![audio.id, source, info],
         )?;
         connection.execute(
             "INSERT INTO timelines(audio_id, timeline) VALUES (?1, ?2)",
@@ -219,13 +219,13 @@ fn insert_with(
 
 fn update_with(
     connection: &Connection,
-    audio: &AudioDoc,
+    audio: &Audio,
     updated_at_ms: i64,
 ) -> Result<bool, AudioDbError> {
     audio.validate()?;
     let audio_id = &audio.id;
     let source = encode(&audio.source)?;
-    let audio_info = encode(&audio.audio_info)?;
+    let info = encode(&audio.info)?;
     let timeline = encode(audio.timelines())?;
     let metadata = serde_json::to_string(&audio.metadata)?;
     let duration = audio
@@ -257,10 +257,10 @@ fn update_with(
         )? != 0;
         let source_changed = connection.execute(
             "UPDATE audio_sources
-             SET source = ?1, audio_info = ?2
+             SET source = ?1, info = ?2
              WHERE audio_id = ?3
-               AND (source IS NOT ?1 OR audio_info IS NOT ?2)",
-            params![source, audio_info, audio_id],
+               AND (source IS NOT ?1 OR info IS NOT ?2)",
+            params![source, info, audio_id],
         )? != 0;
         let timeline_changed = connection.execute(
             "UPDATE timelines
@@ -292,7 +292,7 @@ fn update_with(
     }
 }
 
-fn query_with(connection: &Connection, query: &AudioQuery) -> Result<Vec<AudioDoc>, AudioDbError> {
+fn query_with(connection: &Connection, query: &AudioQuery) -> Result<Vec<Audio>, AudioDbError> {
     if query.limit > MAX_QUERY_LIMIT {
         return Err(AudioDbError::QueryLimitExceeded {
             limit: query.limit,
@@ -325,7 +325,7 @@ fn query_with(connection: &Connection, query: &AudioQuery) -> Result<Vec<AudioDo
     }
 
     let mut sql = String::from(
-        "SELECT audio_sources.source, audio_sources.audio_info, timelines.timeline,
+        "SELECT audio_sources.source, audio_sources.info, timelines.timeline,
                 audios.metadata, audios.audio_id
          FROM audios
          JOIN audio_sources USING (audio_id)
@@ -433,8 +433,8 @@ fn system_time_to_query_boundary_millis(time: SystemTime) -> i64 {
     }
 }
 
-fn get_with(connection: &Connection, audio_id: &str) -> Result<Option<AudioDoc>, AudioDbError> {
-    let sql = "SELECT audio_sources.source, audio_sources.audio_info, timelines.timeline,
+fn get_with(connection: &Connection, audio_id: &str) -> Result<Option<Audio>, AudioDbError> {
+    let sql = "SELECT audio_sources.source, audio_sources.info, timelines.timeline,
                       audios.metadata, audios.audio_id
                FROM audios
                JOIN audio_sources USING (audio_id)
@@ -446,23 +446,25 @@ fn get_with(connection: &Connection, audio_id: &str) -> Result<Option<AudioDoc>,
         .map_err(AudioDbError::from)
 }
 
-fn decode_audio_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AudioDoc> {
+fn decode_audio_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Audio> {
     let source: Vec<u8> = row.get(0)?;
-    let audio_info: Vec<u8> = row.get(1)?;
+    let info: Vec<u8> = row.get(1)?;
     let timeline: Vec<u8> = row.get(2)?;
     let metadata: String = row.get(3)?;
     let audio_id: String = row.get(4)?;
     let source = decode(&source).map_err(sql_conversion_error)?;
-    let audio_info = decode(&audio_info).map_err(sql_conversion_error)?;
+    let info = decode(&info).map_err(sql_conversion_error)?;
     let timelines: BTreeMap<AudioChannel, Timeline> =
         decode(&timeline).map_err(sql_conversion_error)?;
     let metadata = serde_json::from_str(&metadata).map_err(sql_conversion_error)?;
-    let audio = AudioDoc {
+    let audio = Audio {
         id: audio_id,
         source,
-        audio_info,
+        info,
         timelines,
         metadata,
+        waveform: None,
+        stream_active: false,
     };
     audio.validate().map_err(sql_conversion_error)?;
     Ok(audio)

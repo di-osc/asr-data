@@ -1,14 +1,12 @@
 from typing import TypeAlias
 
-from ._native import Annotation, Speaker, Token, Transcription
-from ._types import AnnotationKind
+from ._native import AudioActivity, Speaker, Token, Transcription
 
-AnnotationPayload: TypeAlias = Speaker | Token | Transcription | dict[str, object] | None
+Annotation: TypeAlias = AudioActivity | Speaker | Token | Transcription
 
 __all__ = [
     "Annotation",
-    "AnnotationKind",
-    "AnnotationPayload",
+    "AudioActivity",
     "Speaker",
     "Token",
     "Transcription",

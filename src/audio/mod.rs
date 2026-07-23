@@ -1,5 +1,6 @@
-//! Audio input decoding, loading, normalization, and resampling.
+//! Waveform input decoding, loading, normalization, and resampling.
 
+#[cfg(feature = "python-bindings")]
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
@@ -7,14 +8,15 @@ pub(crate) mod data;
 pub mod decode;
 mod source;
 pub(crate) mod stream;
-pub use data::{Audio, AudioChunk, AudioChunks, AudioError};
+pub use data::{AudioChunk, AudioChunks, AudioError, Waveform};
 pub use source::{AudioChannel, AudioEncoding, AudioFormat, AudioInfo, AudioSource};
 
+#[cfg(feature = "python-bindings")]
 pub(crate) fn transform_loaded_audio(
-    mut waveform: Audio,
+    mut waveform: Waveform,
     sample_rate: Option<u32>,
     mono: Option<bool>,
-) -> Result<Audio> {
+) -> Result<Waveform> {
     if waveform.channels == 0 {
         bail!("invalid channel count: 0");
     }

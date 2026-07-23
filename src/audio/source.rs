@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Audio, data, decode, local_path_from_urlish, transform_loaded_audio};
+use super::{Waveform, data, decode, local_path_from_urlish};
+use crate::doc::Audio;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum AudioChannel {
@@ -141,7 +142,7 @@ impl AudioSource {
         }
     }
 
-    pub fn load(&self) -> anyhow::Result<Audio> {
+    pub(crate) fn decode_waveform(&self) -> anyhow::Result<Waveform> {
         let waveform = match self {
             Self::Path(path) => decode::decode_path_audio(path)?,
             Self::Url(url) => {
@@ -157,11 +158,32 @@ impl AudioSource {
                 bytes,
                 sample_rate,
                 channels,
-            } => Audio::from_i16_pcm_bytes_with_channels(bytes, *sample_rate, *channels)?,
+            } => Waveform::from_i16_pcm_bytes_with_channels(bytes, *sample_rate, *channels)?,
         };
         let mut waveform = waveform;
         data::sanitize_samples(&mut waveform.samples);
         Ok(waveform)
+    }
+
+    pub fn open(&self) -> anyhow::Result<Audio> {
+        Audio::from_source(self.clone())
+    }
+
+    pub fn open_with_id(&self, audio_id: impl Into<String>) -> anyhow::Result<Audio> {
+        Audio::with_id_from_source(audio_id, self.clone())
+    }
+
+    pub fn load(&self) -> anyhow::Result<Audio> {
+        self.load_with_id(format!("audio_{}", uuid::Uuid::new_v4().simple()))
+    }
+
+    pub fn load_with_id(&self, audio_id: impl Into<String>) -> anyhow::Result<Audio> {
+        let waveform = self.decode_waveform()?;
+        Ok(Audio::with_loaded_waveform(
+            audio_id,
+            self.clone(),
+            waveform,
+        ))
     }
 
     pub fn probe(&self) -> anyhow::Result<AudioInfo> {
@@ -225,34 +247,17 @@ impl AudioSource {
         }
     }
 
-    pub fn load_with(&self, sample_rate: Option<u32>, mono: Option<bool>) -> anyhow::Result<Audio> {
-        transform_loaded_audio(self.load()?, sample_rate, mono)
-    }
-
     pub async fn aload(&self) -> anyhow::Result<Audio> {
-        self.aload_with(None, None).await
+        let source = self.clone();
+        tokio::task::spawn_blocking(move || source.load())
+            .await
+            .map_err(|error| anyhow::anyhow!("audio loader worker failed: {error}"))?
     }
 
-    pub async fn aload_with(
-        &self,
-        sample_rate: Option<u32>,
-        mono: Option<bool>,
-    ) -> anyhow::Result<Audio> {
-        let waveform = match self {
-            Self::Url(url) if url.starts_with("http://") || url.starts_with("https://") => {
-                let bytes = decode::download_url_bytes(url).await?;
-                tokio::task::spawn_blocking(move || decode::decode_bytes_audio(bytes))
-                    .await
-                    .map_err(|error| anyhow::anyhow!("audio decoder worker failed: {error}"))?
-            }
-            source => {
-                let source = source.clone();
-                tokio::task::spawn_blocking(move || source.load())
-                    .await
-                    .map_err(|error| anyhow::anyhow!("audio loader worker failed: {error}"))?
-            }
-        }?;
-        transform_loaded_audio(waveform, sample_rate, mono)
+    pub async fn aopen(&self) -> anyhow::Result<Audio> {
+        let source = self.clone();
+        let info = source.aprobe().await?;
+        Ok(Audio::from_info(source, &info))
     }
 }
 

@@ -11,7 +11,7 @@ use pyo3::prelude::*;
 
 use super::AsrDataError;
 
-pub(super) type SharedAudio = Arc<RwLock<crate::doc::AudioDoc>>;
+pub(super) type SharedAudio = Arc<RwLock<crate::doc::Audio>>;
 
 pub(super) fn py_error(error: impl std::fmt::Display) -> PyErr {
     AsrDataError::new_err(error.to_string())

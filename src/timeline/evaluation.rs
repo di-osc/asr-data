@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
-use super::{Annotation, AnnotationPayload, Timeline};
+use super::{Annotation, TimeSpan, Timeline};
 use crate::metrics::{
     CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh,
 };
@@ -22,7 +22,7 @@ pub struct TimelineEvalConfig {
     pub transcription_sources: Option<Vec<String>>,
     /// `None` disables this task when another task is explicitly selected.
     /// An empty vector selects every available source.
-    pub speech_sources: Option<Vec<String>>,
+    pub activity_sources: Option<Vec<String>>,
     pub transcription_normalization: TranscriptionNormalization,
 }
 
@@ -50,22 +50,22 @@ impl TimelineEvalConfig {
         self
     }
 
-    pub fn with_speech(mut self, source: impl Into<String>) -> Self {
-        self.speech_sources = Some(vec![source.into()]);
+    pub fn with_activity(mut self, source: impl Into<String>) -> Self {
+        self.activity_sources = Some(vec![source.into()]);
         self
     }
 
-    pub fn with_speech_sources<I, S>(mut self, sources: I) -> Self
+    pub fn with_activity_sources<I, S>(mut self, sources: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.speech_sources = Some(sources.into_iter().map(Into::into).collect());
+        self.activity_sources = Some(sources.into_iter().map(Into::into).collect());
         self
     }
 
-    pub fn with_all_speech(mut self) -> Self {
-        self.speech_sources = Some(Vec::new());
+    pub fn with_all_activity(mut self) -> Self {
+        self.activity_sources = Some(Vec::new());
         self
     }
 
@@ -96,7 +96,7 @@ pub enum TimelineEvalError {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TimelineEvaluation {
     pub transcription: BTreeMap<String, TranscriptionEvaluation>,
-    pub speech: BTreeMap<String, SpeechEvaluation>,
+    pub activity: BTreeMap<String, ActivityEvaluation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,8 +139,8 @@ impl TranscriptionEvaluation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpeechEvaluation {
-    pub source: String,
+pub struct ActivityEventEvaluation {
+    pub event: String,
     pub reference_ms: u64,
     pub predicted_ms: u64,
     pub true_positive_ms: u64,
@@ -149,19 +149,13 @@ pub struct SpeechEvaluation {
     pub false_negative_ms: u64,
 }
 
-impl SpeechEvaluation {
+impl ActivityEventEvaluation {
     pub fn precision(&self) -> f64 {
-        ratio(
-            self.true_positive_ms as usize,
-            (self.true_positive_ms + self.false_positive_ms) as usize,
-        )
+        interval_precision(self.true_positive_ms, self.false_positive_ms)
     }
 
     pub fn recall(&self) -> f64 {
-        ratio(
-            self.true_positive_ms as usize,
-            (self.true_positive_ms + self.false_negative_ms) as usize,
-        )
+        interval_recall(self.true_positive_ms, self.false_negative_ms)
     }
 
     pub fn f1(&self) -> f64 {
@@ -169,9 +163,44 @@ impl SpeechEvaluation {
     }
 
     pub fn iou(&self) -> f64 {
-        ratio(
-            self.true_positive_ms as usize,
-            (self.true_positive_ms + self.false_positive_ms + self.false_negative_ms) as usize,
+        interval_iou(
+            self.true_positive_ms,
+            self.false_positive_ms,
+            self.false_negative_ms,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityEvaluation {
+    pub source: String,
+    pub reference_ms: u64,
+    pub predicted_ms: u64,
+    pub true_positive_ms: u64,
+    pub true_negative_ms: u64,
+    pub false_positive_ms: u64,
+    pub false_negative_ms: u64,
+    pub events: BTreeMap<String, ActivityEventEvaluation>,
+}
+
+impl ActivityEvaluation {
+    pub fn precision(&self) -> f64 {
+        interval_precision(self.true_positive_ms, self.false_positive_ms)
+    }
+
+    pub fn recall(&self) -> f64 {
+        interval_recall(self.true_positive_ms, self.false_negative_ms)
+    }
+
+    pub fn f1(&self) -> f64 {
+        harmonic_mean(self.precision(), self.recall())
+    }
+
+    pub fn iou(&self) -> f64 {
+        interval_iou(
+            self.true_positive_ms,
+            self.false_positive_ms,
+            self.false_negative_ms,
         )
     }
 }
@@ -188,16 +217,16 @@ impl Timeline {
         &self,
         config: &TimelineEvalConfig,
     ) -> Result<TimelineEvaluation, TimelineEvalError> {
-        let auto_all = config.transcription_sources.is_none() && config.speech_sources.is_none();
+        let auto_all = config.transcription_sources.is_none() && config.activity_sources.is_none();
         let transcription_selection = if auto_all {
             Some(&[][..])
         } else {
             config.transcription_sources.as_deref()
         };
-        let speech_selection = if auto_all {
+        let activity_selection = if auto_all {
             Some(&[][..])
         } else {
-            config.speech_sources.as_deref()
+            config.activity_sources.as_deref()
         };
 
         let mut transcription = BTreeMap::new();
@@ -216,28 +245,28 @@ impl Timeline {
             }
         }
 
-        let mut speech = BTreeMap::new();
-        if let Some(selection) = speech_selection {
+        let mut activity = BTreeMap::new();
+        if let Some(selection) = activity_selection {
             let has_reference = self
                 .reference
                 .iter()
-                .any(|annotation| matches!(annotation.payload, AnnotationPayload::Speech));
+                .any(|annotation| matches!(annotation.annotation, Annotation::Activity(_)));
             if has_reference {
-                for source in selected_sources(selection, self.speech_sources()) {
-                    let evaluation = self.evaluate_speech(&source)?;
-                    speech.insert(source, evaluation);
+                for source in selected_sources(selection, self.activity_sources()) {
+                    let evaluation = self.evaluate_activity(&source)?;
+                    activity.insert(source, evaluation);
                 }
             } else if !selection.is_empty() {
-                return Err(TimelineEvalError::MissingReference { kind: "speech" });
+                return Err(TimelineEvalError::MissingReference { kind: "activity" });
             }
         }
 
-        if transcription.is_empty() && speech.is_empty() {
+        if transcription.is_empty() && activity.is_empty() {
             return Err(TimelineEvalError::NoEvaluableAnnotations);
         }
         Ok(TimelineEvaluation {
             transcription,
-            speech,
+            activity,
         })
     }
 
@@ -249,10 +278,10 @@ impl Timeline {
             .collect()
     }
 
-    pub fn speech_sources(&self) -> BTreeSet<String> {
+    pub fn activity_sources(&self) -> BTreeSet<String> {
         self.prediction
             .iter()
-            .filter(|annotation| matches!(annotation.payload, AnnotationPayload::Speech))
+            .filter(|annotation| matches!(annotation.annotation, Annotation::Activity(_)))
             .filter_map(|annotation| annotation.source.clone())
             .collect()
     }
@@ -302,33 +331,65 @@ impl Timeline {
         })
     }
 
-    fn evaluate_speech(&self, source: &str) -> Result<SpeechEvaluation, TimelineEvalError> {
-        let reference = merged_speech_ranges(self.reference.iter());
+    fn evaluate_activity(&self, source: &str) -> Result<ActivityEvaluation, TimelineEvalError> {
+        let reference = merged_activity_ranges(self.reference.iter(), None);
         if reference.is_empty() {
-            return Err(TimelineEvalError::MissingReference { kind: "speech" });
+            return Err(TimelineEvalError::MissingReference { kind: "activity" });
         }
-        let prediction = merged_speech_ranges(self.predictions_by_source(source));
+        let prediction = merged_activity_ranges(self.predictions_by_source(source), None);
         if prediction.is_empty() {
             return Err(TimelineEvalError::MissingPrediction {
-                kind: "speech",
+                kind: "activity",
                 prediction_source: source.to_owned(),
             });
         }
-        let reference_ms = ranges_duration(&reference);
-        let predicted_ms = ranges_duration(&prediction);
-        let true_positive_ms = intersection_duration(&reference, &prediction);
-        let false_positive_ms = predicted_ms.saturating_sub(true_positive_ms);
-        let false_negative_ms = reference_ms.saturating_sub(true_positive_ms);
-        let covered_ms = true_positive_ms + false_positive_ms + false_negative_ms;
-        let true_negative_ms = self.duration.0.saturating_sub(covered_ms);
-        Ok(SpeechEvaluation {
+        let overall = interval_counts(&reference, &prediction, self.duration.0);
+        let reference_events = activity_events(self.reference.iter());
+        let prediction_events = activity_events(self.predictions_by_source(source));
+        let unknown_reference = merged_unknown_activity_ranges(self.reference.iter());
+        let event_names = if reference_events.is_empty() {
+            BTreeSet::new()
+        } else {
+            reference_events
+                .union(&prediction_events)
+                .cloned()
+                .collect()
+        };
+        let events = event_names
+            .into_iter()
+            .map(|event| {
+                let reference = merged_activity_ranges(self.reference.iter(), Some(&event));
+                let prediction =
+                    merged_activity_ranges(self.predictions_by_source(source), Some(&event));
+                let counts = masked_interval_counts(
+                    &reference,
+                    &prediction,
+                    &unknown_reference,
+                    self.duration.0,
+                );
+                (
+                    event.clone(),
+                    ActivityEventEvaluation {
+                        event,
+                        reference_ms: counts.reference_ms,
+                        predicted_ms: counts.predicted_ms,
+                        true_positive_ms: counts.true_positive_ms,
+                        true_negative_ms: counts.true_negative_ms,
+                        false_positive_ms: counts.false_positive_ms,
+                        false_negative_ms: counts.false_negative_ms,
+                    },
+                )
+            })
+            .collect();
+        Ok(ActivityEvaluation {
             source: source.to_owned(),
-            reference_ms,
-            predicted_ms,
-            true_positive_ms,
-            true_negative_ms,
-            false_positive_ms,
-            false_negative_ms,
+            reference_ms: overall.reference_ms,
+            predicted_ms: overall.predicted_ms,
+            true_positive_ms: overall.true_positive_ms,
+            true_negative_ms: overall.true_negative_ms,
+            false_positive_ms: overall.false_positive_ms,
+            false_negative_ms: overall.false_negative_ms,
+            events,
         })
     }
 }
@@ -341,18 +402,27 @@ fn selected_sources(selection: &[String], available: BTreeSet<String>) -> BTreeS
     }
 }
 
-fn is_final_text_annotation(annotation: &Annotation) -> bool {
-    match &annotation.payload {
-        AnnotationPayload::Transcription(_) | AnnotationPayload::Sentence(_) => true,
-        AnnotationPayload::Speaker(speaker) => speaker.transcription.is_some(),
+fn is_final_text_annotation(annotation: &TimeSpan) -> bool {
+    match &annotation.annotation {
+        Annotation::Transcription(_) | Annotation::Sentence(_) => true,
+        Annotation::Speaker(speaker) => speaker.transcription.is_some(),
         _ => false,
     }
 }
 
-fn merged_speech_ranges<'a>(annotations: impl Iterator<Item = &'a Annotation>) -> Vec<TimeRange> {
+fn merged_activity_ranges<'a>(
+    annotations: impl Iterator<Item = &'a TimeSpan>,
+    event: Option<&str>,
+) -> Vec<TimeRange> {
     let mut ranges = annotations
-        .filter(|annotation| matches!(annotation.payload, AnnotationPayload::Speech))
-        .map(|annotation| annotation.range)
+        .filter_map(|annotation| match &annotation.annotation {
+            Annotation::Activity(activity)
+                if event.is_none() || activity.event.as_deref() == event =>
+            {
+                Some(annotation.range)
+            }
+            _ => None,
+        })
         .filter(|range| range.end > range.start)
         .collect::<Vec<_>>();
     ranges.sort_by_key(|range| (range.start, range.end));
@@ -367,6 +437,127 @@ fn merged_speech_ranges<'a>(annotations: impl Iterator<Item = &'a Annotation>) -
         }
     }
     merged
+}
+
+fn merged_unknown_activity_ranges<'a>(
+    annotations: impl Iterator<Item = &'a TimeSpan>,
+) -> Vec<TimeRange> {
+    let annotations = annotations.collect::<Vec<_>>();
+    let mut unknown = annotations
+        .iter()
+        .filter_map(|annotation| match &annotation.annotation {
+            Annotation::Activity(activity) if activity.event.is_none() => Some(annotation.range),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut labeled = annotations
+        .iter()
+        .filter_map(|annotation| match &annotation.annotation {
+            Annotation::Activity(activity) if activity.event.is_some() => Some(annotation.range),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    subtract_ranges(&merge_ranges(&mut unknown), &merge_ranges(&mut labeled))
+}
+
+fn activity_events<'a>(annotations: impl Iterator<Item = &'a TimeSpan>) -> BTreeSet<String> {
+    annotations
+        .filter_map(|annotation| match &annotation.annotation {
+            Annotation::Activity(activity) => activity.event.clone(),
+            _ => None,
+        })
+        .collect()
+}
+
+fn merge_ranges(ranges: &mut Vec<TimeRange>) -> Vec<TimeRange> {
+    ranges.retain(|range| range.end > range.start);
+    ranges.sort_by_key(|range| (range.start, range.end));
+    let mut merged: Vec<TimeRange> = Vec::new();
+    for range in ranges.drain(..) {
+        if let Some(previous) = merged.last_mut()
+            && range.start <= previous.end
+        {
+            previous.end = previous.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IntervalCounts {
+    reference_ms: u64,
+    predicted_ms: u64,
+    true_positive_ms: u64,
+    true_negative_ms: u64,
+    false_positive_ms: u64,
+    false_negative_ms: u64,
+}
+
+fn interval_counts(
+    reference: &[TimeRange],
+    prediction: &[TimeRange],
+    duration_ms: u64,
+) -> IntervalCounts {
+    let reference_ms = ranges_duration(reference);
+    let predicted_ms = ranges_duration(prediction);
+    let true_positive_ms = intersection_duration(reference, prediction);
+    let false_positive_ms = predicted_ms.saturating_sub(true_positive_ms);
+    let false_negative_ms = reference_ms.saturating_sub(true_positive_ms);
+    let covered_ms = true_positive_ms + false_positive_ms + false_negative_ms;
+    let true_negative_ms = duration_ms.saturating_sub(covered_ms);
+    IntervalCounts {
+        reference_ms,
+        predicted_ms,
+        true_positive_ms,
+        true_negative_ms,
+        false_positive_ms,
+        false_negative_ms,
+    }
+}
+
+fn masked_interval_counts(
+    reference: &[TimeRange],
+    prediction: &[TimeRange],
+    mask: &[TimeRange],
+    duration_ms: u64,
+) -> IntervalCounts {
+    let reference = subtract_ranges(reference, mask);
+    let prediction = subtract_ranges(prediction, mask);
+    interval_counts(
+        &reference,
+        &prediction,
+        duration_ms.saturating_sub(ranges_duration(mask)),
+    )
+}
+
+fn subtract_ranges(ranges: &[TimeRange], masks: &[TimeRange]) -> Vec<TimeRange> {
+    let mut result = Vec::new();
+    for range in ranges {
+        let mut fragments = vec![*range];
+        for mask in masks {
+            let mut next = Vec::new();
+            for fragment in fragments {
+                if !fragment.overlaps(mask) {
+                    next.push(fragment);
+                    continue;
+                }
+                if fragment.start < mask.start {
+                    next.push(TimeRange::new(fragment.start, fragment.end.min(mask.start)));
+                }
+                if mask.end < fragment.end {
+                    next.push(TimeRange::new(fragment.start.max(mask.end), fragment.end));
+                }
+            }
+            fragments = next;
+            if fragments.is_empty() {
+                break;
+            }
+        }
+        result.extend(fragments);
+    }
+    result
 }
 
 fn ranges_duration(ranges: &[TimeRange]) -> u64 {
@@ -409,30 +600,55 @@ fn harmonic_mean(left: f64, right: f64) -> f64 {
     }
 }
 
+fn interval_precision(true_positive_ms: u64, false_positive_ms: u64) -> f64 {
+    ratio(
+        true_positive_ms as usize,
+        (true_positive_ms + false_positive_ms) as usize,
+    )
+}
+
+fn interval_recall(true_positive_ms: u64, false_negative_ms: u64) -> f64 {
+    ratio(
+        true_positive_ms as usize,
+        (true_positive_ms + false_negative_ms) as usize,
+    )
+}
+
+fn interval_iou(true_positive_ms: u64, false_positive_ms: u64, false_negative_ms: u64) -> f64 {
+    ratio(
+        true_positive_ms as usize,
+        (true_positive_ms + false_positive_ms + false_negative_ms) as usize,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timeline::Annotation;
+    use crate::timeline::TimeSpan;
     use crate::utils::DurationMs;
 
-    fn speech(start: u64, end: u64, source: Option<&str>) -> Annotation {
-        Annotation::new(
+    fn activity(start: u64, end: u64, event: Option<&str>, source: Option<&str>) -> TimeSpan {
+        TimeSpan::new(
             TimeRange::new(DurationMs(start), DurationMs(end)),
-            AnnotationPayload::Speech,
+            Annotation::Activity(crate::timeline::AudioActivity {
+                event: event.map(str::to_owned),
+            }),
             source.map(str::to_owned),
         )
     }
 
     #[test]
-    fn evaluates_merged_speech_ranges() {
+    fn evaluates_merged_activity_ranges() {
         let mut timeline = Timeline::new("audio", DurationMs(1_000));
-        timeline.reference.push(speech(100, 500, None));
-        timeline.reference.push(speech(400, 600, None));
-        timeline.prediction.push(speech(200, 700, Some("vad")));
+        timeline.reference.push(activity(100, 500, None, None));
+        timeline.reference.push(activity(400, 600, None, None));
+        timeline
+            .prediction
+            .push(activity(200, 700, None, Some("vad")));
         let result = timeline
-            .evaluate(&TimelineEvalConfig::new().with_speech("vad"))
+            .evaluate(&TimelineEvalConfig::new().with_activity("vad"))
             .unwrap()
-            .speech
+            .activity
             .remove("vad")
             .unwrap();
         assert_eq!(result.reference_ms, 500);
@@ -445,6 +661,34 @@ mod tests {
         assert_eq!(result.recall(), 0.8);
         assert!((result.f1() - 0.8).abs() < f64::EPSILON);
         assert_eq!(result.iou(), 2.0 / 3.0);
+        assert!(result.events.is_empty());
+    }
+
+    #[test]
+    fn evaluates_activity_events_and_masks_unknown_reference_ranges() {
+        let mut timeline = Timeline::new("audio", DurationMs(1_000));
+        timeline
+            .reference
+            .push(activity(100, 400, Some("speech"), None));
+        timeline.reference.push(activity(500, 700, None, None));
+        timeline
+            .prediction
+            .push(activity(100, 400, Some("cough"), Some("aed")));
+        timeline
+            .prediction
+            .push(activity(500, 700, Some("speech"), Some("aed")));
+
+        let result = timeline
+            .evaluate(&TimelineEvalConfig::new().with_activity("aed"))
+            .unwrap()
+            .activity
+            .remove("aed")
+            .unwrap();
+
+        assert_eq!(result.true_positive_ms, 500);
+        assert_eq!(result.events["speech"].false_negative_ms, 300);
+        assert_eq!(result.events["speech"].false_positive_ms, 0);
+        assert_eq!(result.events["cough"].false_positive_ms, 300);
     }
 
     #[test]
@@ -453,16 +697,16 @@ mod tests {
 
         let mut timeline = Timeline::new("audio", DurationMs(1_000));
         timeline
-            .push_reference(Annotation::new(
+            .push_reference(TimeSpan::new(
                 TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                AnnotationPayload::Transcription(Transcription::new("交易停滞")),
+                Annotation::Transcription(Transcription::new("交易停滞")),
                 None,
             ))
             .unwrap();
         timeline
-            .push_prediction(Annotation::new(
+            .push_prediction(TimeSpan::new(
                 TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                AnnotationPayload::Transcription(Transcription::new("交易停止")),
+                Annotation::Transcription(Transcription::new("交易停止")),
                 Some("asr".to_owned()),
             ))
             .unwrap();
@@ -487,25 +731,25 @@ mod tests {
 
         let mut timeline = Timeline::new("audio", DurationMs(1_000));
         timeline
-            .push_reference(Annotation::new(
+            .push_reference(TimeSpan::new(
                 TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                AnnotationPayload::Transcription(Transcription::new("交易停滞")),
+                Annotation::Transcription(Transcription::new("交易停滞")),
                 None,
             ))
             .unwrap();
         timeline
-            .push_prediction(Annotation::new(
+            .push_prediction(TimeSpan::new(
                 TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                AnnotationPayload::Transcription(Transcription::new("交易停滞")),
+                Annotation::Transcription(Transcription::new("交易停滞")),
                 Some("qwen".to_owned()),
             ))
             .unwrap();
         let mut speaker = SpeakerPayload::new("agent");
         speaker.transcription = Some(Transcription::new("交易停止"));
         timeline
-            .push_prediction(Annotation::new(
+            .push_prediction(TimeSpan::new(
                 TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                AnnotationPayload::Speaker(speaker),
+                Annotation::Speaker(speaker),
                 Some("whisper".to_owned()),
             ))
             .unwrap();
@@ -520,7 +764,7 @@ mod tests {
             result.transcription.keys().cloned().collect::<Vec<_>>(),
             ["qwen", "whisper"]
         );
-        assert!(result.speech.is_empty());
+        assert!(result.activity.is_empty());
         assert_eq!(result.transcription["qwen"].stats.cer(), 0.0);
         assert_eq!(result.transcription["whisper"].stats.cer(), 0.25);
     }

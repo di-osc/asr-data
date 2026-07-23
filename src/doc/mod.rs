@@ -2,23 +2,27 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-use crate::audio::{AudioChannel, AudioInfo, AudioSource};
-use crate::timeline::{Timeline, TimelineAnnotationError};
+use crate::audio::{AudioChannel, AudioEncoding, AudioFormat, AudioInfo, AudioSource, Waveform};
+use crate::timeline::{Timeline, TimelineSpanError};
 use crate::utils::DurationMs;
 
 /// An audio source together with all annotations and per-audio metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AudioDoc {
+pub struct Audio {
     #[serde(default)]
     pub id: String,
     pub source: AudioSource,
-    pub audio_info: AudioInfo,
+    pub info: AudioInfo,
     pub(crate) timelines: BTreeMap<AudioChannel, Timeline>,
     #[serde(default)]
     pub metadata: BTreeMap<String, serde_json::Value>,
+    #[serde(skip)]
+    pub(crate) waveform: Option<Waveform>,
+    #[serde(skip)]
+    pub(crate) stream_active: bool,
 }
 
-impl AudioDoc {
+impl Audio {
     pub fn new(source: impl Into<AudioSource>) -> anyhow::Result<Self> {
         Self::with_id(format!("audio_{}", uuid::Uuid::new_v4().simple()), source)
     }
@@ -75,9 +79,11 @@ impl AudioDoc {
         let mut doc = Self {
             id: audio_id.into(),
             source: source.into(),
-            audio_info: info.clone(),
+            info: info.clone(),
             timelines: BTreeMap::new(),
             metadata: BTreeMap::new(),
+            waveform: None,
+            stream_active: false,
         };
         let duration = DurationMs(info.timeline_duration_ms());
         if info.channels == 1 {
@@ -92,6 +98,70 @@ impl AudioDoc {
             }
         }
         doc
+    }
+
+    pub(crate) fn with_loaded_waveform(
+        audio_id: impl Into<String>,
+        source: impl Into<AudioSource>,
+        waveform: Waveform,
+    ) -> Self {
+        let info = AudioInfo {
+            sample_rate: waveform.sample_rate,
+            channels: waveform.channels,
+            frame_count: waveform.frame_count() as u64,
+            source_format: waveform.source_format.clone().unwrap_or(AudioFormat {
+                encoding: AudioEncoding::Unknown,
+                sample_rate: waveform.sample_rate,
+                channels: waveform.channels,
+            }),
+        };
+        let mut audio = Self::with_id_from_info(audio_id, source, &info);
+        audio.waveform = Some(waveform);
+        audio
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.waveform.is_some()
+    }
+
+    pub fn load(&mut self) -> anyhow::Result<&Waveform> {
+        if self.waveform.is_none() {
+            self.waveform = Some(self.source.decode_waveform()?);
+        }
+        Ok(self.waveform.as_ref().expect("waveform was just loaded"))
+    }
+
+    pub fn as_waveform(&mut self) -> anyhow::Result<Waveform> {
+        Ok(self.load()?.clone())
+    }
+
+    pub fn waveform_for_channel(&mut self, channel: AudioChannel) -> anyhow::Result<Waveform> {
+        validate_channel(channel)?;
+        let waveform = self.load()?;
+        match channel {
+            AudioChannel::Mono => waveform.to_mono().map_err(Into::into),
+            AudioChannel::Left => waveform.channel(0).map_err(Into::into),
+            AudioChannel::Right => waveform.channel(1).map_err(Into::into),
+            AudioChannel::Channel(index) => waveform.channel(index).map_err(Into::into),
+        }
+    }
+
+    pub fn unload(&mut self) {
+        self.waveform = None;
+    }
+
+    #[cfg(feature = "python-bindings")]
+    pub(crate) fn begin_stream(&mut self) -> anyhow::Result<()> {
+        if self.stream_active {
+            anyhow::bail!("audio already has an active stream");
+        }
+        self.stream_active = true;
+        Ok(())
+    }
+
+    #[cfg(feature = "python-bindings")]
+    pub(crate) fn end_stream(&mut self) {
+        self.stream_active = false;
     }
 
     pub fn with_timeline(mut self, timeline: Timeline) -> Self {
@@ -120,7 +190,7 @@ impl AudioDoc {
         duration: Option<DurationMs>,
     ) -> Result<&mut Timeline, AudioTimelineError> {
         validate_channel(channel).map_err(AudioTimelineError::InvalidChannel)?;
-        let expected = Some(DurationMs(self.audio_info.timeline_duration_ms()));
+        let expected = Some(DurationMs(self.info.timeline_duration_ms()));
         let duration = match (expected, duration) {
             (None, None) => return Err(AudioTimelineError::MissingDuration),
             (None, Some(duration)) | (Some(duration), None) => duration,
@@ -178,17 +248,17 @@ impl AudioDoc {
     }
 
     pub fn timeline_duration(&self) -> Option<DurationMs> {
-        Some(DurationMs(self.audio_info.timeline_duration_ms()))
+        Some(DurationMs(self.info.timeline_duration_ms()))
     }
 
     pub fn validate(&self) -> Result<(), AudioValidationError> {
         if self.id.trim().is_empty() {
             return Err(AudioValidationError::EmptyAudioId);
         }
-        if self.audio_info.sample_rate == 0 {
+        if self.info.sample_rate == 0 {
             return Err(AudioValidationError::InvalidAudioInfoSampleRate);
         }
-        if self.audio_info.channels == 0 {
+        if self.info.channels == 0 {
             return Err(AudioValidationError::InvalidAudioInfoChannels);
         }
         let expected_duration = self.timeline_duration();
@@ -230,7 +300,7 @@ impl AudioDoc {
                     });
                 }
             }
-            for annotation in timeline.all_annotations() {
+            for annotation in timeline.all_spans() {
                 if annotation.range.end > timeline.duration {
                     return Err(AudioValidationError::AnnotationOutOfBounds {
                         channel: *channel,
@@ -240,7 +310,7 @@ impl AudioDoc {
                     });
                 }
             }
-            timeline.validate_annotations().map_err(|error| {
+            timeline.validate_spans().map_err(|error| {
                 AudioValidationError::InvalidAnnotations {
                     channel: *channel,
                     error,
@@ -295,7 +365,7 @@ pub enum AudioValidationError {
     #[error("invalid annotations on {channel:?}: {error}")]
     InvalidAnnotations {
         channel: AudioChannel,
-        error: TimelineAnnotationError,
+        error: TimelineSpanError,
     },
 }
 

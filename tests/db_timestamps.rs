@@ -1,16 +1,16 @@
 use std::time::{Duration, SystemTime};
 
-use asr_data::{AudioDb, AudioDbError, AudioDoc, AudioQuery, AudioSource};
+use asr_data::{Audio, AudioDb, AudioDbError, AudioQuery, AudioSource};
 
 #[test]
 fn filters_by_automatic_creation_and_update_times() {
-    assert_eq!(AudioDb::SCHEMA_VERSION, 8);
+    assert_eq!(AudioDb::SCHEMA_VERSION, 10);
     let path = std::env::temp_dir().join(format!(
         "asr-db-timestamps-{}.db",
         uuid::Uuid::new_v4().simple()
     ));
     let db = AudioDb::create(&path).expect("open AudioDb");
-    let mut audio = AudioDoc::with_id(
+    let mut audio = Audio::with_id(
         "timestamped",
         AudioSource::from_pcm_s16le(vec![0, 0], 1_000, 1),
     )

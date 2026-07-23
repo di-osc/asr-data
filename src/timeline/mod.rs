@@ -4,12 +4,12 @@ mod evaluation;
 mod segment;
 
 pub use annotation::{
-    AcousticEvent, Annotation, AnnotationId, AnnotationPayload, AudioId, LanguageTag, SpeakerId,
-    SpeakerPayload, TimelineId, Token, Transcription,
+    Annotation, AudioActivity, AudioId, LanguageTag, SpeakerId, SpeakerPayload, TimeSpan,
+    TimeSpanId, TimelineId, Token, Transcription,
 };
-pub use data::{AnnotationConflictKind, AnnotationOverlap, Timeline, TimelineAnnotationError};
+pub use data::{TimeSpanConflictKind, TimeSpanOverlap, Timeline, TimelineSpanError};
 pub use evaluation::{
-    SpeechEvaluation, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation,
-    TranscriptionEvaluation, TranscriptionNormalization,
+    ActivityEvaluation, ActivityEventEvaluation, TimelineEvalConfig, TimelineEvalError,
+    TimelineEvaluation, TranscriptionEvaluation, TranscriptionNormalization,
 };
-pub use segment::{TextSpan, Transcript};
+pub use segment::{Sentence, Transcript};

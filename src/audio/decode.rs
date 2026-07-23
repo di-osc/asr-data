@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 
-use super::{Audio, AudioChunk, AudioEncoding, AudioFormat, AudioInfo, AudioSource};
+use super::{AudioChunk, AudioEncoding, AudioFormat, AudioInfo, AudioSource, Waveform};
 
 pub struct DecodedAudioChunks {
     format: Box<dyn symphonia::core::formats::FormatReader>,
@@ -406,7 +406,7 @@ fn probe_audio_stream(
     })
 }
 
-pub fn decode_path_audio(path: &Path) -> Result<Audio> {
+pub fn decode_path_audio(path: &Path) -> Result<Waveform> {
     use std::fs::File;
 
     use symphonia::core::formats::probe::Hint;
@@ -427,7 +427,7 @@ pub fn decode_path_audio(path: &Path) -> Result<Audio> {
         .unwrap_or(AudioEncoding::Unknown);
     let (samples, sr, channels) = decode_audio_stream(mss, hint)?;
     Ok(
-        Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
+        Waveform::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
             AudioFormat {
                 encoding,
                 sample_rate: sr,
@@ -443,7 +443,7 @@ pub fn decode_url(url: &str) -> Result<(Vec<f32>, u32)> {
     Ok((mono.samples, mono.sample_rate))
 }
 
-pub fn decode_url_audio(url: &str) -> Result<Audio> {
+pub fn decode_url_audio(url: &str) -> Result<Waveform> {
     use std::io::Cursor;
 
     use symphonia::core::formats::probe::Hint;
@@ -473,7 +473,7 @@ pub fn decode_url_audio(url: &str) -> Result<Audio> {
 
     let (samples, sr, channels) = decode_audio_stream(mss, hint)?;
     Ok(
-        Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
+        Waveform::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
             AudioFormat {
                 encoding,
                 sample_rate: sr,
@@ -520,7 +520,7 @@ pub fn decode_base64(b64: &str) -> Result<(Vec<f32>, u32)> {
     Ok((mono.samples, mono.sample_rate))
 }
 
-pub fn decode_base64_audio(b64: &str) -> Result<Audio> {
+pub fn decode_base64_audio(b64: &str) -> Result<Waveform> {
     use base64::Engine;
 
     let data = if b64.contains(',') && b64.trim().starts_with("data:") {
@@ -538,7 +538,7 @@ pub fn decode_base64_audio(b64: &str) -> Result<Audio> {
     decode_bytes_audio(bytes)
 }
 
-pub fn decode_bytes_audio(bytes: impl Into<Vec<u8>>) -> Result<Audio> {
+pub fn decode_bytes_audio(bytes: impl Into<Vec<u8>>) -> Result<Waveform> {
     use std::io::Cursor;
 
     use symphonia::core::formats::probe::Hint;
@@ -550,7 +550,7 @@ pub fn decode_bytes_audio(bytes: impl Into<Vec<u8>>) -> Result<Audio> {
     let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
     let (samples, sr, channels) = decode_audio_stream(mss, Hint::new())?;
     Ok(
-        Audio::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
+        Waveform::try_new_with_channels(samples, sr, channels as u16)?.with_source_format(
             AudioFormat {
                 encoding,
                 sample_rate: sr,
@@ -678,7 +678,7 @@ fn decode_audio_stream(
 
 #[cfg(test)]
 mod tests {
-    use super::{Audio, decode_bytes_audio, decode_path, decode_path_audio};
+    use super::{Waveform, decode_bytes_audio, decode_path, decode_path_audio};
     use std::io::Write;
 
     #[test]
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn stereo_samples_are_downmixed_by_averaging_channels() -> anyhow::Result<()> {
-        let stereo = Audio::new_with_channels(
+        let stereo = Waveform::new_with_channels(
             vec![
                 1.0, 3.0, // frame 0
                 2.0, 4.0, // frame 1

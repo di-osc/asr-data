@@ -3,17 +3,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::db::{AudioDb as RustAudioDb, AudioDbMode, AudioQuery};
-use crate::doc::AudioDoc as RustAudioDoc;
+use crate::doc::Audio as RustAudio;
 use crate::utils::DurationMs;
 use pyo3::exceptions::{PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDateTime, PyDict};
 
 use super::common::{format_duration_ms, poisoned, py_db_error, py_error, truncate};
-use super::doc::PyAudioDoc;
+use super::doc::PyAudio;
 use super::evaluation::{PyDatasetEvaluation, eval_config};
 
-/// 持久化 AudioDoc 的 SQLite 数据库。
+/// 持久化 Audio 的 SQLite 数据库。
 ///
 /// 使用 AudioDB.create 创建新数据库，使用 AudioDB.open 打开已有数据库。
 #[pyclass(name = "AudioDB")]
@@ -26,7 +26,7 @@ struct PyAudioDb {
 #[pyclass(name = "AudioDBIterator")]
 struct PyAudioDbIterator {
     inner: Arc<Mutex<RustAudioDb>>,
-    audios: std::vec::IntoIter<RustAudioDoc>,
+    audios: std::vec::IntoIter<RustAudio>,
     after: Option<String>,
     exhausted: bool,
 }
@@ -37,10 +37,10 @@ impl PyAudioDbIterator {
         slf
     }
 
-    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyAudioDoc>> {
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyAudio>> {
         loop {
             if let Some(audio) = self.audios.next() {
-                return PyAudioDoc::from_rust(py, audio).map(Some);
+                return PyAudio::from_rust(py, audio).map(Some);
             }
             if self.exhausted {
                 return Ok(None);
@@ -59,7 +59,7 @@ impl PyAudioDbIterator {
                 self.exhausted = true;
                 return Ok(None);
             }
-            self.after = page.last().map(RustAudioDoc::audio_id);
+            self.after = page.last().map(RustAudio::audio_id);
             self.audios = page.into_iter();
         }
     }
@@ -129,10 +129,10 @@ impl PyAudioDb {
         })
     }
 
-    /// 插入一条新 AudioDoc。
+    /// 插入一条新 Audio。
     ///
     /// Args:
-    ///     audio: 要插入的完整 AudioDoc。
+    ///     audio: 要插入的完整 Audio。
     ///
     /// Returns:
     ///     None。
@@ -142,12 +142,12 @@ impl PyAudioDb {
     ///
     /// Examples:
     ///     >>> from tempfile import TemporaryDirectory
-    ///     >>> from asr_data import AudioDB, AudioDoc, AudioSource
+    ///     >>> from asr_data import AudioDB, Audio, AudioSource
     ///     >>> directory = TemporaryDirectory()
     ///     >>> db = AudioDB.create(f"{directory.name}/dataset.db")
-    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000), id="one")
+    ///     >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000), id="one")
     ///     >>> db.insert(doc)
-    fn insert(&self, py: Python<'_>, audio: PyRef<'_, PyAudioDoc>) -> PyResult<()> {
+    fn insert(&self, py: Python<'_>, audio: PyRef<'_, PyAudio>) -> PyResult<()> {
         let audio = audio.cloned_inner(py)?;
         self.inner
             .lock()
@@ -156,10 +156,10 @@ impl PyAudioDb {
             .map_err(py_error)
     }
 
-    /// 更新已有 AudioDoc，仅在内容变化时写入。
+    /// 更新已有 Audio，仅在内容变化时写入。
     ///
     /// Args:
-    ///     audio: 包含新内容的完整 AudioDoc。
+    ///     audio: 包含新内容的完整 Audio。
     ///
     /// Returns:
     ///     实际发生更新时为 True，否则为 False。
@@ -169,14 +169,14 @@ impl PyAudioDb {
     ///
     /// Examples:
     ///     >>> from tempfile import TemporaryDirectory
-    ///     >>> from asr_data import AudioDB, AudioDoc, AudioSource
+    ///     >>> from asr_data import AudioDB, Audio, AudioSource
     ///     >>> directory = TemporaryDirectory()
     ///     >>> db = AudioDB.create(f"{directory.name}/dataset.db")
-    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000), id="one")
+    ///     >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000), id="one")
     ///     >>> db.insert(doc)
     ///     >>> doc.metadata["checked"] = True
     ///     >>> changed = db.update(doc)
-    fn update(&self, py: Python<'_>, audio: PyRef<'_, PyAudioDoc>) -> PyResult<bool> {
+    fn update(&self, py: Python<'_>, audio: PyRef<'_, PyAudio>) -> PyResult<bool> {
         let audio = audio.cloned_inner(py)?;
         self.inner
             .lock()
@@ -189,7 +189,7 @@ impl PyAudioDb {
     ///
     /// Args:
     ///     limit: 最大返回数量，默认为 100。
-    ///     after: 上一页最后一个 AudioDoc ID。
+    ///     after: 上一页最后一个 Audio ID。
     ///     min_duration_ms: 可选最短时长。
     ///     max_duration_ms: 可选最长时长。
     ///     created_from: 带时区的创建时间下界。
@@ -199,17 +199,17 @@ impl PyAudioDb {
     ///     metadata: 要精确匹配的 JSON metadata。
     ///
     /// Returns:
-    ///     按 AudioDoc ID 排序的文档列表。
+    ///     按 Audio ID 排序的文档列表。
     ///
     /// Raises:
     ///     ValueError: 范围反向、datetime 无时区或 limit 无效。
     ///
     /// Examples:
     ///     >>> from tempfile import TemporaryDirectory
-    ///     >>> from asr_data import AudioDB, AudioDoc, AudioSource
+    ///     >>> from asr_data import AudioDB, Audio, AudioSource
     ///     >>> directory = TemporaryDirectory()
     ///     >>> db = AudioDB.create(f"{directory.name}/dataset.db")
-    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000), id="one")
+    ///     >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000), id="one")
     ///     >>> doc.metadata["split"] = "test"
     ///     >>> db.insert(doc)
     ///     >>> page = db.query(limit=10, metadata={"split": "test"})
@@ -238,7 +238,7 @@ impl PyAudioDb {
         updated_from: Option<&Bound<'_, PyAny>>,
         updated_until: Option<&Bound<'_, PyAny>>,
         metadata: Option<&Bound<'_, PyDict>>,
-    ) -> PyResult<Vec<PyAudioDoc>> {
+    ) -> PyResult<Vec<PyAudio>> {
         let created_from = datetime_to_system_time(created_from, "created_from")?;
         let created_until = datetime_to_system_time(created_until, "created_until")?;
         let updated_from = datetime_to_system_time(updated_from, "updated_from")?;
@@ -276,7 +276,7 @@ impl PyAudioDb {
             })
             .map_err(py_error)?
             .into_iter()
-            .map(|audio| PyAudioDoc::from_rust(py, audio))
+            .map(|audio| PyAudio::from_rust(py, audio))
             .collect()
     }
 
@@ -287,10 +287,10 @@ impl PyAudioDb {
     ///
     /// Args:
     ///     transcription: 转写来源或来源列表。
-    ///     speech: Speech 来源或来源列表。
+    ///     activity: Activity 来源或来源列表。
     ///     normalize: 是否执行中文文本标准化。
     ///     batch_size: 每批读取的文档数。
-    ///     after: 可选起始 AudioDoc ID 游标。
+    ///     after: 可选起始 Audio ID 游标。
     ///     min_duration_ms: 可选最短时长。
     ///     max_duration_ms: 可选最长时长。
     ///     created_from: 创建时间下界。
@@ -308,16 +308,16 @@ impl PyAudioDb {
     ///
     /// Examples:
     ///     >>> from tempfile import TemporaryDirectory
-    ///     >>> from asr_data import AudioDB, AudioDoc, AudioSource
+    ///     >>> from asr_data import AudioDB, Audio, AudioSource
     ///     >>> from asr_data.annotation import Transcription
     ///     >>> directory = TemporaryDirectory()
     ///     >>> db = AudioDB.create(f"{directory.name}/dataset.db")
-    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000), id="one")
+    ///     >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000), id="one")
     ///     >>> timeline = doc.timeline("mono")
-    ///     >>> _ = timeline.reference.add_transcription(
+    ///     >>> _ = timeline.reference.annotate_span(
     ///     ...     0, timeline.duration_ms, Transcription("你好")
     ///     ... )
-    ///     >>> _ = timeline.prediction.add_transcription(
+    ///     >>> _ = timeline.prediction.annotate_span(
     ///     ...     0, timeline.duration_ms, Transcription("你好"), source="qwen-asr"
     ///     ... )
     ///     >>> doc.metadata["split"] = "test"
@@ -329,7 +329,7 @@ impl PyAudioDb {
     #[pyo3(signature = (
         *,
         transcription=None,
-        speech=None,
+        activity=None,
         normalize=true,
         batch_size=100,
         after=None,
@@ -345,7 +345,7 @@ impl PyAudioDb {
     fn eval(
         &self,
         transcription: Option<&Bound<'_, PyAny>>,
-        speech: Option<&Bound<'_, PyAny>>,
+        activity: Option<&Bound<'_, PyAny>>,
         normalize: bool,
         batch_size: usize,
         after: Option<String>,
@@ -362,7 +362,7 @@ impl PyAudioDb {
                 "batch_size must be greater than zero",
             ));
         }
-        let config = eval_config(transcription, speech, normalize)?;
+        let config = eval_config(transcription, activity, normalize)?;
         let created_from = datetime_to_system_time(created_from, "created_from")?;
         let created_until = datetime_to_system_time(created_until, "created_until")?;
         let updated_from = datetime_to_system_time(updated_from, "updated_from")?;
@@ -406,7 +406,7 @@ impl PyAudioDb {
         Ok(PyDatasetEvaluation { inner })
     }
 
-    fn __getitem__(&self, py: Python<'_>, audio_id: &str) -> PyResult<PyAudioDoc> {
+    fn __getitem__(&self, py: Python<'_>, audio_id: &str) -> PyResult<PyAudio> {
         let audio = self
             .inner
             .lock()
@@ -414,7 +414,7 @@ impl PyAudioDb {
             .get(audio_id)
             .map_err(py_error)?
             .ok_or_else(|| PyKeyError::new_err(audio_id.to_string()))?;
-        PyAudioDoc::from_rust(py, audio)
+        PyAudio::from_rust(py, audio)
     }
 
     fn __contains__(&self, audio_id: &str) -> PyResult<bool> {
@@ -438,10 +438,10 @@ impl PyAudioDb {
     ///
     /// Examples:
     ///     >>> from tempfile import TemporaryDirectory
-    ///     >>> from asr_data import AudioDB, AudioDoc, AudioSource
+    ///     >>> from asr_data import AudioDB, Audio, AudioSource
     ///     >>> directory = TemporaryDirectory()
     ///     >>> db = AudioDB.create(f"{directory.name}/dataset.db")
-    ///     >>> db.insert(AudioDoc(
+    ///     >>> db.insert(Audio(
     ///     ...     AudioSource.from_pcm(b"\0\0" * 10, 16000), id="sample-1"
     ///     ... ))
     ///     >>> deleted = db.delete("sample-1")
@@ -456,7 +456,7 @@ impl PyAudioDb {
     /// 在单个事务中批量更新文档。
     ///
     /// Args:
-    ///     audios: 要更新的完整 AudioDoc 列表。
+    ///     audios: 要更新的完整 Audio 列表。
     ///
     /// Returns:
     ///     实际发生变化的文档数量。
@@ -466,18 +466,18 @@ impl PyAudioDb {
     ///
     /// Examples:
     ///     >>> from tempfile import TemporaryDirectory
-    ///     >>> from asr_data import AudioDB, AudioDoc, AudioSource
+    ///     >>> from asr_data import AudioDB, Audio, AudioSource
     ///     >>> directory = TemporaryDirectory()
     ///     >>> db = AudioDB.create(f"{directory.name}/dataset.db")
     ///     >>> docs = [
-    ///     ...     AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000), id=name)
+    ///     ...     Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000), id=name)
     ///     ...     for name in ("first", "second")
     ///     ... ]
     ///     >>> for doc in docs:
     ///     ...     db.insert(doc)
     ///     ...     doc.metadata["checked"] = True
     ///     >>> changed = db.update_many(docs)
-    fn update_many(&self, py: Python<'_>, audios: Vec<Py<PyAudioDoc>>) -> PyResult<usize> {
+    fn update_many(&self, py: Python<'_>, audios: Vec<Py<PyAudio>>) -> PyResult<usize> {
         let audios = audios
             .iter()
             .map(|audio| audio.bind(py).borrow().cloned_inner(py))

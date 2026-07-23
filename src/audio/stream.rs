@@ -182,7 +182,7 @@ impl SourceAudioStream {
         }
         let raw = match &source {
             AudioSource::PcmS16Le { .. } => {
-                RawAudioStream::Pcm(source.load()?.into_chunks_ms(chunk_size_ms)?)
+                RawAudioStream::Pcm(source.decode_waveform()?.into_chunks_ms(chunk_size_ms)?)
             }
             _ => RawAudioStream::Decoded(super::decode::stream_source(&source, chunk_size_ms)?),
         };

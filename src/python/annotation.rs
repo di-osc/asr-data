@@ -1,9 +1,64 @@
-use crate::timeline::{SpeakerPayload, Token as RustToken, Transcription as RustTranscription};
+use crate::timeline::{
+    AudioActivity as RustAudioActivity, SpeakerPayload, Token as RustToken,
+    Transcription as RustTranscription,
+};
 use crate::utils::{DurationMs, TimeRange};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use super::common::truncate;
+
+/// 音频中的一个活动事件 payload。
+///
+/// Args:
+///     event: 可选事件名称；省略时只表示存在活动。
+///
+/// Raises:
+///     ValueError: event 仅包含空白字符。
+///
+/// Examples:
+///     >>> from asr_data.annotation import AudioActivity
+///     >>> AudioActivity(event="speech").event
+///     'speech'
+///     >>> AudioActivity().event is None
+///     True
+#[pyclass(name = "AudioActivity", module = "asr_data.annotation", frozen)]
+#[derive(Clone)]
+pub(super) struct PyAudioActivity {
+    pub(super) inner: RustAudioActivity,
+}
+
+#[pymethods]
+impl PyAudioActivity {
+    #[new]
+    #[pyo3(signature = (*, event=None))]
+    fn new(event: Option<String>) -> PyResult<Self> {
+        if event
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(PyValueError::new_err(
+                "event must contain at least one non-whitespace character",
+            ));
+        }
+        Ok(Self {
+            inner: RustAudioActivity { event },
+        })
+    }
+
+    /// 可选事件名称。
+    #[getter]
+    fn event(&self) -> Option<String> {
+        self.inner.event.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.inner.event {
+            Some(event) => format!("AudioActivity(event={event:?})"),
+            None => "AudioActivity()".to_owned(),
+        }
+    }
+}
 
 /// 转写中的细粒度文本单元。
 ///
@@ -251,6 +306,7 @@ impl PySpeaker {
 }
 
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyAudioActivity>()?;
     module.add_class::<PyToken>()?;
     module.add_class::<PyTranscription>()?;
     module.add_class::<PySpeaker>()?;

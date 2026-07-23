@@ -1,10 +1,10 @@
 use asr_data::{
-    Annotation, AnnotationPayload, AudioDb, AudioFormat, AudioInfo, AudioQuery, AudioSource,
-    DatasetEvaluator, DurationMs, TimeRange, TimelineEvalConfig, Transcription,
+    Annotation, AudioActivity, AudioDb, AudioFormat, AudioInfo, AudioQuery, AudioSource,
+    DatasetEvaluator, DurationMs, TimeRange, TimeSpan, TimelineEvalConfig, Transcription,
     TranscriptionNormalization, evaluate_dataset,
 };
 
-fn doc(id: &str) -> asr_data::AudioDoc {
+fn doc(id: &str) -> asr_data::Audio {
     let source = AudioSource::PcmS16Le {
         bytes: vec![0; 32_000],
         sample_rate: 16_000,
@@ -16,21 +16,23 @@ fn doc(id: &str) -> asr_data::AudioDoc {
         frame_count: 16_000,
         source_format: AudioFormat::pcm16_mono(16_000),
     };
-    asr_data::AudioDoc::with_id_from_info(id, source, &info)
+    asr_data::Audio::with_id_from_info(id, source, &info)
 }
 
-fn transcription(text: &str, source: Option<&str>) -> Annotation {
-    Annotation::new(
+fn transcription(text: &str, source: Option<&str>) -> TimeSpan {
+    TimeSpan::new(
         TimeRange::new(DurationMs(0), DurationMs(1_000)),
-        AnnotationPayload::Transcription(Transcription::new(text)),
+        Annotation::Transcription(Transcription::new(text)),
         source.map(str::to_owned),
     )
 }
 
-fn speech(start: u64, end: u64, source: Option<&str>) -> Annotation {
-    Annotation::new(
+fn activity(start: u64, end: u64, event: Option<&str>, source: Option<&str>) -> TimeSpan {
+    TimeSpan::new(
         TimeRange::new(DurationMs(start), DurationMs(end)),
-        AnnotationPayload::Speech,
+        Annotation::Activity(AudioActivity {
+            event: event.map(str::to_owned),
+        }),
         source.map(str::to_owned),
     )
 }
@@ -48,9 +50,11 @@ fn aggregates_corpus_metrics_and_source_coverage() {
     timeline
         .push_prediction(transcription("aaaa", Some("whisper")))
         .unwrap();
-    timeline.push_reference(speech(100, 500, None)).unwrap();
     timeline
-        .push_prediction(speech(200, 600, Some("vad")))
+        .push_reference(activity(100, 500, Some("speech"), None))
+        .unwrap();
+    timeline
+        .push_prediction(activity(200, 600, Some("speech"), Some("vad")))
         .unwrap();
 
     let mut second = doc("second");
@@ -59,7 +63,9 @@ fn aggregates_corpus_metrics_and_source_coverage() {
     timeline
         .push_prediction(transcription("", Some("qwen")))
         .unwrap();
-    timeline.push_reference(speech(100, 500, None)).unwrap();
+    timeline
+        .push_reference(activity(100, 500, Some("speech"), None))
+        .unwrap();
 
     let third = doc("third");
     let docs = [first, second, third];
@@ -84,7 +90,7 @@ fn aggregates_corpus_metrics_and_source_coverage() {
     assert_eq!(whisper.missing_prediction_ids, ["second:mono"]);
     assert_eq!(whisper.coverage(), 0.5);
 
-    let vad = &result.speech["vad"];
+    let vad = &result.activity["vad"];
     assert_eq!(vad.evaluated_timelines, 1);
     assert_eq!(vad.missing_predictions, 1);
     assert_eq!(vad.true_positive_ms, 300);
@@ -92,6 +98,7 @@ fn aggregates_corpus_metrics_and_source_coverage() {
     assert_eq!(vad.false_negative_ms, 100);
     assert_eq!(vad.true_negative_ms, 500);
     assert_eq!(vad.coverage(), 0.5);
+    assert_eq!(vad.events["speech"].true_positive_ms, 300);
 }
 
 #[test]

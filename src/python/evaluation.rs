@@ -1,15 +1,16 @@
 use std::collections::BTreeMap;
 
 use crate::{
+    DatasetActivityEvaluation as RustDatasetActivityEvaluation,
+    DatasetActivityEventEvaluation as RustDatasetActivityEventEvaluation,
     DatasetEvaluation as RustDatasetEvaluation,
-    DatasetSpeechEvaluation as RustDatasetSpeechEvaluation,
     DatasetTranscriptionEvaluation as RustDatasetTranscriptionEvaluation, TimelineEvalConfig,
     TranscriptionNormalization, evaluate_dataset as rust_evaluate_dataset,
 };
 use pyo3::prelude::*;
 
 use super::common::py_error;
-use super::doc::PyAudioDoc;
+use super::doc::PyAudio;
 use super::timeline::extract_eval_sources;
 
 /// 单个 prediction source 的数据集转写聚合结果。
@@ -160,15 +161,113 @@ impl PyDatasetTranscriptionEvaluation {
     }
 }
 
-/// 单个 prediction source 的数据集 Speech 聚合结果。
-#[pyclass(name = "DatasetSpeechEvaluation", frozen)]
+/// 单个事件的数据集级区间聚合结果。
+#[pyclass(name = "DatasetActivityEventEvaluation", frozen)]
 #[derive(Clone)]
-pub(super) struct PyDatasetSpeechEvaluation {
-    inner: RustDatasetSpeechEvaluation,
+pub(super) struct PyDatasetActivityEventEvaluation {
+    inner: RustDatasetActivityEventEvaluation,
 }
 
 #[pymethods]
-impl PyDatasetSpeechEvaluation {
+impl PyDatasetActivityEventEvaluation {
+    /// 事件名称。
+    #[getter]
+    fn event(&self) -> String {
+        self.inner.event.clone()
+    }
+
+    /// 实际参与评测的文档数。
+    #[getter]
+    fn evaluated_documents(&self) -> usize {
+        self.inner.evaluated_documents
+    }
+
+    /// 实际参与评测的 timeline 数。
+    #[getter]
+    fn evaluated_timelines(&self) -> usize {
+        self.inner.evaluated_timelines
+    }
+
+    /// 累计 reference 事件时长。
+    #[getter]
+    fn reference_ms(&self) -> u64 {
+        self.inner.reference_ms
+    }
+
+    /// 累计 prediction 事件时长。
+    #[getter]
+    fn predicted_ms(&self) -> u64 {
+        self.inner.predicted_ms
+    }
+
+    /// 累计正确事件时长。
+    #[getter]
+    fn true_positive_ms(&self) -> u64 {
+        self.inner.true_positive_ms
+    }
+
+    /// 累计正确非该事件时长。
+    #[getter]
+    fn true_negative_ms(&self) -> u64 {
+        self.inner.true_negative_ms
+    }
+
+    /// 累计误报该事件时长。
+    #[getter]
+    fn false_positive_ms(&self) -> u64 {
+        self.inner.false_positive_ms
+    }
+
+    /// 累计漏报该事件时长。
+    #[getter]
+    fn false_negative_ms(&self) -> u64 {
+        self.inner.false_negative_ms
+    }
+
+    /// 总体事件 precision。
+    #[getter]
+    fn precision(&self) -> f64 {
+        self.inner.precision()
+    }
+
+    /// 总体事件 recall。
+    #[getter]
+    fn recall(&self) -> f64 {
+        self.inner.recall()
+    }
+
+    /// 总体事件 F1。
+    #[getter]
+    fn f1(&self) -> f64 {
+        self.inner.f1()
+    }
+
+    /// 总体事件 IoU。
+    #[getter]
+    fn iou(&self) -> f64 {
+        self.inner.iou()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DatasetActivityEventEvaluation(event={:?}, f1={:.4}, iou={:.4}, timelines={})",
+            self.inner.event,
+            self.inner.f1(),
+            self.inner.iou(),
+            self.inner.evaluated_timelines,
+        )
+    }
+}
+
+/// 单个 prediction source 的数据集 Activity 聚合结果。
+#[pyclass(name = "DatasetActivityEvaluation", frozen)]
+#[derive(Clone)]
+pub(super) struct PyDatasetActivityEvaluation {
+    inner: RustDatasetActivityEvaluation,
+}
+
+#[pymethods]
+impl PyDatasetActivityEvaluation {
     /// Prediction source。
     #[getter]
     fn source(&self) -> String {
@@ -187,7 +286,7 @@ impl PyDatasetSpeechEvaluation {
         self.inner.evaluated_timelines
     }
 
-    /// 缺少 Speech reference 的 timeline 数。
+    /// 缺少 Activity reference 的 timeline 数。
     #[getter]
     fn unannotated_timelines(&self) -> usize {
         self.inner.unannotated_timelines
@@ -211,61 +310,61 @@ impl PyDatasetSpeechEvaluation {
         self.inner.missing_prediction_ids.clone()
     }
 
-    /// 累计 reference 人声时长。
+    /// 累计 reference Activity 时长。
     #[getter]
     fn reference_ms(&self) -> u64 {
         self.inner.reference_ms
     }
 
-    /// 累计 prediction 人声时长。
+    /// 累计 prediction Activity 时长。
     #[getter]
     fn predicted_ms(&self) -> u64 {
         self.inner.predicted_ms
     }
 
-    /// 累计正确人声时长。
+    /// 累计正确 Activity 时长。
     #[getter]
     fn true_positive_ms(&self) -> u64 {
         self.inner.true_positive_ms
     }
 
-    /// 累计正确静音时长。
+    /// 累计正确非 Activity 时长。
     #[getter]
     fn true_negative_ms(&self) -> u64 {
         self.inner.true_negative_ms
     }
 
-    /// 累计误报人声时长。
+    /// 累计误报 Activity 时长。
     #[getter]
     fn false_positive_ms(&self) -> u64 {
         self.inner.false_positive_ms
     }
 
-    /// 累计漏报人声时长。
+    /// 累计漏报 Activity 时长。
     #[getter]
     fn false_negative_ms(&self) -> u64 {
         self.inner.false_negative_ms
     }
 
-    /// 总体 Speech precision。
+    /// 总体 Activity precision。
     #[getter]
     fn precision(&self) -> f64 {
         self.inner.precision()
     }
 
-    /// 总体 Speech recall。
+    /// 总体 Activity recall。
     #[getter]
     fn recall(&self) -> f64 {
         self.inner.recall()
     }
 
-    /// 总体 Speech F1。
+    /// 总体 Activity F1。
     #[getter]
     fn f1(&self) -> f64 {
         self.inner.f1()
     }
 
-    /// 总体 Speech IoU。
+    /// 总体 Activity IoU。
     #[getter]
     fn iou(&self) -> f64 {
         self.inner.iou()
@@ -277,14 +376,32 @@ impl PyDatasetSpeechEvaluation {
         self.inner.coverage()
     }
 
+    /// 按 event 分组的数据集事件结果。
+    #[getter]
+    fn events(&self) -> BTreeMap<String, PyDatasetActivityEventEvaluation> {
+        self.inner
+            .events
+            .iter()
+            .map(|(event, inner)| {
+                (
+                    event.clone(),
+                    PyDatasetActivityEventEvaluation {
+                        inner: inner.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "DatasetSpeechEvaluation(source={:?}, f1={:.4}, iou={:.4}, coverage={:.4}, timelines={})",
+            "DatasetActivityEvaluation(source={:?}, f1={:.4}, iou={:.4}, coverage={:.4}, timelines={}, events={})",
             self.inner.source,
             self.inner.f1(),
             self.inner.iou(),
             self.inner.coverage(),
             self.inner.evaluated_timelines,
+            self.inner.events.len(),
         )
     }
 }
@@ -327,16 +444,16 @@ impl PyDatasetEvaluation {
             .collect()
     }
 
-    /// 按 source 分组的总体 Speech 结果。
+    /// 按 source 分组的总体 Activity 结果。
     #[getter]
-    fn speech(&self) -> BTreeMap<String, PyDatasetSpeechEvaluation> {
+    fn activity(&self) -> BTreeMap<String, PyDatasetActivityEvaluation> {
         self.inner
-            .speech
+            .activity
             .iter()
             .map(|(source, inner)| {
                 (
                     source.clone(),
-                    PyDatasetSpeechEvaluation {
+                    PyDatasetActivityEvaluation {
                         inner: inner.clone(),
                     },
                 )
@@ -346,21 +463,21 @@ impl PyDatasetEvaluation {
 
     fn __repr__(&self) -> String {
         format!(
-            "DatasetEvaluation(documents={}, timelines={}, transcription={}, speech={})",
+            "DatasetEvaluation(documents={}, timelines={}, transcription={}, activity={})",
             self.inner.documents,
             self.inner.timelines,
             self.inner.transcription.len(),
-            self.inner.speech.len(),
+            self.inner.activity.len(),
         )
     }
 }
 
-/// 聚合内存中的多个 AudioDoc。
+/// 聚合内存中的多个 Audio。
 ///
 /// Args:
-///     docs: 要评测的 AudioDoc 列表。
+///     docs: 要评测的 Audio 列表。
 ///     transcription: 转写来源或来源列表；省略时自动发现。
-///     speech: Speech 来源或来源列表；省略时自动发现。
+///     activity: Activity 来源或来源列表；省略时自动发现。
 ///     normalize: 是否在计算 CER 前执行中文文本标准化。
 ///
 /// Returns:
@@ -375,28 +492,28 @@ impl PyDatasetEvaluation {
 ///     每条 timeline 独立对齐后再累计统计量，不会跨文档拼接文本。
 ///
 /// Examples:
-///     >>> from asr_data import AudioDoc, AudioSource, evaluate_dataset
+///     >>> from asr_data import Audio, AudioSource, evaluate_dataset
 ///     >>> from asr_data.annotation import Transcription
-///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000))
+///     >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
 ///     >>> timeline = doc.timeline("mono")
-///     >>> _ = timeline.reference.add_transcription(
+///     >>> _ = timeline.reference.annotate_span(
 ///     ...     0, timeline.duration_ms, Transcription("你好")
 ///     ... )
-///     >>> _ = timeline.prediction.add_transcription(
+///     >>> _ = timeline.prediction.annotate_span(
 ///     ...     0, timeline.duration_ms, Transcription("你好"), source="asr"
 ///     ... )
 ///     >>> evaluate_dataset([doc], transcription="asr").transcription["asr"].cer
 ///     0.0
 #[pyfunction(name = "evaluate_dataset")]
-#[pyo3(signature = (docs, *, transcription=None, speech=None, normalize=true))]
+#[pyo3(signature = (docs, *, transcription=None, activity=None, normalize=true))]
 fn py_evaluate_dataset(
     py: Python<'_>,
-    docs: Vec<Py<PyAudioDoc>>,
+    docs: Vec<Py<PyAudio>>,
     transcription: Option<&Bound<'_, PyAny>>,
-    speech: Option<&Bound<'_, PyAny>>,
+    activity: Option<&Bound<'_, PyAny>>,
     normalize: bool,
 ) -> PyResult<PyDatasetEvaluation> {
-    let config = eval_config(transcription, speech, normalize)?;
+    let config = eval_config(transcription, activity, normalize)?;
     let docs = docs
         .iter()
         .map(|doc| doc.bind(py).borrow().cloned_inner(py))
@@ -407,12 +524,12 @@ fn py_evaluate_dataset(
 
 pub(super) fn eval_config(
     transcription: Option<&Bound<'_, PyAny>>,
-    speech: Option<&Bound<'_, PyAny>>,
+    activity: Option<&Bound<'_, PyAny>>,
     normalize: bool,
 ) -> PyResult<TimelineEvalConfig> {
     Ok(TimelineEvalConfig {
         transcription_sources: extract_eval_sources(transcription, "transcription")?,
-        speech_sources: extract_eval_sources(speech, "speech")?,
+        activity_sources: extract_eval_sources(activity, "activity")?,
         transcription_normalization: if normalize {
             TranscriptionNormalization::ChineseTn
         } else {
@@ -430,7 +547,8 @@ fn normalization_name(normalization: TranscriptionNormalization) -> &'static str
 
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDatasetTranscriptionEvaluation>()?;
-    module.add_class::<PyDatasetSpeechEvaluation>()?;
+    module.add_class::<PyDatasetActivityEventEvaluation>()?;
+    module.add_class::<PyDatasetActivityEvaluation>()?;
     module.add_class::<PyDatasetEvaluation>()?;
     module.add_function(wrap_pyfunction!(py_evaluate_dataset, module)?)?;
     Ok(())
