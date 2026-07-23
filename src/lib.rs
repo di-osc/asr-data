@@ -3,6 +3,7 @@
 pub mod audio;
 mod db;
 mod doc;
+mod evaluation;
 mod metrics;
 #[cfg(feature = "python-bindings")]
 mod python;
@@ -16,6 +17,10 @@ pub use db::{
     MAX_QUERY_LIMIT, read_audio_db_info,
 };
 pub use doc::{AudioChannelError, AudioDoc, AudioTimelineError, AudioValidationError};
+pub use evaluation::{
+    DatasetEvalError, DatasetEvaluation, DatasetEvaluator, DatasetSpeechEvaluation,
+    DatasetTranscriptionEvaluation, evaluate_dataset,
+};
 pub use metrics::{CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh};
 pub use timeline::{
     AcousticEvent, Annotation, AnnotationConflictKind, AnnotationId, AnnotationOverlap,

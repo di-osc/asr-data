@@ -16,6 +16,7 @@ use super::common::{
     encoding_name, format_duration_ms, poisoned, py_error, summarize_url, truncate,
 };
 
+/// 音频编码、采样率和声道数组成的格式信息。
 #[pyclass(name = "AudioFormat", frozen)]
 #[derive(Clone)]
 pub(super) struct PyAudioFormat {
@@ -24,16 +25,19 @@ pub(super) struct PyAudioFormat {
 
 #[pymethods]
 impl PyAudioFormat {
+    /// 编码名称，例如 ``"wav"`` 或 ``"pcm_s16le"``。
     #[getter]
     fn encoding(&self) -> String {
         encoding_name(&self.inner.encoding)
     }
 
+    /// 每秒每个声道的采样帧数。
     #[getter]
     fn sample_rate(&self) -> u32 {
         self.inner.sample_rate
     }
 
+    /// 声道数。
     #[getter]
     fn channels(&self) -> u16 {
         self.inner.channels
@@ -58,6 +62,7 @@ impl PyAudioFormat {
     }
 }
 
+/// 不包含解码采样的音频元信息。
 #[pyclass(name = "AudioInfo", frozen)]
 #[derive(Clone)]
 pub(super) struct PyAudioInfo {
@@ -72,26 +77,31 @@ pub(super) fn py_audio_info_from_rust(info: &RustAudioInfo) -> PyAudioInfo {
 
 #[pymethods]
 impl PyAudioInfo {
+    /// 原始采样率。
     #[getter]
     fn sample_rate(&self) -> u32 {
         self.inner.sample_rate
     }
 
+    /// 原始声道数。
     #[getter]
     fn channels(&self) -> u16 {
         self.inner.channels
     }
 
+    /// 每个声道的有效采样帧数。
     #[getter]
     fn frame_count(&self) -> u64 {
         self.inner.frame_count
     }
 
+    /// 根据帧数和采样率计算的时长，单位为毫秒。
     #[getter]
     fn duration_ms(&self) -> f64 {
         self.inner.duration_ms()
     }
 
+    /// 原始音频格式。
     #[getter]
     fn source_format(&self) -> PyAudioFormat {
         PyAudioFormat {
@@ -111,6 +121,22 @@ impl PyAudioInfo {
     }
 }
 
+/// 已解码到内存中的音频波形。
+///
+/// Args:
+///     samples: 一维 float32 兼容数组；多声道样本按帧交错排列。
+///     sample_rate: 每秒每个声道的采样帧数。
+///     channels: 声道数，默认为 1。
+///
+/// Raises:
+///     ValueError: 采样率或声道数无效，或者样本数不能整除声道数。
+///
+/// Examples:
+///     >>> import numpy as np
+///     >>> from asr_data import Audio
+///     >>> audio = Audio(np.zeros(16000, dtype=np.float32), 16000)
+///     >>> audio.duration_ms
+///     1000.0
 #[pyclass(name = "Audio")]
 pub(super) struct PyAudio {
     inner: RustAudio,
@@ -175,6 +201,25 @@ impl PyAudio {
         }
     }
 
+    /// 从本地文件加载并解码音频。
+    ///
+    /// Args:
+    ///     path: 本地音频文件路径。
+    ///
+    /// Returns:
+    ///     解码后的完整 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: 文件无法读取或音频无法解码。
+    ///
+    /// Examples:
+    ///     >>> from tempfile import NamedTemporaryFile
+    ///     >>> from urllib.request import urlretrieve
+    ///     >>> from asr_data import Audio
+    ///     >>> url = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
+    ///     >>> with NamedTemporaryFile(suffix=".wav") as file:
+    ///     ...     _ = urlretrieve(url, file.name)
+    ///     ...     audio = Audio.from_path(file.name)
     #[staticmethod]
     fn from_path(py: Python<'_>, path: String) -> PyResult<Self> {
         py.detach(move || RustAudio::from_path(path))
@@ -182,6 +227,22 @@ impl PyAudio {
             .map_err(py_error)
     }
 
+    /// 从 HTTP 或 HTTPS URL 下载并解码音频。
+    ///
+    /// Args:
+    ///     url: 音频 URL。
+    ///
+    /// Returns:
+    ///     解码后的完整 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: 请求失败或音频无法解码。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import Audio
+    ///     >>> audio = Audio.from_url(
+    ///     ...     "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
+    ///     ... )
     #[staticmethod]
     fn from_url(py: Python<'_>, url: String) -> PyResult<Self> {
         py.detach(move || RustAudio::from_url(url))
@@ -189,6 +250,22 @@ impl PyAudio {
             .map_err(py_error)
     }
 
+    /// 从 WAV、MP3 等编码字节解码音频。
+    ///
+    /// Args:
+    ///     data: 包含音频容器或编码信息的字节。
+    ///
+    /// Returns:
+    ///     解码后的完整 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: 字节不是受支持的音频。
+    ///
+    /// Examples:
+    ///     >>> from urllib.request import urlopen
+    ///     >>> from asr_data import Audio
+    ///     >>> url = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
+    ///     >>> audio = Audio.from_bytes(urlopen(url).read())
     #[staticmethod]
     fn from_bytes(py: Python<'_>, data: &Bound<'_, PyBytes>) -> PyResult<Self> {
         let bytes = data.as_bytes().to_vec();
@@ -197,6 +274,24 @@ impl PyAudio {
             .map_err(py_error)
     }
 
+    /// 从 base64 编码的音频字符串解码音频。
+    ///
+    /// Args:
+    ///     data: base64 字符串或 data URL。
+    ///
+    /// Returns:
+    ///     解码后的完整 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: base64 或音频编码无效。
+    ///
+    /// Examples:
+    ///     >>> import base64
+    ///     >>> from urllib.request import urlopen
+    ///     >>> from asr_data import Audio
+    ///     >>> url = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
+    ///     >>> data = base64.b64encode(urlopen(url).read()).decode()
+    ///     >>> audio = Audio.from_base64(data)
     #[staticmethod]
     fn from_base64(py: Python<'_>, data: String) -> PyResult<Self> {
         py.detach(move || RustAudio::from_base64(data))
@@ -204,6 +299,23 @@ impl PyAudio {
             .map_err(py_error)
     }
 
+    /// 从 PCM S16LE 原始字节创建音频。
+    ///
+    /// Args:
+    ///     data: 按帧交错的有符号 16 位小端 PCM 字节。
+    ///     sample_rate: 采样率。
+    ///     channels: 声道数，默认为 1。
+    ///
+    /// Returns:
+    ///     转换为 float32 样本的 Audio。
+    ///
+    /// Raises:
+    ///     ValueError: PCM 参数或帧长度无效。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import Audio
+    ///     >>> Audio.from_pcm(b"\0\0" * 16000, 16000).duration_ms
+    ///     1000.0
     #[staticmethod]
     #[pyo3(signature = (data, sample_rate, channels=1))]
     fn from_pcm(
@@ -218,6 +330,22 @@ impl PyAudio {
             .map_err(py_error)
     }
 
+    /// 加载任意 AudioSource 并解码完整音频。
+    ///
+    /// Args:
+    ///     source: 要加载的 AudioSource。
+    ///
+    /// Returns:
+    ///     解码后的完整 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: 来源无法读取或解码。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import Audio, AudioSource
+    ///     >>> source = AudioSource.from_pcm(b"\0\0" * 10, 16000)
+    ///     >>> Audio.from_source(source).frame_count
+    ///     10
     #[staticmethod]
     fn from_source(py: Python<'_>, source: &Bound<'_, PyAny>) -> PyResult<Self> {
         let source = rust_source_from_py(source)?;
@@ -236,16 +364,19 @@ impl PyAudio {
         spawn_source_aload(rust_source_from_py(source)?, None, None)
     }
 
+    /// 当前采样率。
     #[getter]
     fn sample_rate(&self) -> u32 {
         self.inner.sample_rate
     }
 
+    /// 当前声道数。
     #[getter]
     fn channels(&self) -> u16 {
         self.inner.channels
     }
 
+    /// 每个声道的采样帧数。
     #[getter]
     fn frame_count(&self, py: Python<'_>) -> usize {
         self.numpy_owner.as_ref().map_or_else(
@@ -254,11 +385,13 @@ impl PyAudio {
         )
     }
 
+    /// 音频时长，单位为毫秒。
     #[getter]
     fn duration_ms(&self, py: Python<'_>) -> f64 {
         self.frame_count(py) as f64 * 1000.0 / f64::from(self.inner.sample_rate)
     }
 
+    /// 解码前检测到的可选原始格式。
     #[getter]
     fn source_format(&self) -> Option<PyAudioFormat> {
         self.inner
@@ -267,6 +400,7 @@ impl PyAudio {
             .map(|inner| PyAudioFormat { inner })
     }
 
+    /// 一维只读 NumPy float32 样本视图。
     #[getter]
     #[allow(unsafe_code)]
     fn samples<'py>(this: Bound<'py, Self>) -> PyResult<Bound<'py, PyArray1<f32>>> {
@@ -287,7 +421,25 @@ impl PyAudio {
         Ok(array)
     }
 
-    /// Displays an IPython audio player for an optional millisecond range.
+    /// 在 Jupyter 中显示音频播放器。
+    ///
+    /// Args:
+    ///     start_ms: 可选播放起始时间。
+    ///     end_ms: 可选播放结束时间。
+    ///     autoplay: 是否自动播放。
+    ///
+    /// Returns:
+    ///     None；播放器直接发送到当前 Jupyter 输出。
+    ///
+    /// Raises:
+    ///     ValueError: 结束时间早于起始时间。
+    ///     AsrDataError: IPython 不可用。
+    ///
+    /// Examples:
+    ///     >>> import numpy as np
+    ///     >>> from asr_data import Audio
+    ///     >>> audio = Audio(np.zeros(16000), 16000)
+    ///     >>> audio.display(start_ms=0, end_ms=500)
     #[pyo3(signature = (start_ms=None, end_ms=None, autoplay=false))]
     fn display(
         &self,
@@ -337,18 +489,60 @@ impl PyAudio {
         Ok(())
     }
 
+    /// 混合所有声道并返回新的单声道 Audio。
+    ///
+    /// Returns:
+    ///     不修改原对象的新 Audio。
+    ///
+    /// Examples:
+    ///     >>> import numpy as np
+    ///     >>> from asr_data import Audio
+    ///     >>> Audio(np.zeros(20), 16000, 2).to_mono().channels
+    ///     1
     fn to_mono(&self, py: Python<'_>) -> PyResult<Self> {
         Ok(Self::from_rust(
             self.materialize(py)?.to_mono().map_err(py_error)?,
         ))
     }
 
+    /// 提取指定声道并返回新的单声道 Audio。
+    ///
+    /// Args:
+    ///     index: 从 0 开始的声道索引。
+    ///
+    /// Returns:
+    ///     提取出的单声道 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: 索引超出范围。
+    ///
+    /// Examples:
+    ///     >>> import numpy as np
+    ///     >>> from asr_data import Audio
+    ///     >>> Audio(np.zeros(20), 16000, 2).channel(0).channels
+    ///     1
     fn channel(&self, py: Python<'_>, index: u16) -> PyResult<Self> {
         Ok(Self::from_rust(
             self.materialize(py)?.channel(index).map_err(py_error)?,
         ))
     }
 
+    /// 重采样并返回新的 Audio。
+    ///
+    /// Args:
+    ///     sample_rate: 目标采样率。
+    ///
+    /// Returns:
+    ///     不修改原对象的新 Audio。
+    ///
+    /// Raises:
+    ///     ValueError: 目标采样率为零。
+    ///
+    /// Examples:
+    ///     >>> import numpy as np
+    ///     >>> from asr_data import Audio
+    ///     >>> Audio(np.zeros(160), 16000).resample(8000).sample_rate
+    ///     8000
     fn resample(&self, py: Python<'_>, sample_rate: u32) -> PyResult<Self> {
         let waveform = self.materialize(py)?;
         py.detach(move || waveform.resample(sample_rate))
@@ -356,12 +550,42 @@ impl PyAudio {
             .map_err(py_error)
     }
 
+    /// 按半开毫秒范围截取并返回新的 Audio。
+    ///
+    /// Args:
+    ///     start_ms: 起始时间，包含。
+    ///     end_ms: 结束时间，不包含。
+    ///
+    /// Returns:
+    ///     截取后的新 Audio。
+    ///
+    /// Examples:
+    ///     >>> import numpy as np
+    ///     >>> from asr_data import Audio
+    ///     >>> Audio(np.zeros(16000), 16000).slice_ms(0, 500).duration_ms
+    ///     500.0
     fn slice_ms(&self, py: Python<'_>, start_ms: u64, end_ms: u64) -> PyResult<Self> {
         Ok(Self::from_rust(
             self.materialize(py)?.slice_ms(start_ms, end_ms),
         ))
     }
 
+    /// 在低能量位置拆分为不超过目标时长的片段。
+    ///
+    /// Args:
+    ///     max_duration_ms: 每段的最大目标时长。
+    ///
+    /// Returns:
+    ///     保持原顺序的 Audio 列表。
+    ///
+    /// Raises:
+    ///     ValueError: max_duration_ms 为零。
+    ///
+    /// Examples:
+    ///     >>> import numpy as np
+    ///     >>> from asr_data import Audio
+    ///     >>> len(Audio(np.zeros(32000), 16000).split_at_low_energy(1000))
+    ///     3
     fn split_at_low_energy(&self, py: Python<'_>, max_duration_ms: u64) -> PyResult<Vec<Self>> {
         self.materialize(py)?
             .split_at_low_energy(DurationMs(max_duration_ms))
@@ -593,11 +817,13 @@ fn spawn_source_astream(
     })
 }
 
+/// 同步产生 AudioChunk 的音频流迭代器。
 #[pyclass(name = "AudioIterator", unsendable)]
 struct PyAudioIterator {
     chunks: crate::audio::stream::SourceAudioStream,
 }
 
+/// 流式音频中的一个连续解码片段。
 #[pyclass(name = "AudioChunk")]
 #[derive(Clone)]
 struct PyAudioChunk {
@@ -606,36 +832,43 @@ struct PyAudioChunk {
 
 #[pymethods]
 impl PyAudioChunk {
+    /// 当前采样率。
     #[getter]
     fn sample_rate(&self) -> u32 {
         self.inner.sample_rate
     }
 
+    /// 当前声道数。
     #[getter]
     fn channels(&self) -> u16 {
         self.inner.channels
     }
 
+    /// 片段相对来源起点的偏移，单位为毫秒。
     #[getter]
     fn offset_ms(&self) -> u64 {
         self.inner.offset_ms
     }
 
+    /// 是否为流中的最后一个片段。
     #[getter]
     fn is_final(&self) -> bool {
         self.inner.is_final
     }
 
+    /// 每个声道的采样帧数。
     #[getter]
     fn frame_count(&self) -> usize {
         self.inner.frame_count()
     }
 
+    /// 片段时长，单位为毫秒。
     #[getter]
     fn duration_ms(&self) -> f64 {
         self.inner.duration_ms()
     }
 
+    /// 解码前检测到的可选原始格式。
     #[getter]
     fn source_format(&self) -> Option<PyAudioFormat> {
         self.inner
@@ -644,6 +877,7 @@ impl PyAudioChunk {
             .map(|inner| PyAudioFormat { inner })
     }
 
+    /// 一维只读 NumPy float32 样本视图。
     #[getter]
     #[allow(unsafe_code)]
     fn samples<'py>(this: Bound<'py, Self>) -> PyResult<Bound<'py, PyArray1<f32>>> {
@@ -656,6 +890,16 @@ impl PyAudioChunk {
         Ok(array)
     }
 
+    /// 混合所有声道并返回新的单声道片段。
+    ///
+    /// Returns:
+    ///     不修改原片段的新 AudioChunk。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> chunk = next(AudioSource.from_pcm(b"\0\0" * 10, 16000).stream())
+    ///     >>> chunk.to_mono().channels
+    ///     1
     fn to_mono(&self) -> PyResult<Self> {
         self.inner
             .to_mono()
@@ -663,6 +907,22 @@ impl PyAudioChunk {
             .map_err(py_error)
     }
 
+    /// 提取指定声道并返回新的单声道片段。
+    ///
+    /// Args:
+    ///     index: 从 0 开始的声道索引。
+    ///
+    /// Returns:
+    ///     提取出的 AudioChunk。
+    ///
+    /// Raises:
+    ///     AsrDataError: 索引超出范围。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> source = AudioSource.from_pcm(b"\0\0\0\0" * 10, 16000, 2)
+    ///     >>> next(source.stream()).channel(0).channels
+    ///     1
     fn channel(&self, index: u16) -> PyResult<Self> {
         self.inner
             .channel(index)
@@ -670,6 +930,22 @@ impl PyAudioChunk {
             .map_err(py_error)
     }
 
+    /// 重采样并返回新的片段。
+    ///
+    /// Args:
+    ///     sample_rate: 目标采样率。
+    ///
+    /// Returns:
+    ///     重采样后的 AudioChunk。
+    ///
+    /// Raises:
+    ///     ValueError: 目标采样率为零。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> chunk = next(AudioSource.from_pcm(b"\0\0" * 100, 16000).stream())
+    ///     >>> chunk.resample(8000).sample_rate
+    ///     8000
     fn resample(&self, py: Python<'_>, sample_rate: u32) -> PyResult<Self> {
         let chunk = self.inner.clone();
         py.detach(move || chunk.resample(sample_rate))
@@ -677,6 +953,20 @@ impl PyAudioChunk {
             .map_err(py_error)
     }
 
+    /// 按相对片段起点的半开毫秒范围截取片段。
+    ///
+    /// Args:
+    ///     start_ms: 相对起始时间。
+    ///     end_ms: 相对结束时间。
+    ///
+    /// Returns:
+    ///     截取后的 AudioChunk。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> chunk = next(AudioSource.from_pcm(b"\0\0" * 16000, 16000).stream())
+    ///     >>> chunk.slice_ms(0, 50).duration_ms
+    ///     50.0
     fn slice_ms(&self, start_ms: u64, end_ms: u64) -> Self {
         Self {
             inner: self.inner.slice_ms(start_ms, end_ms),
@@ -741,6 +1031,16 @@ fn load_source(
         .map_err(py_error)
 }
 
+/// 尚未解码的音频来源描述。
+///
+/// AudioSource 保留路径、URL、编码字节、base64 或 PCM 参数；真正的 I/O
+/// 和解码发生在 probe、load 或 stream。
+///
+/// Examples:
+///     >>> from asr_data import AudioSource
+///     >>> source = AudioSource.from_pcm(b"\0\0" * 16000, sample_rate=16000)
+///     >>> source.kind
+///     'pcm'
 #[pyclass(name = "AudioSource", frozen)]
 #[derive(Clone)]
 struct PyAudioSource {
@@ -749,6 +1049,18 @@ struct PyAudioSource {
 
 #[pymethods]
 impl PyAudioSource {
+    /// 从本地文件路径创建来源。
+    ///
+    /// Args:
+    ///     path: 相对或绝对文件路径。
+    ///
+    /// Returns:
+    ///     尚未加载的 AudioSource。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> AudioSource.from_path("audio.wav").path
+    ///     'audio.wav'
     #[staticmethod]
     fn from_path(path: String) -> Self {
         Self {
@@ -756,6 +1068,18 @@ impl PyAudioSource {
         }
     }
 
+    /// 从 HTTP 或 HTTPS URL 创建来源。
+    ///
+    /// Args:
+    ///     url: 音频地址。
+    ///
+    /// Returns:
+    ///     尚未发起请求的 AudioSource。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> AudioSource.from_url("https://example.com/a.wav").kind
+    ///     'url'
     #[staticmethod]
     fn from_url(url: String) -> Self {
         Self {
@@ -763,6 +1087,18 @@ impl PyAudioSource {
         }
     }
 
+    /// 从 WAV、MP3 等编码音频字节创建来源。
+    ///
+    /// Args:
+    ///     data: 带容器或编码信息的音频字节。
+    ///
+    /// Returns:
+    ///     保存编码字节的 AudioSource。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> AudioSource.from_bytes(b"RIFF").kind
+    ///     'bytes'
     #[staticmethod]
     fn from_bytes(data: &Bound<'_, PyBytes>) -> Self {
         Self {
@@ -770,6 +1106,18 @@ impl PyAudioSource {
         }
     }
 
+    /// 从 base64 字符串或 data URL 创建来源。
+    ///
+    /// Args:
+    ///     data: base64 内容。
+    ///
+    /// Returns:
+    ///     保存原字符串的 AudioSource。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> AudioSource.from_base64("UklGRg==").kind
+    ///     'base64'
     #[staticmethod]
     fn from_base64(data: String) -> Self {
         Self {
@@ -777,6 +1125,23 @@ impl PyAudioSource {
         }
     }
 
+    /// 从 PCM S16LE 原始字节创建来源。
+    ///
+    /// Args:
+    ///     data: 按帧交错的有符号 16 位小端字节。
+    ///     sample_rate: 采样率。
+    ///     channels: 声道数，默认为 1。
+    ///
+    /// Returns:
+    ///     保存 PCM 数据和格式参数的 AudioSource。
+    ///
+    /// Raises:
+    ///     ValueError: 采样率、声道数或 PCM 帧长度无效。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> AudioSource.from_pcm(b"\0\0" * 10, 16000).channels
+    ///     1
     #[staticmethod]
     #[pyo3(signature = (data, sample_rate, channels=1))]
     fn from_pcm(data: &Bound<'_, PyBytes>, sample_rate: u32, channels: u16) -> Self {
@@ -785,6 +1150,7 @@ impl PyAudioSource {
         }
     }
 
+    /// 来源类型：path、url、bytes、base64 或 pcm。
     #[getter]
     fn kind(&self) -> &'static str {
         match &self.inner {
@@ -796,6 +1162,7 @@ impl PyAudioSource {
         }
     }
 
+    /// Path 来源的路径，否则为 None。
     #[getter]
     fn path(&self) -> Option<String> {
         match &self.inner {
@@ -804,6 +1171,7 @@ impl PyAudioSource {
         }
     }
 
+    /// URL 来源的地址，否则为 None。
     #[getter]
     fn url(&self) -> Option<String> {
         match &self.inner {
@@ -812,6 +1180,7 @@ impl PyAudioSource {
         }
     }
 
+    /// 编码字节来源的内容，否则为 None。
     #[getter]
     fn bytes(&self, py: Python<'_>) -> Option<Py<PyBytes>> {
         match &self.inner {
@@ -820,6 +1189,7 @@ impl PyAudioSource {
         }
     }
 
+    /// base64 来源的内容，否则为 None。
     #[getter]
     fn base64(&self) -> Option<String> {
         match &self.inner {
@@ -828,6 +1198,7 @@ impl PyAudioSource {
         }
     }
 
+    /// PCM 来源的原始字节，否则为 None。
     #[getter]
     fn pcm(&self, py: Python<'_>) -> Option<Py<PyBytes>> {
         match &self.inner {
@@ -836,6 +1207,7 @@ impl PyAudioSource {
         }
     }
 
+    /// PCM 来源的采样率，否则为 None。
     #[getter]
     fn sample_rate(&self) -> Option<u32> {
         match &self.inner {
@@ -844,6 +1216,7 @@ impl PyAudioSource {
         }
     }
 
+    /// PCM 来源的声道数，否则为 None。
     #[getter]
     fn channels(&self) -> Option<u16> {
         match &self.inner {
@@ -853,6 +1226,23 @@ impl PyAudioSource {
     }
 
     #[pyo3(signature = (*, sample_rate=None, mono=None))]
+    /// 同步加载并解码完整音频。
+    ///
+    /// Args:
+    ///     sample_rate: 可选目标采样率。
+    ///     mono: 设为 True 时混合为单声道。
+    ///
+    /// Returns:
+    ///     解码后的完整 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: 来源无法读取、解码或转换。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> source = AudioSource.from_pcm(b"\0\0" * 16000, 16000)
+    ///     >>> source.load().duration_ms
+    ///     1000.0
     fn load(
         &self,
         py: Python<'_>,
@@ -862,6 +1252,18 @@ impl PyAudioSource {
         load_source(py, self.inner.clone(), sample_rate, mono)
     }
 
+    /// 读取格式和时长信息，但不解码为浮点采样。
+    ///
+    /// Returns:
+    ///     不包含采样数据的 AudioInfo。
+    ///
+    /// Raises:
+    ///     AsrDataError: 来源无法读取或探测。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> AudioSource.from_pcm(b"\0\0" * 16000, 16000).probe().duration_ms
+    ///     1000.0
     fn probe(&self, py: Python<'_>) -> PyResult<PyAudioInfo> {
         let source = self.inner.clone();
         py.detach(move || source.probe())
@@ -874,6 +1276,25 @@ impl PyAudioSource {
     }
 
     #[pyo3(signature = (chunk_size_ms=100, *, sample_rate=None, mono=None))]
+    /// 同步流式解码并返回 AudioChunk 迭代器。
+    ///
+    /// Args:
+    ///     chunk_size_ms: 每个片段的目标时长。
+    ///     sample_rate: 可选目标采样率。
+    ///     mono: 设为 True 时混合为单声道。
+    ///
+    /// Returns:
+    ///     按时间顺序产生 AudioChunk 的迭代器。
+    ///
+    /// Raises:
+    ///     ValueError: chunk_size_ms 为零。
+    ///     AsrDataError: 来源无法读取、解码或转换。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> source = AudioSource.from_pcm(b"\0\0" * 16000, 16000)
+    ///     >>> [chunk.is_final for chunk in source.stream(500)]
+    ///     [False, True]
     fn stream(
         &self,
         py: Python<'_>,

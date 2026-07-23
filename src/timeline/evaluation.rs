@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use thiserror::Error;
 
 use super::{Annotation, AnnotationPayload, Timeline};
@@ -15,8 +17,12 @@ pub enum TranscriptionNormalization {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TimelineEvalConfig {
-    pub transcription_source: Option<String>,
-    pub speech_source: Option<String>,
+    /// `None` disables this task when another task is explicitly selected.
+    /// An empty vector selects every available source.
+    pub transcription_sources: Option<Vec<String>>,
+    /// `None` disables this task when another task is explicitly selected.
+    /// An empty vector selects every available source.
+    pub speech_sources: Option<Vec<String>>,
     pub transcription_normalization: TranscriptionNormalization,
 }
 
@@ -26,12 +32,40 @@ impl TimelineEvalConfig {
     }
 
     pub fn with_transcription(mut self, source: impl Into<String>) -> Self {
-        self.transcription_source = Some(source.into());
+        self.transcription_sources = Some(vec![source.into()]);
+        self
+    }
+
+    pub fn with_transcriptions<I, S>(mut self, sources: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.transcription_sources = Some(sources.into_iter().map(Into::into).collect());
+        self
+    }
+
+    pub fn with_all_transcriptions(mut self) -> Self {
+        self.transcription_sources = Some(Vec::new());
         self
     }
 
     pub fn with_speech(mut self, source: impl Into<String>) -> Self {
-        self.speech_source = Some(source.into());
+        self.speech_sources = Some(vec![source.into()]);
+        self
+    }
+
+    pub fn with_speech_sources<I, S>(mut self, sources: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.speech_sources = Some(sources.into_iter().map(Into::into).collect());
+        self
+    }
+
+    pub fn with_all_speech(mut self) -> Self {
+        self.speech_sources = Some(Vec::new());
         self
     }
 
@@ -46,8 +80,8 @@ impl TimelineEvalConfig {
 
 #[derive(Debug, Error)]
 pub enum TimelineEvalError {
-    #[error("at least one evaluation source must be provided")]
-    NoTaskRequested,
+    #[error("the timeline has no reference annotations with matching prediction sources")]
+    NoEvaluableAnnotations,
     #[error("{kind} reference annotations are missing")]
     MissingReference { kind: &'static str },
     #[error("{kind} predictions from source {prediction_source:?} are missing")]
@@ -61,8 +95,8 @@ pub enum TimelineEvalError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TimelineEvaluation {
-    pub transcription: Option<TranscriptionEvaluation>,
-    pub speech: Option<SpeechEvaluation>,
+    pub transcription: BTreeMap<String, TranscriptionEvaluation>,
+    pub speech: BTreeMap<String, SpeechEvaluation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,23 +188,73 @@ impl Timeline {
         &self,
         config: &TimelineEvalConfig,
     ) -> Result<TimelineEvaluation, TimelineEvalError> {
-        if config.transcription_source.is_none() && config.speech_source.is_none() {
-            return Err(TimelineEvalError::NoTaskRequested);
+        let auto_all = config.transcription_sources.is_none() && config.speech_sources.is_none();
+        let transcription_selection = if auto_all {
+            Some(&[][..])
+        } else {
+            config.transcription_sources.as_deref()
+        };
+        let speech_selection = if auto_all {
+            Some(&[][..])
+        } else {
+            config.speech_sources.as_deref()
+        };
+
+        let mut transcription = BTreeMap::new();
+        if let Some(selection) = transcription_selection {
+            let has_reference = self.reference.iter().any(is_final_text_annotation);
+            if has_reference {
+                for source in selected_sources(selection, self.transcription_sources()) {
+                    let evaluation =
+                        self.evaluate_transcription(&source, config.transcription_normalization)?;
+                    transcription.insert(source, evaluation);
+                }
+            } else if !selection.is_empty() {
+                return Err(TimelineEvalError::MissingReference {
+                    kind: "transcription",
+                });
+            }
         }
-        let transcription = config
-            .transcription_source
-            .as_deref()
-            .map(|source| self.evaluate_transcription(source, config.transcription_normalization))
-            .transpose()?;
-        let speech = config
-            .speech_source
-            .as_deref()
-            .map(|source| self.evaluate_speech(source))
-            .transpose()?;
+
+        let mut speech = BTreeMap::new();
+        if let Some(selection) = speech_selection {
+            let has_reference = self
+                .reference
+                .iter()
+                .any(|annotation| matches!(annotation.payload, AnnotationPayload::Speech));
+            if has_reference {
+                for source in selected_sources(selection, self.speech_sources()) {
+                    let evaluation = self.evaluate_speech(&source)?;
+                    speech.insert(source, evaluation);
+                }
+            } else if !selection.is_empty() {
+                return Err(TimelineEvalError::MissingReference { kind: "speech" });
+            }
+        }
+
+        if transcription.is_empty() && speech.is_empty() {
+            return Err(TimelineEvalError::NoEvaluableAnnotations);
+        }
         Ok(TimelineEvaluation {
             transcription,
             speech,
         })
+    }
+
+    pub fn transcription_sources(&self) -> BTreeSet<String> {
+        self.prediction
+            .iter()
+            .filter(|annotation| is_final_text_annotation(annotation))
+            .filter_map(|annotation| annotation.source.clone())
+            .collect()
+    }
+
+    pub fn speech_sources(&self) -> BTreeSet<String> {
+        self.prediction
+            .iter()
+            .filter(|annotation| matches!(annotation.payload, AnnotationPayload::Speech))
+            .filter_map(|annotation| annotation.source.clone())
+            .collect()
     }
 
     fn evaluate_transcription(
@@ -246,6 +330,14 @@ impl Timeline {
             false_positive_ms,
             false_negative_ms,
         })
+    }
+}
+
+fn selected_sources(selection: &[String], available: BTreeSet<String>) -> BTreeSet<String> {
+    if selection.is_empty() {
+        available
+    } else {
+        selection.iter().cloned().collect()
     }
 }
 
@@ -341,6 +433,7 @@ mod tests {
             .evaluate(&TimelineEvalConfig::new().with_speech("vad"))
             .unwrap()
             .speech
+            .remove("vad")
             .unwrap();
         assert_eq!(result.reference_ms, 500);
         assert_eq!(result.predicted_ms, 500);
@@ -376,10 +469,59 @@ mod tests {
         let config = TimelineEvalConfig::new()
             .with_transcription("asr")
             .with_transcription_normalization(TranscriptionNormalization::None);
-        let result = timeline.evaluate(&config).unwrap().transcription.unwrap();
+        let result = timeline
+            .evaluate(&config)
+            .unwrap()
+            .transcription
+            .remove("asr")
+            .unwrap();
         assert_eq!(result.stats.substitutions, 1);
         assert_eq!(result.matches(), 3);
         assert_eq!(result.stats.cer(), 0.25);
         assert!(!result.exact_match());
+    }
+
+    #[test]
+    fn automatically_evaluates_all_sources_with_references() {
+        use crate::timeline::{SpeakerPayload, Transcription};
+
+        let mut timeline = Timeline::new("audio", DurationMs(1_000));
+        timeline
+            .push_reference(Annotation::new(
+                TimeRange::new(DurationMs(0), DurationMs(1_000)),
+                AnnotationPayload::Transcription(Transcription::new("交易停滞")),
+                None,
+            ))
+            .unwrap();
+        timeline
+            .push_prediction(Annotation::new(
+                TimeRange::new(DurationMs(0), DurationMs(1_000)),
+                AnnotationPayload::Transcription(Transcription::new("交易停滞")),
+                Some("qwen".to_owned()),
+            ))
+            .unwrap();
+        let mut speaker = SpeakerPayload::new("agent");
+        speaker.transcription = Some(Transcription::new("交易停止"));
+        timeline
+            .push_prediction(Annotation::new(
+                TimeRange::new(DurationMs(0), DurationMs(1_000)),
+                AnnotationPayload::Speaker(speaker),
+                Some("whisper".to_owned()),
+            ))
+            .unwrap();
+
+        let result = timeline
+            .evaluate(
+                &TimelineEvalConfig::new()
+                    .with_transcription_normalization(TranscriptionNormalization::None),
+            )
+            .unwrap();
+        assert_eq!(
+            result.transcription.keys().cloned().collect::<Vec<_>>(),
+            ["qwen", "whisper"]
+        );
+        assert!(result.speech.is_empty());
+        assert_eq!(result.transcription["qwen"].stats.cer(), 0.0);
+        assert_eq!(result.transcription["whisper"].stats.cer(), 0.25);
     }
 }

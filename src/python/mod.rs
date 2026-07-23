@@ -3,6 +3,7 @@ mod audio;
 mod common;
 mod db;
 mod doc;
+mod evaluation;
 mod metrics;
 mod timeline;
 
@@ -21,6 +22,7 @@ fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     metrics::register(module)?;
     timeline::register(module)?;
     doc::register(module)?;
+    evaluation::register(module)?;
     db::register(module)?;
     Ok(())
 }

@@ -16,6 +16,23 @@ use super::common::{
 };
 use super::timeline::PyTimeline;
 
+/// 音频来源、元信息、时间轴、标注和业务 metadata 的集合。
+///
+/// 构造时会探测音频信息并根据声道自动创建 timeline，但不会解码浮点波形。
+///
+/// Args:
+///     source: AudioSource、路径或 URL。
+///     id: 可选稳定文档 ID；省略时自动生成。
+///
+/// Raises:
+///     AsrDataError: 来源无法探测。
+///
+/// Examples:
+///     >>> from asr_data import AudioDoc, AudioSource
+///     >>> source = AudioSource.from_pcm(b"\0\0" * 16000, 16000)
+///     >>> doc = AudioDoc(source, id="sample-1")
+///     >>> doc.timeline("mono").duration_ms
+///     1000
 #[pyclass(name = "AudioDoc")]
 pub(super) struct PyAudioDoc {
     inner: SharedAudio,
@@ -114,23 +131,42 @@ impl PyAudioDoc {
         Ok(spawn_doc_from_source(rust_source_from_py(source)?, id))
     }
 
+    /// 创建文档时保存的 AudioSource。
     #[getter]
     fn source(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
         py_source_from_rust(py, &audio.source)
     }
 
+    /// 不含解码样本的 AudioInfo。
     #[getter]
     fn audio_info(&self) -> PyResult<PyAudioInfo> {
         let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
         Ok(py_audio_info_from_rust(&audio.audio_info))
     }
 
+    /// 文档唯一 ID。
     #[getter]
     fn id(&self) -> PyResult<String> {
         Ok(self.inner.read().map_err(|_| poisoned("audio"))?.id.clone())
     }
 
+    /// 查询指定声道的 timeline，不存在时返回 None。
+    ///
+    /// Args:
+    ///     channel: ``"mono"``、``"left"``、``"right"`` 或声道索引。
+    ///
+    /// Returns:
+    ///     对应 Timeline；不存在时为 None。
+    ///
+    /// Raises:
+    ///     ValueError: 声道名称或索引无效。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000))
+    ///     >>> doc.timeline("mono").duration_ms
+    ///     1
     fn timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<Option<PyTimeline>> {
         let channel = audio_channel(channel)?;
         let exists = self
@@ -147,6 +183,23 @@ impl PyAudioDoc {
     }
 
     #[pyo3(signature = (channel, duration_ms=None))]
+    /// 取得或创建指定声道的 timeline。
+    ///
+    /// Args:
+    ///     channel: 声道名称或索引。
+    ///     duration_ms: 可选时长；必须与文档音频时长一致。
+    ///
+    /// Returns:
+    ///     已有或新建的 Timeline。
+    ///
+    /// Raises:
+    ///     ValueError: 时长无效或与文档不一致。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000))
+    ///     >>> doc.ensure_timeline("mono") is not None
+    ///     True
     fn ensure_timeline(
         &self,
         channel: &Bound<'_, PyAny>,
@@ -174,6 +227,22 @@ impl PyAudioDoc {
         })
     }
 
+    /// 删除指定声道的 timeline 并返回是否存在。
+    ///
+    /// Args:
+    ///     channel: 声道名称或索引。
+    ///
+    /// Returns:
+    ///     确实删除时为 True。
+    ///
+    /// Raises:
+    ///     ValueError: 声道无效。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000))
+    ///     >>> doc.remove_timeline("mono")
+    ///     True
     fn remove_timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<bool> {
         let channel = audio_channel(channel)?;
         Ok(self
@@ -185,6 +254,19 @@ impl PyAudioDoc {
             .is_some())
     }
 
+    /// 校验声道、时长、annotation 范围、source 和重叠约束。
+    ///
+    /// Raises:
+    ///     AsrDataError: 文档包含无效数据。
+    ///
+    /// Returns:
+    ///     None。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> doc = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000))
+    ///     >>> doc.validate() is None
+    ///     True
     fn validate(&self) -> PyResult<()> {
         self.inner
             .read()
@@ -193,6 +275,7 @@ impl PyAudioDoc {
             .map_err(py_error)
     }
 
+    /// 以声道名称为键的全部 timeline。
     #[getter]
     fn timelines<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let channels = self
@@ -219,6 +302,7 @@ impl PyAudioDoc {
         Ok(timelines)
     }
 
+    /// 可原地修改的文档级 JSON metadata。
     #[getter]
     fn metadata<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         self.metadata.bind(py).clone()

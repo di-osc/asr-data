@@ -5,6 +5,22 @@ use pyo3::prelude::*;
 
 use super::common::truncate;
 
+/// 转写中的细粒度文本单元。
+///
+/// Args:
+///     text: Token 文本。
+///     start_ms: 可选起始时间，单位为毫秒。
+///     end_ms: 可选结束时间，单位为毫秒。
+///     confidence: 可选置信度。
+///
+/// Raises:
+///     ValueError: 时间参数没有成对提供，或者结束时间早于起始时间。
+///
+/// Examples:
+///     >>> from asr_data.annotation import Token
+///     >>> token = Token("你好", start_ms=0, end_ms=300, confidence=0.9)
+///     >>> token.text
+///     '你好'
 #[pyclass(name = "Token", module = "asr_data.annotation", frozen)]
 #[derive(Clone)]
 pub(super) struct PyToken {
@@ -44,21 +60,25 @@ impl PyToken {
         })
     }
 
+    /// Token 文本。
     #[getter]
     fn text(&self) -> String {
         self.inner.text.clone()
     }
 
+    /// 可选起始时间，单位为毫秒。
     #[getter]
     fn start_ms(&self) -> Option<u64> {
         self.inner.range.map(|range| range.start.0)
     }
 
+    /// 可选结束时间，单位为毫秒。
     #[getter]
     fn end_ms(&self) -> Option<u64> {
         self.inner.range.map(|range| range.end.0)
     }
 
+    /// 可选 token 级置信度。
     #[getter]
     fn confidence(&self) -> Option<f32> {
         self.inner.confidence
@@ -81,6 +101,19 @@ impl PyToken {
     }
 }
 
+/// 完整转写文本及其 token、语言和置信度。
+///
+/// Args:
+///     text: 完整转写文本。
+///     tokens: 可选 Token 列表。
+///     language: 可选语言标签。
+///     confidence: 可选转写级置信度。
+///
+/// Examples:
+///     >>> from asr_data.annotation import Token, Transcription
+///     >>> value = Transcription("你好", tokens=[Token("你好")], language="zh")
+///     >>> value.language
+///     'zh'
 #[pyclass(name = "Transcription", module = "asr_data.annotation", frozen)]
 #[derive(Clone)]
 pub(super) struct PyTranscription {
@@ -111,11 +144,13 @@ impl PyTranscription {
         }
     }
 
+    /// 完整转写文本。
     #[getter]
     fn text(&self) -> String {
         self.inner.text.clone()
     }
 
+    /// Token 列表的副本。
     #[getter]
     fn tokens(&self) -> Vec<PyToken> {
         self.inner
@@ -126,11 +161,13 @@ impl PyTranscription {
             .collect()
     }
 
+    /// 可选语言标签。
     #[getter]
     fn language(&self) -> Option<String> {
         self.inner.language.clone()
     }
 
+    /// 可选转写级置信度。
     #[getter]
     fn confidence(&self) -> Option<f32> {
         self.inner.confidence
@@ -151,6 +188,17 @@ impl PyTranscription {
     }
 }
 
+/// 一次说话人发话的 payload。
+///
+/// Args:
+///     name: 说话人名称或稳定业务标识。
+///     transcription: 该次发话携带的可选完整转写。
+///
+/// Examples:
+///     >>> from asr_data.annotation import Speaker, Transcription
+///     >>> speaker = Speaker("agent", transcription=Transcription("你好"))
+///     >>> speaker.name
+///     'agent'
 #[pyclass(name = "Speaker", module = "asr_data.annotation", frozen)]
 #[derive(Clone)]
 pub(super) struct PySpeaker {
@@ -170,11 +218,13 @@ impl PySpeaker {
         }
     }
 
+    /// 说话人名称或稳定业务标识。
     #[getter]
     fn name(&self) -> String {
         self.inner.name.clone()
     }
 
+    /// 该次发话携带的可选完整转写。
     #[getter]
     fn transcription(&self) -> Option<PyTranscription> {
         self.inner

@@ -8,12 +8,15 @@ use crate::timeline::{
     TranscriptionNormalization,
 };
 use crate::utils::{DurationMs, TimeRange};
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 use super::annotation::{PySpeaker, PyToken, PyTranscription};
 use super::common::{SharedAudio, format_duration_ms, poisoned, py_error, truncate};
 
+/// Timeline 上一条带时间范围的标注记录。
+///
+/// payload 可整体替换；替换操作会重新校验类型、token 范围和重叠规则。
 #[pyclass(name = "Annotation")]
 #[derive(Clone)]
 struct PyAnnotation {
@@ -31,36 +34,43 @@ enum AnnotationGroup {
 
 #[pymethods]
 impl PyAnnotation {
+    /// 自动生成且稳定的 annotation ID。
     #[getter]
     fn id(&self) -> String {
         self.annotation_id.clone()
     }
 
+    /// 起始时间，单位为毫秒，包含该位置。
     #[getter]
     fn start_ms(&self) -> PyResult<u64> {
         Ok(self.snapshot()?.range.start.0)
     }
 
+    /// 结束时间，单位为毫秒，不包含该位置。
     #[getter]
     fn end_ms(&self) -> PyResult<u64> {
         Ok(self.snapshot()?.range.end.0)
     }
 
+    /// 可选 annotation 级置信度。
     #[getter]
     fn confidence(&self) -> PyResult<Option<f32>> {
         Ok(self.snapshot()?.confidence)
     }
 
+    /// Prediction 来源；reference 始终为 None。
     #[getter]
     fn source(&self) -> PyResult<Option<String>> {
         Ok(self.snapshot()?.source)
     }
 
+    /// AnnotationKind 字符串。
     #[getter]
     fn kind(&self) -> PyResult<&'static str> {
         Ok(annotation_kind(&self.snapshot()?.payload))
     }
 
+    /// 当前 payload；Speech 返回 None。
     #[getter]
     fn payload(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(match self.snapshot()?.payload {
@@ -78,6 +88,7 @@ impl PyAnnotation {
         })
     }
 
+    /// 整体替换 payload，并原子执行完整校验。
     #[setter]
     fn set_payload(&self, payload: &Bound<'_, PyAny>) -> PyResult<()> {
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
@@ -279,6 +290,7 @@ fn validate_transcription_range(
     Ok(())
 }
 
+/// 按时间顺序组合得到的转写视图。
 #[pyclass(name = "Transcript", frozen)]
 #[derive(Clone)]
 struct PyTranscript {
@@ -287,11 +299,13 @@ struct PyTranscript {
 
 #[pymethods]
 impl PyTranscript {
+    /// 组合后的完整文本。
     #[getter]
     fn text(&self) -> String {
         self.inner.text.clone()
     }
 
+    /// 首个可用语言标签。
     #[getter]
     fn language(&self) -> Option<String> {
         self.inner.language.clone()
@@ -310,6 +324,7 @@ impl PyTranscript {
     }
 }
 
+/// 单个 prediction source 的 timeline 转写评测结果。
 #[pyclass(name = "TranscriptionEvaluation", frozen)]
 #[derive(Clone)]
 struct PyTranscriptionEvaluation {
@@ -318,31 +333,37 @@ struct PyTranscriptionEvaluation {
 
 #[pymethods]
 impl PyTranscriptionEvaluation {
+    /// Prediction source。
     #[getter]
     fn source(&self) -> String {
         self.inner.source.clone()
     }
 
+    /// 原始参考文本。
     #[getter]
     fn reference(&self) -> String {
         self.inner.reference.clone()
     }
 
+    /// 原始预测文本。
     #[getter]
     fn hypothesis(&self) -> String {
         self.inner.hypothesis.clone()
     }
 
+    /// 标准化后的参考文本。
     #[getter]
     fn normalized_reference(&self) -> String {
         self.inner.normalized_reference.clone()
     }
 
+    /// 标准化后的预测文本。
     #[getter]
     fn normalized_hypothesis(&self) -> String {
         self.inner.normalized_hypothesis.clone()
     }
 
+    /// 标准化模式：``"zh_tn"`` 或 ``"none"``。
     #[getter]
     fn normalization(&self) -> &'static str {
         match self.inner.normalization {
@@ -351,56 +372,67 @@ impl PyTranscriptionEvaluation {
         }
     }
 
+    /// 匹配字符数。
     #[getter]
     fn matches(&self) -> usize {
         self.inner.matches()
     }
 
+    /// 替换字符数。
     #[getter]
     fn substitutions(&self) -> usize {
         self.inner.stats.substitutions
     }
 
+    /// 删除字符数。
     #[getter]
     fn deletions(&self) -> usize {
         self.inner.stats.deletions
     }
 
+    /// 插入字符数。
     #[getter]
     fn insertions(&self) -> usize {
         self.inner.stats.insertions
     }
 
+    /// 参考文本字符数。
     #[getter]
     fn reference_chars(&self) -> usize {
         self.inner.stats.reference_chars
     }
 
+    /// 预测文本字符数。
     #[getter]
     fn hypothesis_chars(&self) -> usize {
         self.inner.hypothesis_chars
     }
 
+    /// 字符错误率。
     #[getter]
     fn cer(&self) -> f64 {
         self.inner.stats.cer()
     }
 
+    /// 字符级 precision。
     #[getter]
     fn precision(&self) -> f64 {
         self.inner.precision()
     }
 
+    /// 字符级 recall。
     #[getter]
     fn recall(&self) -> f64 {
         self.inner.recall()
     }
 
+    /// 字符级 F1。
     #[getter]
     fn f1(&self) -> f64 {
         self.inner.f1()
     }
 
+    /// 标准化后的文本是否完全一致。
     #[getter]
     fn exact_match(&self) -> bool {
         self.inner.exact_match()
@@ -419,6 +451,7 @@ impl PyTranscriptionEvaluation {
     }
 }
 
+/// 单个 prediction source 的 timeline Speech 评测结果。
 #[pyclass(name = "SpeechEvaluation", frozen)]
 #[derive(Clone)]
 struct PySpeechEvaluation {
@@ -427,56 +460,67 @@ struct PySpeechEvaluation {
 
 #[pymethods]
 impl PySpeechEvaluation {
+    /// Prediction source。
     #[getter]
     fn source(&self) -> String {
         self.inner.source.clone()
     }
 
+    /// Reference 人声总时长，单位为毫秒。
     #[getter]
     fn reference_ms(&self) -> u64 {
         self.inner.reference_ms
     }
 
+    /// Prediction 人声总时长，单位为毫秒。
     #[getter]
     fn predicted_ms(&self) -> u64 {
         self.inner.predicted_ms
     }
 
+    /// 正确预测为人声的时长。
     #[getter]
     fn true_positive_ms(&self) -> u64 {
         self.inner.true_positive_ms
     }
 
+    /// 正确预测为静音的时长。
     #[getter]
     fn true_negative_ms(&self) -> u64 {
         self.inner.true_negative_ms
     }
 
+    /// 误报人声的时长。
     #[getter]
     fn false_positive_ms(&self) -> u64 {
         self.inner.false_positive_ms
     }
 
+    /// 漏报人声的时长。
     #[getter]
     fn false_negative_ms(&self) -> u64 {
         self.inner.false_negative_ms
     }
 
+    /// Speech precision。
     #[getter]
     fn precision(&self) -> f64 {
         self.inner.precision()
     }
 
+    /// Speech recall。
     #[getter]
     fn recall(&self) -> f64 {
         self.inner.recall()
     }
 
+    /// Speech F1。
     #[getter]
     fn f1(&self) -> f64 {
         self.inner.f1()
     }
 
+    /// Reference 与 prediction 的区间 IoU。
     #[getter]
     fn iou(&self) -> f64 {
         self.inner.iou()
@@ -494,6 +538,7 @@ impl PySpeechEvaluation {
     }
 }
 
+/// Timeline 评测的组合结果。
 #[pyclass(name = "TimelineEvaluation", frozen)]
 #[derive(Clone)]
 struct PyTimelineEvaluation {
@@ -502,31 +547,50 @@ struct PyTimelineEvaluation {
 
 #[pymethods]
 impl PyTimelineEvaluation {
+    /// 按 prediction source 分组的转写结果。
     #[getter]
-    fn transcription(&self) -> Option<PyTranscriptionEvaluation> {
+    fn transcription(&self) -> std::collections::BTreeMap<String, PyTranscriptionEvaluation> {
         self.inner
             .transcription
-            .clone()
-            .map(|inner| PyTranscriptionEvaluation { inner })
+            .iter()
+            .map(|(source, inner)| {
+                (
+                    source.clone(),
+                    PyTranscriptionEvaluation {
+                        inner: inner.clone(),
+                    },
+                )
+            })
+            .collect()
     }
 
+    /// 按 prediction source 分组的 Speech 结果。
     #[getter]
-    fn speech(&self) -> Option<PySpeechEvaluation> {
+    fn speech(&self) -> std::collections::BTreeMap<String, PySpeechEvaluation> {
         self.inner
             .speech
-            .clone()
-            .map(|inner| PySpeechEvaluation { inner })
+            .iter()
+            .map(|(source, inner)| {
+                (
+                    source.clone(),
+                    PySpeechEvaluation {
+                        inner: inner.clone(),
+                    },
+                )
+            })
+            .collect()
     }
 
     fn __repr__(&self) -> String {
         format!(
             "TimelineEvaluation(transcription={}, speech={})",
-            self.inner.transcription.is_some(),
-            self.inner.speech.is_some(),
+            self.inner.transcription.len(),
+            self.inner.speech.len(),
         )
     }
 }
 
+/// 一个声道上的参考真值和模型预测时间轴。
 #[pyclass(name = "Timeline")]
 #[derive(Clone)]
 pub(super) struct PyTimeline {
@@ -536,18 +600,21 @@ pub(super) struct PyTimeline {
 
 #[pymethods]
 impl PyTimeline {
+    /// Timeline 唯一 ID。
     #[getter]
     fn id(&self) -> PyResult<String> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
         Ok(self.selected(&audio)?.id.clone())
     }
 
+    /// 所属 AudioDoc ID。
     #[getter]
     fn audio_id(&self) -> PyResult<String> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
         Ok(self.selected(&audio)?.audio_id.clone())
     }
 
+    /// 修改所属 AudioDoc ID。
     #[setter]
     fn set_audio_id(&self, value: String) -> PyResult<()> {
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
@@ -555,12 +622,14 @@ impl PyTimeline {
         Ok(())
     }
 
+    /// Timeline 总时长，单位为毫秒。
     #[getter]
     fn duration_ms(&self) -> PyResult<u64> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
         Ok(self.selected(&audio)?.duration.0)
     }
 
+    /// 不带 source 的 reference 标注集合。
     #[getter]
     fn reference(&self) -> PyReferenceAnnotations {
         PyReferenceAnnotations {
@@ -568,6 +637,7 @@ impl PyTimeline {
         }
     }
 
+    /// 必须带 source 的 prediction 标注集合。
     #[getter]
     fn prediction(&self) -> PyPredictionAnnotations {
         PyPredictionAnnotations {
@@ -575,11 +645,44 @@ impl PyTimeline {
         }
     }
 
+    /// 评测一个或多个 prediction source。
+    ///
+    /// 不传 source 时自动发现所有具有对应 reference 的来源。只传一个任务
+    /// 参数时只评测该任务。
+    ///
+    /// Args:
+    ///     transcription: 转写来源或来源名称列表。
+    ///     speech: Speech 来源或来源名称列表。
+    ///     normalize: 是否在计算 CER 前执行中文文本标准化。
+    ///
+    /// Returns:
+    ///     按任务和 source 分组的 TimelineEvaluation。
+    ///
+    /// Raises:
+    ///     AsrDataError: reference 缺失、显式 source 不存在或没有可评测内容。
+    ///     TypeError: source 参数不是字符串或字符串序列。
+    ///     ValueError: source 是空字符串。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> from asr_data.annotation import Transcription
+    ///     >>> timeline = AudioDoc(
+    ///     ...     AudioSource.from_pcm(b"\0\0" * 10, 16000)
+    ///     ... ).timeline("mono")
+    ///     >>> _ = timeline.reference.add_transcription(
+    ///     ...     0, timeline.duration_ms, Transcription("你好")
+    ///     ... )
+    ///     >>> _ = timeline.prediction.add_transcription(
+    ///     ...     0, timeline.duration_ms, Transcription("你好"), source="qwen-asr"
+    ///     ... )
+    ///     >>> result = timeline.eval()
+    ///     >>> result.transcription["qwen-asr"].cer
+    ///     0.0
     #[pyo3(signature = (*, transcription=None, speech=None, normalize=true))]
     fn eval(
         &self,
-        transcription: Option<String>,
-        speech: Option<String>,
+        transcription: Option<&Bound<'_, PyAny>>,
+        speech: Option<&Bound<'_, PyAny>>,
         normalize: bool,
     ) -> PyResult<PyTimelineEvaluation> {
         let normalization = if normalize {
@@ -588,8 +691,8 @@ impl PyTimeline {
             TranscriptionNormalization::None
         };
         let config = TimelineEvalConfig {
-            transcription_source: transcription,
-            speech_source: speech,
+            transcription_sources: extract_eval_sources(transcription, "transcription")?,
+            speech_sources: extract_eval_sources(speech, "speech")?,
             transcription_normalization: normalization,
         };
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
@@ -622,6 +725,26 @@ impl PyTimeline {
             timeline.prediction.len()
         ))
     }
+}
+
+pub(super) fn extract_eval_sources(
+    value: Option<&Bound<'_, PyAny>>,
+    name: &str,
+) -> PyResult<Option<Vec<String>>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if let Ok(source) = value.extract::<String>() {
+        validate_source(&source)?;
+        return Ok(Some(vec![source]));
+    }
+    let sources = value.extract::<Vec<String>>().map_err(|_| {
+        PyTypeError::new_err(format!("{name} must be a string or a sequence of strings"))
+    })?;
+    for source in &sources {
+        validate_source(source)?;
+    }
+    Ok(Some(sources))
 }
 
 impl PyTimeline {
@@ -721,6 +844,7 @@ impl AnnotationCollectionCore {
     }
 }
 
+/// Timeline 的参考真值标注集合。
 #[pyclass(name = "ReferenceAnnotations")]
 #[derive(Clone)]
 struct PyReferenceAnnotations {
@@ -729,12 +853,31 @@ struct PyReferenceAnnotations {
 
 #[pymethods]
 impl PyReferenceAnnotations {
+    /// 全部 reference annotation 句柄。
     #[getter]
     fn annotations(&self) -> PyResult<Vec<PyAnnotation>> {
         self.core.all()
     }
 
     #[pyo3(signature = (start_ms, end_ms, confidence=None))]
+    /// 添加 Speech 区间。
+    ///
+    /// Args:
+    ///     start_ms: 起始时间，包含。
+    ///     end_ms: 结束时间，不包含。
+    ///     confidence: 可选置信度。
+    ///
+    /// Returns:
+    ///     新建或已有的 Annotation。
+    ///
+    /// Raises:
+    ///     ValueError: 时间范围无效。
+    ///     AsrDataError: 与已有 reference Speech 重叠。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> annotation = timeline.reference.add_speech(0, timeline.duration_ms)
     fn add_speech(
         &self,
         start_ms: u64,
@@ -751,6 +894,28 @@ impl PyReferenceAnnotations {
     }
 
     #[pyo3(signature = (start_ms, end_ms, transcription, confidence=None))]
+    /// 添加完整转写 reference。
+    ///
+    /// Args:
+    ///     start_ms: 起始时间。
+    ///     end_ms: 结束时间。
+    ///     transcription: Transcription payload。
+    ///     confidence: 可选 annotation 级置信度。
+    ///
+    /// Raises:
+    ///     ValueError: 时间范围或 token 范围无效。
+    ///     AsrDataError: 与已有标注冲突。
+    ///
+    /// Returns:
+    ///     新建或已有的 Annotation。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> from asr_data.annotation import Transcription
+    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> item = timeline.reference.add_transcription(
+    ///     ...     0, timeline.duration_ms, Transcription("你好")
+    ///     ... )
     fn add_transcription(
         &self,
         start_ms: u64,
@@ -773,6 +938,28 @@ impl PyReferenceAnnotations {
     }
 
     #[pyo3(signature = (start_ms, end_ms, speaker, confidence=None))]
+    /// 添加一次说话人发话 reference。
+    ///
+    /// Args:
+    ///     start_ms: 起始时间。
+    ///     end_ms: 结束时间。
+    ///     speaker: Speaker payload。
+    ///     confidence: 可选 annotation 级置信度。
+    ///
+    /// Returns:
+    ///     新建或已有的 Annotation。
+    ///
+    /// Raises:
+    ///     ValueError: 时间或内嵌 token 范围无效。
+    ///     AsrDataError: 与同名说话人已有发话冲突。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> from asr_data.annotation import Speaker
+    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> item = timeline.reference.add_speaker(
+    ///     ...     0, timeline.duration_ms, Speaker("agent")
+    ///     ... )
     fn add_speaker(
         &self,
         start_ms: u64,
@@ -790,6 +977,20 @@ impl PyReferenceAnnotations {
         )
     }
 
+    /// 按时间顺序组合全部 reference 文本。
+    ///
+    /// Returns:
+    ///     组合后的 Transcript。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> from asr_data.annotation import Transcription
+    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> _ = timeline.reference.add_transcription(
+    ///     ...     0, timeline.duration_ms, Transcription("你好")
+    ///     ... )
+    ///     >>> timeline.reference.transcript().text
+    ///     '你好'
     fn transcript(&self) -> PyResult<PyTranscript> {
         let audio = self.core.audio.read().map_err(|_| poisoned("audio"))?;
         Ok(PyTranscript {
@@ -802,6 +1003,7 @@ impl PyReferenceAnnotations {
     }
 }
 
+/// Timeline 的模型 prediction 标注集合。
 #[pyclass(name = "PredictionAnnotations")]
 #[derive(Clone)]
 struct PyPredictionAnnotations {
@@ -810,11 +1012,13 @@ struct PyPredictionAnnotations {
 
 #[pymethods]
 impl PyPredictionAnnotations {
+    /// 全部 prediction annotation 句柄。
     #[getter]
     fn annotations(&self) -> PyResult<Vec<PyAnnotation>> {
         self.core.all()
     }
 
+    /// 按 AnnotationKind 分组、排序并去重的 source 字典。
     #[getter]
     fn sources(&self) -> PyResult<std::collections::BTreeMap<&'static str, Vec<String>>> {
         let audio = self.core.audio.read().map_err(|_| poisoned("audio"))?;
@@ -833,6 +1037,27 @@ impl PyPredictionAnnotations {
     }
 
     #[pyo3(signature = (start_ms, end_ms, *, source, confidence=None))]
+    /// 添加指定 source 的 Speech prediction。
+    ///
+    /// Args:
+    ///     start_ms: 起始时间。
+    ///     end_ms: 结束时间。
+    ///     source: 模型或流程名称。
+    ///     confidence: 可选置信度。
+    ///
+    /// Returns:
+    ///     新建或已有的 Annotation。
+    ///
+    /// Raises:
+    ///     ValueError: source 或时间范围无效。
+    ///     AsrDataError: 与同 source Speech 重叠。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> item = timeline.prediction.add_speech(
+    ///     ...     0, timeline.duration_ms, source="vad"
+    ///     ... )
     fn add_speech(
         &self,
         start_ms: u64,
@@ -851,6 +1076,29 @@ impl PyPredictionAnnotations {
 
     #[pyo3(signature = (start_ms, end_ms, transcription, *, source, confidence=None))]
     #[allow(clippy::too_many_arguments)]
+    /// 添加指定 source 的完整转写 prediction。
+    ///
+    /// Args:
+    ///     start_ms: 起始时间。
+    ///     end_ms: 结束时间。
+    ///     transcription: Transcription payload。
+    ///     source: 模型或流程名称。
+    ///     confidence: 可选置信度。
+    ///
+    /// Returns:
+    ///     新建或已有的 Annotation。
+    ///
+    /// Raises:
+    ///     ValueError: source、时间或 token 范围无效。
+    ///     AsrDataError: 与同 source 文本冲突。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> from asr_data.annotation import Transcription
+    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> item = timeline.prediction.add_transcription(
+    ///     ...     0, timeline.duration_ms, Transcription("你好"), source="asr"
+    ///     ... )
     fn add_transcription(
         &self,
         start_ms: u64,
@@ -876,6 +1124,29 @@ impl PyPredictionAnnotations {
 
     #[pyo3(signature = (start_ms, end_ms, speaker, *, source, confidence=None))]
     #[allow(clippy::too_many_arguments)]
+    /// 添加指定 source 的说话人发话 prediction。
+    ///
+    /// Args:
+    ///     start_ms: 起始时间。
+    ///     end_ms: 结束时间。
+    ///     speaker: Speaker payload。
+    ///     source: 模型或流程名称。
+    ///     confidence: 可选置信度。
+    ///
+    /// Returns:
+    ///     新建或已有的 Annotation。
+    ///
+    /// Raises:
+    ///     ValueError: source、时间或内嵌 token 范围无效。
+    ///     AsrDataError: 与同 source、同名说话人发话冲突。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> from asr_data.annotation import Speaker
+    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> item = timeline.prediction.add_speaker(
+    ///     ...     0, timeline.duration_ms, Speaker("agent"), source="diarization"
+    ///     ... )
     fn add_speaker(
         &self,
         start_ms: u64,
@@ -895,6 +1166,18 @@ impl PyPredictionAnnotations {
         )
     }
 
+    /// 返回指定 source 的全部 prediction annotation。
+    ///
+    /// Args:
+    ///     source: 要查询的来源。
+    ///
+    /// Returns:
+    ///     保持存储顺序的 Annotation 列表。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> items = timeline.prediction.by_source("asr")
     fn by_source(&self, source: &str) -> PyResult<Vec<PyAnnotation>> {
         let audio = self.core.audio.read().map_err(|_| poisoned("audio"))?;
         Ok(self
@@ -905,6 +1188,18 @@ impl PyPredictionAnnotations {
             .collect())
     }
 
+    /// 按时间顺序组合指定 source 的全部预测文本。
+    ///
+    /// Args:
+    ///     source: 要组合的来源。
+    ///
+    /// Returns:
+    ///     组合后的 Transcript。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> text = timeline.prediction.transcript("asr").text
     fn transcript(&self, source: &str) -> PyResult<PyTranscript> {
         let audio = self.core.audio.read().map_err(|_| poisoned("audio"))?;
         Ok(PyTranscript {
@@ -912,6 +1207,18 @@ impl PyPredictionAnnotations {
         })
     }
 
+    /// 删除指定 source 的全部 prediction 并返回数量。
+    ///
+    /// Args:
+    ///     source: 要删除的来源。
+    ///
+    /// Returns:
+    ///     删除的 annotation 数量。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> removed = timeline.prediction.remove_by_source("asr")
     fn remove_by_source(&self, source: &str) -> PyResult<usize> {
         let mut audio = self.core.audio.write().map_err(|_| poisoned("audio"))?;
         Ok(self
@@ -920,6 +1227,23 @@ impl PyPredictionAnnotations {
             .remove_predictions_by_source(source))
     }
 
+    /// 原子重命名 prediction source 并返回修改数量。
+    ///
+    /// Args:
+    ///     from_source: 原来源。
+    ///     to_source: 新来源。
+    ///
+    /// Returns:
+    ///     修改的 annotation 数量。
+    ///
+    /// Raises:
+    ///     ValueError: 新来源为空。
+    ///     AsrDataError: 重命名后会产生重叠冲突。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDoc, AudioSource
+    ///     >>> timeline = AudioDoc(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
+    ///     >>> changed = timeline.prediction.relabel_source("asr", "asr-v2")
     fn relabel_source(&self, from_source: &str, to_source: &str) -> PyResult<usize> {
         validate_source(to_source)?;
         let mut audio = self.core.audio.write().map_err(|_| poisoned("audio"))?;

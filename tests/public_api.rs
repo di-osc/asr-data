@@ -4,11 +4,13 @@ use asr_data::audio::{self, decode};
 use asr_data::{
     Annotation, AnnotationPayload, Audio, AudioChannel, AudioChunk, AudioChunks, AudioDb,
     AudioDbError, AudioDbInfo, AudioDbMode, AudioDoc, AudioEncoding, AudioError, AudioFormat,
-    AudioInfo, AudioQuery, AudioSource, CerStats, DEFAULT_QUERY_LIMIT, DurationMs, MAX_QUERY_LIMIT,
-    SampleIndex, SpeakerPayload, SpeechEvaluation, TextNormalizationError, TextSpan, TimeRange,
-    Timeline, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation, Token, Transcript,
-    Transcription, TranscriptionEvaluation, TranscriptionNormalization, compute_cer,
-    normalize_for_cer, normalize_zh, read_audio_db_info,
+    AudioInfo, AudioQuery, AudioSource, CerStats, DEFAULT_QUERY_LIMIT, DatasetEvalError,
+    DatasetEvaluation, DatasetEvaluator, DatasetSpeechEvaluation, DatasetTranscriptionEvaluation,
+    DurationMs, MAX_QUERY_LIMIT, SampleIndex, SpeakerPayload, SpeechEvaluation,
+    TextNormalizationError, TextSpan, TimeRange, Timeline, TimelineEvalConfig, TimelineEvalError,
+    TimelineEvaluation, Token, Transcript, Transcription, TranscriptionEvaluation,
+    TranscriptionNormalization, compute_cer, evaluate_dataset, normalize_for_cer, normalize_zh,
+    read_audio_db_info,
 };
 
 #[test]
@@ -47,10 +49,16 @@ fn stable_public_paths_compile() {
     let _: Option<TranscriptionEvaluation> = None;
     let _: Option<SpeechEvaluation> = None;
     let _: Option<TranscriptionNormalization> = None;
+    let _: Option<DatasetEvalError> = None;
+    let _: Option<DatasetEvaluation> = None;
+    let _: Option<DatasetEvaluator> = None;
+    let _: Option<DatasetTranscriptionEvaluation> = None;
+    let _: Option<DatasetSpeechEvaluation> = None;
     let _: Option<TextNormalizationError> = None;
     let _: fn(&str, &str) -> CerStats = compute_cer;
     let _: fn(&str, bool) -> String = normalize_for_cer;
     let _ = normalize_zh("2026");
+    let _ = evaluate_dataset([], &TimelineEvalConfig::new());
     let timeline = Timeline::new("mono", DurationMs(1_000));
     let _ = timeline.eval(&TimelineEvalConfig::new().with_transcription("asr"));
     let _: fn(&Path) -> anyhow::Result<Audio> = decode::decode_path_audio;

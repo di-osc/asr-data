@@ -1,7 +1,10 @@
 import asyncio
+import ast
 import base64
+import doctest
 import io
-import os
+import inspect
+from pathlib import Path
 import struct
 import threading
 import time
@@ -25,6 +28,141 @@ from asr_data.annotation import (
     Token,
     Transcription,
 )
+
+
+def test_all_public_python_callables_have_standard_runtime_docstrings():
+    public_classes = [
+        getattr(asr_data, name)
+        for name in asr_data.__all__
+        if inspect.isclass(getattr(asr_data, name, None)) and name != "AsrDataError"
+    ]
+    issues = []
+    for cls in public_classes:
+        if not (cls.__doc__ or "").strip():
+            issues.append(f"{cls.__name__}: missing class docstring")
+        for name in dir(cls):
+            if name.startswith("_"):
+                continue
+            member = getattr(cls, name)
+            if not callable(member):
+                continue
+            doc = inspect.getdoc(member) or ""
+            try:
+                signature = inspect.signature(member)
+            except (TypeError, ValueError):
+                signature = None
+            required = ["Returns:", "Examples:"]
+            if signature and any(
+                parameter.name not in {"self", "cls"}
+                for parameter in signature.parameters.values()
+            ):
+                required.append("Args:")
+            for section in required:
+                if section not in doc:
+                    issues.append(f"{cls.__name__}.{name}: missing {section}")
+
+    public_functions = [
+        getattr(asr_data, name)
+        for name in asr_data.__all__
+        if inspect.isroutine(getattr(asr_data, name, None))
+    ]
+    for function in public_functions:
+        doc = inspect.getdoc(function) or ""
+        required = ["Returns:", "Examples:"]
+        if any(
+            parameter.name not in {"self", "cls"}
+            for parameter in inspect.signature(function).parameters.values()
+        ):
+            required.append("Args:")
+        for section in required:
+            if section not in doc:
+                issues.append(f"{function.__name__}: missing {section}")
+
+    assert issues == []
+
+
+def test_public_stub_callables_have_standard_docstrings():
+    """Keep editor-visible stub docs aligned with the runtime API standard."""
+
+    issues = []
+    for relative_path in ("asr_data/_native.pyi", "asr_data/__init__.pyi"):
+        path = Path(__file__).parents[1] / relative_path
+        tree = ast.parse(path.read_text())
+
+        for parent in ast.walk(tree):
+            if not isinstance(parent, (ast.Module, ast.ClassDef)):
+                continue
+            if isinstance(parent, ast.ClassDef) and parent.name.startswith("_"):
+                continue
+            for node in parent.body:
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if node.name.startswith("_"):
+                    continue
+                decorators = {
+                    decorator.id
+                    for decorator in node.decorator_list
+                    if isinstance(decorator, ast.Name)
+                }
+                has_attribute_decorator = any(
+                    isinstance(decorator, ast.Attribute)
+                    for decorator in node.decorator_list
+                )
+                if "property" in decorators or has_attribute_decorator:
+                    continue
+
+                doc = ast.get_docstring(node) or ""
+                parameters = [
+                    *node.args.posonlyargs,
+                    *node.args.args,
+                    *node.args.kwonlyargs,
+                ]
+                required = ["Returns:", "Examples:"]
+                if any(
+                    parameter.arg not in {"self", "cls"} for parameter in parameters
+                ):
+                    required.append("Args:")
+                for section in required:
+                    if section not in doc:
+                        issues.append(
+                            f"{relative_path}:{node.lineno} "
+                            f"{node.name}: missing {section}"
+                        )
+
+    assert issues == []
+
+
+def test_local_public_runtime_docstring_examples_are_executable():
+    """Execute every self-contained example that does not require network or Jupyter."""
+
+    finder = doctest.DocTestFinder(exclude_empty=True)
+    runner = doctest.DocTestRunner(optionflags=doctest.ELLIPSIS)
+    skipped_name_parts = {
+        "from_path",
+        "from_url",
+        "from_bytes",
+        "from_base64",
+        "display",
+        "aload_from_path",
+    }
+    seen = set()
+
+    for export in asr_data.__all__:
+        obj = getattr(asr_data, export, None)
+        if not (inspect.isclass(obj) or inspect.isroutine(obj)):
+            continue
+        for test in finder.find(obj, f"asr_data.{export}"):
+            if (
+                test.name in seen
+                or not test.examples
+                or any(part in test.name for part in skipped_name_parts)
+            ):
+                continue
+            seen.add(test.name)
+            runner.run(test)
+
+    assert runner.failures == 0
+    assert runner.tries >= 180
 
 
 def test_normalize_zh_is_public():
@@ -96,7 +234,9 @@ def test_annotation_literal_types_are_public_and_complete():
 
 def test_audio_waveform_timeline_and_db(tmp_path):
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    audio = AudioDoc(AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1")
+    audio = AudioDoc(
+        AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1"
+    )
     assert isinstance(audio.source, AudioSource)
     assert set(audio.timelines) == {"left", "right"}
     assert audio.timeline("mono") is None
@@ -301,12 +441,8 @@ def test_audio_channel_timelines_round_trip(tmp_path):
         id="call-stereo",
     )
 
-    audio.timeline("left").reference.add_transcription(
-        0, 100, Transcription("caller")
-    )
-    audio.timeline("right").reference.add_transcription(
-        0, 100, Transcription("agent")
-    )
+    audio.timeline("left").reference.add_transcription(0, 100, Transcription("caller"))
+    audio.timeline("right").reference.add_transcription(0, 100, Transcription("agent"))
 
     assert audio.timeline("mono") is None
     assert audio.timeline("left").reference.transcript().text == "caller"
@@ -343,7 +479,9 @@ def test_setting_timeline_audio_id_updates_the_whole_audio():
 
 
 def test_timeline_duration_is_required_shared_and_read_only():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 4000, sample_rate=8000), id="duration")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 4000, sample_rate=8000), id="duration"
+    )
     assert not hasattr(audio, "duration_ms")
 
     mono = audio.timeline("mono")
@@ -465,9 +603,7 @@ def test_source_stream_options(tmp_path):
 
     for source in sources:
         full = source.load(sample_rate=2000, mono=True)
-        chunks = list(
-            source.stream(chunk_size_ms=2, sample_rate=2000, mono=True)
-        )
+        chunks = list(source.stream(chunk_size_ms=2, sample_rate=2000, mono=True))
 
         assert chunks
         assert all(chunk.sample_rate == 2000 for chunk in chunks)
@@ -475,9 +611,7 @@ def test_source_stream_options(tmp_path):
         assert [chunk.offset_ms for chunk in chunks] == sorted(
             chunk.offset_ms for chunk in chunks
         )
-        assert [chunk.is_final for chunk in chunks[:-1]] == [False] * (
-            len(chunks) - 1
-        )
+        assert [chunk.is_final for chunk in chunks[:-1]] == [False] * (len(chunks) - 1)
         assert chunks[-1].is_final is True
         streamed = np.concatenate([chunk.samples for chunk in chunks])
         np.testing.assert_allclose(streamed, full.samples, atol=1e-6)
@@ -531,7 +665,9 @@ def test_audio_numpy_constructor_and_output_share_memory():
 
 def test_normalization_api_is_removed():
     audio = Audio(np.array([0.1, -0.25, 0.5], dtype=np.float32), sample_rate=16000)
-    chunk = next(AudioSource.from_pcm(b"\0\0", sample_rate=16000).stream(chunk_size_ms=100))
+    chunk = next(
+        AudioSource.from_pcm(b"\0\0", sample_rate=16000).stream(chunk_size_ms=100)
+    )
 
     assert not hasattr(audio, "normalize")
     assert not hasattr(audio, "is_normalized")
@@ -629,9 +765,7 @@ def test_source_astream_is_async_and_matches_sync_stream():
         return chunks
 
     asynchronous = asyncio.run(collect())
-    synchronous = list(
-        source.stream(chunk_size_ms=20, sample_rate=16000, mono=True)
-    )
+    synchronous = list(source.stream(chunk_size_ms=20, sample_rate=16000, mono=True))
 
     assert [chunk.offset_ms for chunk in asynchronous] == [
         chunk.offset_ms for chunk in synchronous
@@ -765,7 +899,9 @@ def test_audio_display_builds_ipython_player_for_selected_range(monkeypatch):
 
 def test_public_types_have_informative_repr(tmp_path):
     pcm = b"\0\0" * (3250 * 8 * 2)
-    audio = AudioDoc(AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1")
+    audio = AudioDoc(
+        AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1"
+    )
     annotation = audio.timeline("left").reference.add_transcription(
         100,
         800,
@@ -802,7 +938,9 @@ def test_audio_source_url_repr_keeps_filename_and_hides_query():
 
 
 def test_model_annotations_can_be_written_queried_and_removed():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="sources")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="sources"
+    )
     audio.ensure_timeline("mono", duration_ms=1000)
     timeline = audio.timeline("mono")
     reference = timeline.reference.add_transcription(
@@ -847,13 +985,18 @@ def test_model_annotations_can_be_written_queried_and_removed():
     assert speaker.payload.transcription.text == "speaker text"
     assert speaker.payload.transcription.language == "zh"
     assert speaker.payload.transcription.confidence == pytest.approx(0.9)
-    assert [token.text for token in speaker.payload.transcription.tokens] == ["speaker", "text"]
+    assert [token.text for token in speaker.payload.transcription.tokens] == [
+        "speaker",
+        "text",
+    ]
     assert speaker.payload.transcription.tokens[0].start_ms == 0
     assert not hasattr(speaker, "text")
     assert not hasattr(speaker, "name")
     assert not hasattr(speaker, "language")
     assert not hasattr(speaker, "transcription")
-    assert [item.id for item in timeline.prediction.by_source("tegasr")] == [prediction.id]
+    assert [item.id for item in timeline.prediction.by_source("tegasr")] == [
+        prediction.id
+    ]
     assert timeline.reference.transcript().text == "reference"
     assert timeline.prediction.transcript("tegasr").text == "prediction"
     assert timeline.prediction.sources == {
@@ -874,7 +1017,9 @@ def test_model_annotations_can_be_written_queried_and_removed():
 
 
 def test_speaker_transcription_round_trips_through_database(tmp_path):
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="speaker")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="speaker"
+    )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     timeline.reference.add_speaker(
         0,
@@ -902,7 +1047,9 @@ def test_speaker_transcription_round_trips_through_database(tmp_path):
 
 
 def test_speaker_rejects_transcription_token_outside_its_range():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="speaker")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="speaker"
+    )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     transcription = Transcription(
         "outside",
@@ -916,7 +1063,9 @@ def test_speaker_rejects_transcription_token_outside_its_range():
 
 
 def test_annotation_add_methods_are_idempotent():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="dedupe")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="dedupe"
+    )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     first_speech = timeline.reference.add_speech(0, 1000, confidence=0.9)
     duplicate_speech = timeline.reference.add_speech(0, 1000, confidence=0.9)
@@ -924,7 +1073,9 @@ def test_annotation_add_methods_are_idempotent():
     first_speaker = timeline.reference.add_speaker(0, 1000, speaker_payload)
     duplicate_speaker = timeline.reference.add_speaker(0, 1000, speaker_payload)
     first_text = timeline.reference.add_transcription(0, 1000, Transcription("text"))
-    duplicate_text = timeline.reference.add_transcription(0, 1000, Transcription("text"))
+    duplicate_text = timeline.reference.add_transcription(
+        0, 1000, Transcription("text")
+    )
 
     assert duplicate_speech.id == first_speech.id
     assert duplicate_speaker.id == first_speaker.id
@@ -979,7 +1130,9 @@ def test_annotation_status_api_is_removed():
 
 
 def test_annotation_add_rejects_ranges_past_timeline_duration():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="bounds")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="bounds"
+    )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     assert not hasattr(timeline.reference, "add_silence")
     assert not hasattr(timeline.prediction, "add_silence")
@@ -989,9 +1142,7 @@ def test_annotation_add_rejects_ranges_past_timeline_duration():
 
     invalid_adds = [
         lambda: timeline.reference.add_speech(0, 1001),
-        lambda: timeline.reference.add_transcription(
-            0, 1001, Transcription("outside")
-        ),
+        lambda: timeline.reference.add_transcription(0, 1001, Transcription("outside")),
         lambda: timeline.reference.add_speaker(0, 1001, Speaker("outside")),
         lambda: timeline.prediction.add_speech(0, 1001, source="vad"),
     ]
@@ -1005,7 +1156,9 @@ def test_annotation_add_rejects_ranges_past_timeline_duration():
 
 
 def test_prediction_source_is_required_preserved_and_queryable(tmp_path):
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="sources")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="sources"
+    )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     whisper = timeline.prediction.add_speaker(
         0,
@@ -1022,11 +1175,13 @@ def test_prediction_source_is_required_preserved_and_queryable(tmp_path):
 
     assert whisper.source == "whisper"
     assert qwen.source == "qwen-asr"
-    assert [annotation.id for annotation in timeline.prediction.by_source("whisper")] == [
+    assert [
+        annotation.id for annotation in timeline.prediction.by_source("whisper")
+    ] == [whisper.id]
+    assert timeline.prediction.remove_by_source("qwen-asr") == 1
+    assert [annotation.id for annotation in timeline.prediction.annotations] == [
         whisper.id
     ]
-    assert timeline.prediction.remove_by_source("qwen-asr") == 1
-    assert [annotation.id for annotation in timeline.prediction.annotations] == [whisper.id]
     with pytest.raises(ValueError, match="non-empty"):
         timeline.prediction.add_speech(0, 1, source="")
 
@@ -1037,7 +1192,9 @@ def test_prediction_source_is_required_preserved_and_queryable(tmp_path):
 
 
 def test_speaker_transcription_can_be_attached_after_creation():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="attach")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="attach"
+    )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     speaker = timeline.reference.add_speaker(100, 900, Speaker("agent"))
     original_id = speaker.id
@@ -1062,7 +1219,9 @@ def test_speaker_transcription_can_be_attached_after_creation():
 
 
 def test_transcription_assignment_validates_target_and_token_range():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="invalid")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="invalid"
+    )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     speaker = timeline.reference.add_speaker(100, 900, Speaker("agent"))
     speech = timeline.reference.add_speech(0, 1000)
@@ -1079,7 +1238,9 @@ def test_transcription_assignment_validates_target_and_token_range():
 
 
 def test_timeline_eval_reports_transcription_metrics_without_normalization():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-text")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-text"
+    )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     timeline.reference.add_transcription(0, 1000, Transcription("交易停滞"))
     timeline.prediction.add_transcription(
@@ -1090,9 +1251,9 @@ def test_timeline_eval_reports_transcription_metrics_without_normalization():
     )
 
     evaluation = timeline.eval(transcription="qwen-asr", normalize=False)
-    result = evaluation.transcription
+    result = evaluation.transcription["qwen-asr"]
 
-    assert evaluation.speech is None
+    assert evaluation.speech == {}
     assert result.source == "qwen-asr"
     assert result.normalization == "none"
     assert result.reference == "交易停滞"
@@ -1113,7 +1274,9 @@ def test_timeline_eval_reports_transcription_metrics_without_normalization():
 
 
 def test_timeline_eval_uses_embedded_chinese_tn_by_default():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-tn")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-tn"
+    )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     timeline.reference.add_transcription(0, 1000, Transcription("2024年交易"))
     timeline.prediction.add_transcription(
@@ -1123,7 +1286,7 @@ def test_timeline_eval_uses_embedded_chinese_tn_by_default():
         source="qwen-asr",
     )
 
-    result = timeline.eval(transcription="qwen-asr").transcription
+    result = timeline.eval(transcription="qwen-asr").transcription["qwen-asr"]
 
     assert result.normalization == "zh_tn"
     assert result.normalized_reference == "二零二四年交易"
@@ -1133,16 +1296,18 @@ def test_timeline_eval_uses_embedded_chinese_tn_by_default():
 
 
 def test_timeline_eval_reports_speech_duration_confusion_matrix():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-vad")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-vad"
+    )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     timeline.reference.add_speech(100, 400)
     timeline.reference.add_speech(400, 600)
     timeline.prediction.add_speech(200, 700, source="silero-vad")
 
     evaluation = timeline.eval(speech="silero-vad")
-    result = evaluation.speech
+    result = evaluation.speech["silero-vad"]
 
-    assert evaluation.transcription is None
+    assert evaluation.transcription == {}
     assert result.reference_ms == 500
     assert result.predicted_ms == 500
     assert result.true_positive_ms == 400
@@ -1155,23 +1320,86 @@ def test_timeline_eval_reports_speech_duration_confusion_matrix():
     assert result.iou == pytest.approx(2 / 3)
 
 
-def test_timeline_eval_requires_a_task_and_matching_reference_and_prediction():
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-errors")
+def test_timeline_eval_auto_discovers_sources_and_validates_explicit_selection():
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-errors"
+    )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
 
-    with pytest.raises(asr_data.AsrDataError, match="at least one"):
+    with pytest.raises(asr_data.AsrDataError, match="no reference annotations"):
         timeline.eval()
-    with pytest.raises(asr_data.AsrDataError, match="reference annotations are missing"):
+    with pytest.raises(
+        asr_data.AsrDataError, match="reference annotations are missing"
+    ):
         timeline.eval(transcription="qwen-asr", normalize=False)
 
     timeline.reference.add_transcription(0, 1000, Transcription("参考"))
     with pytest.raises(asr_data.AsrDataError, match="qwen-asr"):
         timeline.eval(transcription="qwen-asr", normalize=False)
 
+    timeline.prediction.add_transcription(
+        0, 1000, Transcription("参考"), source="qwen-asr"
+    )
+    timeline.prediction.add_transcription(
+        0, 1000, Transcription("参照"), source="whisper"
+    )
+    result = timeline.eval(normalize=False)
+    assert list(result.transcription) == ["qwen-asr", "whisper"]
+    assert result.transcription["qwen-asr"].cer == 0.0
+    assert result.transcription["whisper"].cer == 0.5
+
+
+def test_dataset_eval_aggregates_corpus_metrics_and_coverage(tmp_path):
+    docs = []
+    for audio_id, reference, predictions in [
+        ("first", "aaaa", {"qwen": "aaab", "whisper": "aaaa"}),
+        ("second", "a", {"qwen": ""}),
+    ]:
+        doc = AudioDoc(
+            AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000),
+            id=audio_id,
+        )
+        timeline = doc.timeline("mono")
+        timeline.reference.add_transcription(0, 1000, Transcription(reference))
+        for source, text in predictions.items():
+            timeline.prediction.add_transcription(
+                0, 1000, Transcription(text), source=source
+            )
+        docs.append(doc)
+
+    unannotated = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000),
+        id="third",
+    )
+    docs.append(unannotated)
+
+    result = asr_data.evaluate_dataset(docs, normalize=False)
+    assert result.documents == 3
+    assert result.timelines == 3
+    assert result.transcription["qwen"].cer == 0.4
+    assert result.transcription["qwen"].unannotated_timelines == 1
+    assert result.transcription["whisper"].coverage == 0.5
+    assert result.transcription["whisper"].missing_prediction_ids == ["second:mono"]
+
+    db = AudioDB.create(str(tmp_path / "dataset-eval.db"))
+    for doc in docs:
+        doc.metadata["split"] = "test"
+        db.insert(doc)
+    db_result = db.eval(
+        transcription=["qwen", "whisper"],
+        normalize=False,
+        batch_size=1,
+        metadata={"split": "test"},
+    )
+    assert db_result.documents == 3
+    assert db_result.transcription["qwen"].cer == 0.4
+
 
 def test_database_update_detects_changes(tmp_path):
     path = tmp_path / "timeline-only.vasr"
-    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="timeline-only")
+    audio = AudioDoc(
+        AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="timeline-only"
+    )
     audio.ensure_timeline("mono", duration_ms=1000)
     audio.metadata["preserved"] = True
     db = AudioDB.create(str(path))
@@ -1191,8 +1419,7 @@ def test_database_update_detects_changes(tmp_path):
         loaded.timeline("mono").prediction.transcript("old-model").text == "prediction"
     )
     assert (
-        loaded.timeline("mono").prediction.relabel_source("old-model", "new-model")
-        == 1
+        loaded.timeline("mono").prediction.relabel_source("old-model", "new-model") == 1
     )
     assert db.update(loaded) is True
     loaded = db["timeline-only"]
