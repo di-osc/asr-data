@@ -9,10 +9,3 @@ AnnotationKind: TypeAlias = Literal[
     "language",
     "acoustic_event",
 ]
-
-AnnotationStatus: TypeAlias = Literal[
-    "partial",
-    "final",
-    "revised",
-    "deleted",
-]

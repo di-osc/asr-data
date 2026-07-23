@@ -1,7 +1,7 @@
 use crate::audio::AudioChannel as RustAudioChannel;
 use crate::doc::AudioDoc as RustAudioDoc;
 use crate::timeline::{
-    Annotation as RustAnnotation, AnnotationPayload, AnnotationStatus, SpeakerPayload,
+    Annotation as RustAnnotation, AnnotationPayload, SpeakerPayload,
     SpeechEvaluation as RustSpeechEvaluation, Timeline as RustTimeline, TimelineEvalConfig,
     TimelineEvaluation as RustTimelineEvaluation, Transcript as RustTranscript,
     Transcription as RustTranscription, TranscriptionEvaluation as RustTranscriptionEvaluation,
@@ -12,9 +12,7 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use super::annotation::{PySpeaker, PyToken, PyTranscription};
-use super::common::{
-    SharedAudio, annotation_status, format_duration_ms, poisoned, py_error, status_name, truncate,
-};
+use super::common::{SharedAudio, format_duration_ms, poisoned, py_error, truncate};
 
 #[pyclass(name = "Annotation")]
 #[derive(Clone)]
@@ -46,11 +44,6 @@ impl PyAnnotation {
     #[getter]
     fn end_ms(&self) -> PyResult<u64> {
         Ok(self.snapshot()?.range.end.0)
-    }
-
-    #[getter]
-    fn status(&self) -> PyResult<&'static str> {
-        Ok(status_name(&self.snapshot()?.status))
     }
 
     #[getter]
@@ -92,7 +85,8 @@ impl PyAnnotation {
             .timeline_mut(self.channel)
             .map_err(py_error)?
             .ok_or_else(|| PyRuntimeError::new_err("selected timeline does not exist"))?;
-        let annotations = annotations_mut(timeline, self.group);
+        let mut candidate = timeline.clone();
+        let annotations = annotations_mut(&mut candidate, self.group);
         let index = annotations
             .iter()
             .position(|annotation| annotation.id == self.annotation_id)
@@ -154,6 +148,8 @@ impl PyAnnotation {
         let updated = annotations[index].clone();
         annotations
             .retain(|annotation| annotation.id == updated.id || !annotation.content_eq(&updated));
+        candidate.validate_annotations().map_err(py_error)?;
+        *timeline = candidate;
         Ok(())
     }
 
@@ -191,12 +187,11 @@ impl PyAnnotation {
             _ => String::new(),
         };
         Ok(format!(
-            "Annotation(id={:?}, kind={:?}, range={}..{}ms, status={:?}{speaker}{text}{confidence})",
+            "Annotation(id={:?}, kind={:?}, range={}..{}ms{speaker}{text}{confidence})",
             truncate(&annotation.id, 20),
             annotation_kind(&annotation.payload),
             annotation.range.start.0,
             annotation.range.end.0,
-            status_name(&annotation.status),
         ))
     }
 
@@ -698,7 +693,6 @@ impl AnnotationCollectionCore {
         Ok(annotations(self.selected(&audio)?, self.group).len())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn add_payload(
         &self,
         start_ms: u64,
@@ -706,7 +700,6 @@ impl AnnotationCollectionCore {
         payload: AnnotationPayload,
         source: Option<&str>,
         confidence: Option<f32>,
-        status: AnnotationStatus,
     ) -> PyResult<PyAnnotation> {
         if end_ms < start_ms {
             return Err(PyValueError::new_err("end_ms must be >= start_ms"));
@@ -715,7 +708,6 @@ impl AnnotationCollectionCore {
             TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
             payload,
             source.map(str::to_string),
-            status,
         );
         annotation.confidence = confidence;
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
@@ -727,9 +719,10 @@ impl AnnotationCollectionCore {
             )));
         }
         let annotation_id = match self.group {
-            AnnotationGroup::Reference => timeline.push_reference_unique(annotation),
-            AnnotationGroup::Prediction => timeline.push_prediction_unique(annotation),
+            AnnotationGroup::Reference => timeline.push_reference(annotation),
+            AnnotationGroup::Prediction => timeline.push_prediction(annotation),
         }
+        .map_err(py_error)?
         .id
         .clone();
         Ok(self.annotation_handle(annotation_id))
@@ -762,18 +755,16 @@ impl PyReferenceAnnotations {
             AnnotationPayload::Speech,
             None,
             confidence,
-            AnnotationStatus::Final,
         )
     }
 
-    #[pyo3(signature = (start_ms, end_ms, transcription, confidence=None, status="final"))]
+    #[pyo3(signature = (start_ms, end_ms, transcription, confidence=None))]
     fn add_transcription(
         &self,
         start_ms: u64,
         end_ms: u64,
         transcription: PyRef<'_, PyTranscription>,
         confidence: Option<f32>,
-        status: &str,
     ) -> PyResult<PyAnnotation> {
         validate_transcription_range(
             TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
@@ -786,18 +777,16 @@ impl PyReferenceAnnotations {
             AnnotationPayload::Transcription(transcription.inner.clone()),
             None,
             confidence,
-            annotation_status(status)?,
         )
     }
 
-    #[pyo3(signature = (start_ms, end_ms, speaker, confidence=None, status="final"))]
+    #[pyo3(signature = (start_ms, end_ms, speaker, confidence=None))]
     fn add_speaker(
         &self,
         start_ms: u64,
         end_ms: u64,
         speaker: PyRef<'_, PySpeaker>,
         confidence: Option<f32>,
-        status: &str,
     ) -> PyResult<PyAnnotation> {
         add_speaker(
             &self.core,
@@ -806,7 +795,6 @@ impl PyReferenceAnnotations {
             &speaker.inner,
             None,
             confidence,
-            status,
         )
     }
 
@@ -864,7 +852,7 @@ impl PyPredictionAnnotations {
         )
     }
 
-    #[pyo3(signature = (start_ms, end_ms, transcription, *, source, confidence=None, status="final"))]
+    #[pyo3(signature = (start_ms, end_ms, transcription, *, source, confidence=None))]
     #[allow(clippy::too_many_arguments)]
     fn add_transcription(
         &self,
@@ -873,7 +861,6 @@ impl PyPredictionAnnotations {
         transcription: PyRef<'_, PyTranscription>,
         source: &str,
         confidence: Option<f32>,
-        status: &str,
     ) -> PyResult<PyAnnotation> {
         validate_source(source)?;
         validate_transcription_range(
@@ -887,11 +874,10 @@ impl PyPredictionAnnotations {
             AnnotationPayload::Transcription(transcription.inner.clone()),
             Some(source),
             confidence,
-            annotation_status(status)?,
         )
     }
 
-    #[pyo3(signature = (start_ms, end_ms, speaker, *, source, confidence=None, status="final"))]
+    #[pyo3(signature = (start_ms, end_ms, speaker, *, source, confidence=None))]
     #[allow(clippy::too_many_arguments)]
     fn add_speaker(
         &self,
@@ -900,7 +886,6 @@ impl PyPredictionAnnotations {
         speaker: PyRef<'_, PySpeaker>,
         source: &str,
         confidence: Option<f32>,
-        status: &str,
     ) -> PyResult<PyAnnotation> {
         validate_source(source)?;
         add_speaker(
@@ -910,7 +895,6 @@ impl PyPredictionAnnotations {
             &speaker.inner,
             Some(source),
             confidence,
-            status,
         )
     }
 
@@ -942,10 +926,10 @@ impl PyPredictionAnnotations {
     fn relabel_source(&self, from_source: &str, to_source: &str) -> PyResult<usize> {
         validate_source(to_source)?;
         let mut audio = self.core.audio.write().map_err(|_| poisoned("audio"))?;
-        Ok(self
-            .core
+        self.core
             .selected_mut(&mut audio)?
-            .relabel_prediction_source(from_source, to_source))
+            .relabel_prediction_source(from_source, to_source)
+            .map_err(py_error)
     }
 
     fn __len__(&self) -> PyResult<usize> {
@@ -963,18 +947,11 @@ impl PyPredictionAnnotations {
         confidence: Option<f32>,
     ) -> PyResult<PyAnnotation> {
         validate_source(source)?;
-        self.core.add_payload(
-            start_ms,
-            end_ms,
-            payload,
-            Some(source),
-            confidence,
-            AnnotationStatus::Final,
-        )
+        self.core
+            .add_payload(start_ms, end_ms, payload, Some(source), confidence)
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn add_speaker(
     core: &AnnotationCollectionCore,
     start_ms: u64,
@@ -982,7 +959,6 @@ fn add_speaker(
     speaker: &SpeakerPayload,
     source: Option<&str>,
     confidence: Option<f32>,
-    status: &str,
 ) -> PyResult<PyAnnotation> {
     validate_speaker_transcription(
         TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
@@ -994,7 +970,6 @@ fn add_speaker(
         AnnotationPayload::Speaker(speaker.clone()),
         source,
         confidence,
-        annotation_status(status)?,
     )
 }
 

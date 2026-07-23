@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any, Awaitable, Literal
 import numpy as np
 import numpy.typing as npt
-from ._types import AnnotationKind, AnnotationStatus
+from ._types import AnnotationKind
 
 class AsrDataError(Exception): ...
 
@@ -195,9 +195,6 @@ class Annotation:
     def start_ms(self) -> int: ...
     @property
     def end_ms(self) -> int: ...
-    @property
-    def status(self) -> AnnotationStatus: ...
-    @property
     def kind(self) -> AnnotationKind: ...
     @property
     def confidence(self) -> float | None: ...
@@ -295,7 +292,6 @@ class ReferenceAnnotations:
         end_ms: int,
         transcription: Transcription,
         confidence: float | None = None,
-        status: AnnotationStatus = "final",
     ) -> Annotation: ...
     def add_speaker(
         self,
@@ -303,7 +299,6 @@ class ReferenceAnnotations:
         end_ms: int,
         speaker: Speaker,
         confidence: float | None = None,
-        status: AnnotationStatus = "final",
     ) -> Annotation: ...
     def transcript(self) -> Transcript: ...
     def __len__(self) -> int: ...
@@ -329,7 +324,6 @@ class PredictionAnnotations:
         *,
         source: str,
         confidence: float | None = None,
-        status: AnnotationStatus = "final",
     ) -> Annotation: ...
     def add_speaker(
         self,
@@ -339,7 +333,6 @@ class PredictionAnnotations:
         *,
         source: str,
         confidence: float | None = None,
-        status: AnnotationStatus = "final",
     ) -> Annotation: ...
     def by_source(self, source: str) -> list[Annotation]: ...
     def transcript(self, source: str) -> Transcript: ...

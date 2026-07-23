@@ -12,8 +12,7 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use super::schema::{configure, initialize, validate};
 use super::{
-    AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioDbTransaction, AudioQuery,
-    CHANNEL_TIMELINE_SCHEMA_VERSION, LEGACY_SCHEMA_VERSION, MAX_QUERY_LIMIT, SCHEMA_VERSION,
+    AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioQuery, MAX_QUERY_LIMIT, SCHEMA_VERSION,
 };
 
 impl AudioDb {
@@ -28,20 +27,14 @@ impl AudioDb {
                 )?;
                 initialize(&connection)?;
                 configure(&connection)?;
-                Ok(Self {
-                    connection,
-                    schema_version: SCHEMA_VERSION,
-                })
+                Ok(Self { connection })
             }
             AudioDbMode::ReadOnly => {
                 let connection =
                     Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-                let schema_version = validate(&connection)?;
+                validate(&connection)?;
                 configure(&connection)?;
-                Ok(Self {
-                    connection,
-                    schema_version,
-                })
+                Ok(Self { connection })
             }
         }
     }
@@ -57,11 +50,11 @@ impl AudioDb {
     }
 
     pub fn query(&self, query: &AudioQuery) -> Result<Vec<AudioDoc>, AudioDbError> {
-        query_with(&self.connection, query, self.schema_version)
+        query_with(&self.connection, query)
     }
 
     pub fn get(&self, audio_id: &str) -> Result<Option<AudioDoc>, AudioDbError> {
-        get_with(&self.connection, audio_id, self.schema_version)
+        get_with(&self.connection, audio_id)
     }
 
     pub fn contains(&self, audio_id: &str) -> Result<bool, AudioDbError> {
@@ -150,44 +143,12 @@ impl AudioDb {
             .execute("DELETE FROM metadata WHERE key = ?1", [key])?
             != 0)
     }
-
-    pub(crate) fn transaction(&mut self) -> Result<AudioDbTransaction<'_>, AudioDbError> {
-        Ok(AudioDbTransaction {
-            transaction: self.connection.transaction()?,
-        })
-    }
-}
-
-impl AudioDbTransaction<'_> {
-    pub(crate) fn insert(&self, audio: &AudioDoc) -> Result<(), AudioDbError> {
-        insert_with(&self.transaction, audio)
-    }
-
-    pub(crate) fn commit(self) -> Result<(), AudioDbError> {
-        self.transaction.commit()?;
-        Ok(())
-    }
-}
-
-pub fn import_legacy_msgpack_to_db(
-    input: impl AsRef<Path>,
-    output: impl AsRef<Path>,
-) -> Result<usize, AudioDbError> {
-    let audios = crate::doc::read_legacy_msgpack(input)?;
-    let count = audios.len();
-    let mut db = AudioDb::open(output, AudioDbMode::ReadWrite)?;
-    let transaction = db.transaction()?;
-    for audio in &audios {
-        transaction.insert(audio)?;
-    }
-    transaction.commit()?;
-    Ok(count)
 }
 
 pub fn read_audio_db_info(path: impl AsRef<Path>) -> Result<AudioDbInfo, AudioDbError> {
     let db = AudioDb::open(path, AudioDbMode::ReadOnly)?;
     Ok(AudioDbInfo {
-        schema_version: db.schema_version,
+        schema_version: SCHEMA_VERSION,
         audios: db.len()?,
         total_duration: db.total_duration()?,
     })
@@ -289,11 +250,7 @@ fn update_with(connection: &Connection, audio: &AudioDoc) -> Result<bool, AudioD
     }
 }
 
-fn query_with(
-    connection: &Connection,
-    query: &AudioQuery,
-    schema_version: i64,
-) -> Result<Vec<AudioDoc>, AudioDbError> {
+fn query_with(connection: &Connection, query: &AudioQuery) -> Result<Vec<AudioDoc>, AudioDbError> {
     if query.limit > MAX_QUERY_LIMIT {
         return Err(AudioDbError::QueryLimitExceeded {
             limit: query.limit,
@@ -311,20 +268,13 @@ fn query_with(
         return Err(AudioDbError::InvalidDurationRange);
     }
 
-    let mut sql = if schema_version == LEGACY_SCHEMA_VERSION {
-        String::from(
-            "SELECT audios.source, audios.timeline, audios.metadata,
-                    audios.audio_id, audios.duration_ms FROM audios",
-        )
-    } else {
-        String::from(
-            "SELECT audio_sources.source, timelines.timeline, audios.metadata,
-                    audios.audio_id, audios.duration_ms
-             FROM audios
-             JOIN audio_sources USING (audio_id)
-             JOIN timelines USING (audio_id)",
-        )
-    };
+    let mut sql = String::from(
+        "SELECT audio_sources.source, timelines.timeline, audios.metadata,
+                audios.audio_id
+         FROM audios
+         JOIN audio_sources USING (audio_id)
+         JOIN timelines USING (audio_id)",
+    );
     let mut predicates = Vec::new();
     let mut parameters = Vec::<SqlValue>::new();
 
@@ -370,7 +320,7 @@ fn query_with(
 
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(params_from_iter(parameters.iter()), |row| {
-        decode_audio_row(row, schema_version)
+        decode_audio_row(row)
     })?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(AudioDbError::from)
@@ -381,59 +331,36 @@ fn push_sql_parameter(parameters: &mut Vec<SqlValue>, value: SqlValue) -> String
     format!("?{}", parameters.len())
 }
 
-fn get_with(
-    connection: &Connection,
-    audio_id: &str,
-    schema_version: i64,
-) -> Result<Option<AudioDoc>, AudioDbError> {
-    let sql = if schema_version == LEGACY_SCHEMA_VERSION {
-        "SELECT source, timeline, metadata, audio_id, duration_ms
-         FROM audios WHERE audio_id = ?1"
-    } else {
-        "SELECT audio_sources.source, timelines.timeline, audios.metadata,
-                audios.audio_id, audios.duration_ms
-         FROM audios
-         JOIN audio_sources USING (audio_id)
-         JOIN timelines USING (audio_id)
-         WHERE audios.audio_id = ?1"
-    };
+fn get_with(connection: &Connection, audio_id: &str) -> Result<Option<AudioDoc>, AudioDbError> {
+    let sql = "SELECT audio_sources.source, timelines.timeline, audios.metadata,
+                      audios.audio_id
+               FROM audios
+               JOIN audio_sources USING (audio_id)
+               JOIN timelines USING (audio_id)
+               WHERE audios.audio_id = ?1";
     connection
-        .query_row(sql, [audio_id], |row| decode_audio_row(row, schema_version))
+        .query_row(sql, [audio_id], decode_audio_row)
         .optional()
         .map_err(AudioDbError::from)
 }
 
-fn decode_audio_row(row: &rusqlite::Row<'_>, schema_version: i64) -> rusqlite::Result<AudioDoc> {
+fn decode_audio_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AudioDoc> {
     let source: Vec<u8> = row.get(0)?;
     let timeline: Vec<u8> = row.get(1)?;
     let metadata: String = row.get(2)?;
     let audio_id: String = row.get(3)?;
-    let duration = row
-        .get::<_, Option<i64>>(4)?
-        .map(|value| DurationMs(u64::try_from(value).unwrap_or_default()));
     let source = decode(&source).map_err(sql_conversion_error)?;
-    let timelines = if schema_version >= CHANNEL_TIMELINE_SCHEMA_VERSION {
-        decode(&timeline).map_err(sql_conversion_error)?
-    } else {
-        let timeline = decode(&timeline).map_err(sql_conversion_error)?;
-        BTreeMap::from([(AudioChannel::Mono, timeline)])
-    };
+    let timelines: BTreeMap<AudioChannel, Timeline> =
+        decode(&timeline).map_err(sql_conversion_error)?;
     let metadata = serde_json::from_str(&metadata).map_err(sql_conversion_error)?;
-    let mut timelines: BTreeMap<AudioChannel, Timeline> = timelines;
-    for timeline in timelines.values_mut() {
-        timeline.audio_id.clone_from(&audio_id);
-        if timeline.duration == DurationMs(0)
-            && let Some(duration) = duration
-        {
-            timeline.duration = duration;
-        }
-    }
-    Ok(AudioDoc {
+    let audio = AudioDoc {
         id: audio_id,
         source,
         timelines,
         metadata,
-    })
+    };
+    audio.validate().map_err(sql_conversion_error)?;
+    Ok(audio)
 }
 
 pub(super) fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, rmp_serde::encode::Error> {

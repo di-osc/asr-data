@@ -13,17 +13,15 @@ pub use audio::{Audio, AudioChunk, AudioChunks, AudioError};
 pub use audio::{AudioChannel, AudioEncoding, AudioFormat, AudioSource};
 pub use db::{
     AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioQuery, DEFAULT_QUERY_LIMIT,
-    MAX_QUERY_LIMIT, import_legacy_msgpack_to_db, read_audio_db_info,
+    MAX_QUERY_LIMIT, read_audio_db_info,
 };
-pub use doc::{
-    AudioChannelError, AudioDoc, AudioTimelineError, AudioValidationError, LegacyImportError,
-    read_legacy_msgpack,
-};
+pub use doc::{AudioChannelError, AudioDoc, AudioTimelineError, AudioValidationError};
 pub use metrics::{CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh};
 pub use timeline::{
-    AcousticEvent, Annotation, AnnotationId, AnnotationPayload, AudioId, LanguageTag, SpeakerId,
-    SpeakerPayload, SpeechEvaluation, TextSpan, Timeline, TimelineAnnotationError,
-    TimelineEvalConfig, TimelineEvalError, TimelineEvaluation, TimelineId, Token, Transcript,
-    Transcription, TranscriptionEvaluation, TranscriptionNormalization,
+    AcousticEvent, Annotation, AnnotationConflictKind, AnnotationId, AnnotationOverlap,
+    AnnotationPayload, AudioId, LanguageTag, SpeakerId, SpeakerPayload, SpeechEvaluation, TextSpan,
+    Timeline, TimelineAnnotationError, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation,
+    TimelineId, Token, Transcript, Transcription, TranscriptionEvaluation,
+    TranscriptionNormalization,
 };
 pub use utils::{DurationMs, SampleIndex, TimeRange};

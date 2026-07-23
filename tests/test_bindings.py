@@ -21,7 +21,6 @@ from asr_data import (
 )
 from asr_data.annotation import (
     AnnotationKind,
-    AnnotationStatus,
     Speaker,
     Token,
     Transcription,
@@ -91,12 +90,8 @@ def test_annotation_literal_types_are_public_and_complete():
         "language",
         "acoustic_event",
     }
-    assert set(typing.get_args(AnnotationStatus)) == {
-        "partial",
-        "final",
-        "revised",
-        "deleted",
-    }
+    assert not hasattr(asr_data.annotation, "AnnotationStatus")
+    assert not hasattr(asr_data, "AnnotationStatus")
 
 
 def test_audio_waveform_timeline_and_db(tmp_path):
@@ -150,7 +145,6 @@ def test_audio_waveform_timeline_and_db(tmp_path):
         "all",
         "remove",
         "contains",
-        "import_legacy_msgpack",
         "relabel_annotation_sources",
     ):
         assert not hasattr(db, removed)
@@ -705,15 +699,6 @@ def test_audio_display_builds_ipython_player_for_selected_range(monkeypatch):
         audio.display(start_ms=500, end_ms=200)
 
 
-def test_existing_db_can_be_opened_read_only():
-    fixture = "tests/fixtures/lbg_call-100.vasr"
-    if not os.path.exists(fixture):
-        pytest.skip("optional legacy database fixture is not available")
-    db = AudioDB(fixture, read_only=True)
-    assert len(db) == 99
-    assert len(list(db)[:2]) == 2
-
-
 def test_public_types_have_informative_repr(tmp_path):
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
     audio = AudioDoc(AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1")
@@ -862,11 +847,9 @@ def test_speaker_rejects_transcription_token_outside_its_range():
 def test_annotation_add_methods_are_idempotent():
     audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="dedupe")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    transcription = Transcription("hello")
-
     first_speech = timeline.reference.add_speech(0, 1000, confidence=0.9)
     duplicate_speech = timeline.reference.add_speech(0, 1000, confidence=0.9)
-    speaker_payload = Speaker("agent", transcription=transcription)
+    speaker_payload = Speaker("agent")
     first_speaker = timeline.reference.add_speaker(0, 1000, speaker_payload)
     duplicate_speaker = timeline.reference.add_speaker(0, 1000, speaker_payload)
     first_text = timeline.reference.add_transcription(0, 1000, Transcription("text"))
@@ -877,13 +860,51 @@ def test_annotation_add_methods_are_idempotent():
     assert duplicate_text.id == first_text.id
     assert len(timeline.reference.annotations) == 3
 
-    changed = timeline.reference.add_speaker(
-        0,
-        1000,
-        Speaker("agent", transcription=Transcription("updated")),
-    )
-    assert changed.id != first_speaker.id
-    assert len(timeline.reference.annotations) == 4
+    with pytest.raises(asr_data.AsrDataError, match="overlaps"):
+        timeline.reference.add_speaker(
+            0,
+            1000,
+            Speaker("agent", transcription=Transcription("updated")),
+        )
+    assert len(timeline.reference.annotations) == 3
+
+
+def test_annotation_overlap_rules_and_atomic_mutations():
+    audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="lanes")
+    timeline = audio.ensure_timeline("mono", duration_ms=1000)
+
+    timeline.reference.add_speech(0, 500)
+    timeline.reference.add_speech(500, 1000)
+    with pytest.raises(asr_data.AsrDataError, match="Speech.*overlaps"):
+        timeline.reference.add_speech(400, 600)
+
+    alice = timeline.reference.add_speaker(0, 400, Speaker("alice"))
+    timeline.reference.add_speaker(200, 600, Speaker("bob"))
+    with pytest.raises(asr_data.AsrDataError, match="Speaker.*overlaps"):
+        timeline.reference.add_speaker(300, 500, Speaker("alice"))
+
+    timeline.reference.add_transcription(300, 500, Transcription("top-level"))
+    with pytest.raises(asr_data.AsrDataError, match="Transcription.*overlaps"):
+        alice.payload = Speaker("alice", transcription=Transcription("conflict"))
+    assert alice.payload.transcription is None
+
+    timeline.prediction.add_speech(0, 600, source="vad-a")
+    timeline.prediction.add_speech(300, 900, source="vad-b")
+    candidate = timeline.prediction.add_speech(500, 1000, source="vad-c")
+    with pytest.raises(asr_data.AsrDataError, match="Speech.*overlaps"):
+        timeline.prediction.relabel_source("vad-c", "vad-a")
+    assert candidate.source == "vad-c"
+
+
+def test_annotation_status_api_is_removed():
+    audio = AudioDoc(AudioSource.from_pcm(b"\0\0", sample_rate=1000), id="status-free")
+    annotation = audio.ensure_timeline("mono", duration_ms=1).reference.add_speech(0, 1)
+
+    assert not hasattr(annotation, "status")
+    with pytest.raises(TypeError):
+        audio.timeline("mono").reference.add_transcription(
+            0, 1, Transcription("text"), status="final"
+        )
 
 
 def test_annotation_add_rejects_ranges_past_timeline_duration():
@@ -1043,7 +1064,7 @@ def test_timeline_eval_uses_embedded_chinese_tn_by_default():
 def test_timeline_eval_reports_speech_duration_confusion_matrix():
     audio = AudioDoc(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-vad")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    timeline.reference.add_speech(100, 500)
+    timeline.reference.add_speech(100, 400)
     timeline.reference.add_speech(400, 600)
     timeline.prediction.add_speech(200, 700, source="silero-vad")
 
@@ -1124,7 +1145,7 @@ def test_database_update_detects_changes(tmp_path):
     assert db.update_many([another]) == 1
 
 
-def test_audiodoc_has_no_legacy_load_factories(tmp_path):
+def test_audiodoc_exposes_source_based_loading_only(tmp_path):
     wav_path = tmp_path / "audio.wav"
     with wave.open(str(wav_path), "wb") as writer:
         writer.setnchannels(1)

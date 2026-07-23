@@ -4,7 +4,6 @@ use crate::audio::{
     AudioChannel as RustAudioChannel, AudioEncoding, AudioSource as RustAudioSource,
 };
 use crate::db::AudioDbError as RustAudioDbError;
-use crate::timeline::AnnotationStatus;
 use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
@@ -25,18 +24,6 @@ pub(super) fn py_db_error(error: RustAudioDbError) -> PyErr {
 
 pub(super) fn poisoned(label: &str) -> PyErr {
     PyRuntimeError::new_err(format!("{label} lock is poisoned"))
-}
-
-pub(super) fn annotation_status(value: &str) -> PyResult<AnnotationStatus> {
-    match value.to_ascii_lowercase().as_str() {
-        "partial" => Ok(AnnotationStatus::Partial),
-        "final" => Ok(AnnotationStatus::Final),
-        "revised" => Ok(AnnotationStatus::Revised),
-        "deleted" => Ok(AnnotationStatus::Deleted),
-        _ => Err(PyValueError::new_err(format!(
-            "unsupported annotation status {value:?}"
-        ))),
-    }
 }
 
 pub(super) fn audio_channel(value: &Bound<'_, PyAny>) -> PyResult<RustAudioChannel> {
@@ -65,15 +52,6 @@ pub(super) fn audio_channel(value: &Bound<'_, PyAny>) -> PyResult<RustAudioChann
 
 pub(super) fn audio_channel_name(channel: RustAudioChannel) -> String {
     channel.name()
-}
-
-pub(super) fn status_name(status: &AnnotationStatus) -> &'static str {
-    match status {
-        AnnotationStatus::Partial => "partial",
-        AnnotationStatus::Final => "final",
-        AnnotationStatus::Revised => "revised",
-        AnnotationStatus::Deleted => "deleted",
-    }
 }
 
 pub(super) fn encoding_name(encoding: &AudioEncoding) -> String {

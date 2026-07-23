@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use asr_data::audio::{self, decode};
 use asr_data::{
@@ -8,8 +8,7 @@ use asr_data::{
     SampleIndex, SpeakerPayload, SpeechEvaluation, TextNormalizationError, TextSpan, TimeRange,
     Timeline, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation, Token, Transcript,
     Transcription, TranscriptionEvaluation, TranscriptionNormalization, compute_cer,
-    import_legacy_msgpack_to_db, normalize_for_cer, normalize_zh, read_audio_db_info,
-    read_legacy_msgpack,
+    normalize_for_cer, normalize_zh, read_audio_db_info,
 };
 
 #[test]
@@ -58,12 +57,6 @@ fn stable_public_paths_compile() {
     let _: usize = MAX_QUERY_LIMIT;
     let _ = || {
         let path = Path::new("unused");
-        let path_buf = PathBuf::from("unused");
-        let _ = import_legacy_msgpack_to_db(path, path);
-        let _ = import_legacy_msgpack_to_db(path_buf.clone(), path_buf.clone());
         let _ = read_audio_db_info(path);
-        let _ = read_audio_db_info(path_buf.clone());
-        let _ = read_legacy_msgpack(path);
-        let _ = read_legacy_msgpack(path_buf);
     };
 }

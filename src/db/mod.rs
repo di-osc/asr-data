@@ -1,21 +1,17 @@
 use std::collections::BTreeMap;
 
-use rusqlite::{Connection, Transaction};
+use rusqlite::Connection;
 use thiserror::Error;
 
-use crate::doc::{AudioValidationError, LegacyImportError};
+use crate::doc::AudioValidationError;
 use crate::utils::DurationMs;
 
 mod query;
 mod schema;
 
-pub use query::{import_legacy_msgpack_to_db, read_audio_db_info};
+pub use query::read_audio_db_info;
 
-const SCHEMA_VERSION: i64 = 5;
-const FLAT_ANNOTATION_SCHEMA_VERSION: i64 = 4;
-const CHANNEL_TIMELINE_SCHEMA_VERSION: i64 = 3;
-const SPLIT_TABLE_SCHEMA_VERSION: i64 = 2;
-const LEGACY_SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 6;
 const APPLICATION_ID: i64 = 0x5641_5352; // "VASR"
 pub const DEFAULT_QUERY_LIMIT: usize = 100;
 pub const MAX_QUERY_LIMIT: usize = 10_000;
@@ -42,13 +38,10 @@ pub enum AudioDbError {
     QueryLimitExceeded { limit: usize, max: usize },
     #[error("audio query minimum duration exceeds its maximum duration")]
     InvalidDurationRange,
-    #[error("failed to import legacy MessagePack audio data: {0}")]
-    LegacyImport(#[from] LegacyImportError),
 }
 
 pub struct AudioDb {
     connection: Connection,
-    schema_version: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,10 +69,6 @@ impl Default for AudioQuery {
 pub enum AudioDbMode {
     ReadWrite,
     ReadOnly,
-}
-
-pub(crate) struct AudioDbTransaction<'db> {
-    transaction: Transaction<'db>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

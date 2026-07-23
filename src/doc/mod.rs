@@ -3,12 +3,8 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use crate::audio::{AudioChannel, AudioSource};
-use crate::timeline::Timeline;
+use crate::timeline::{Timeline, TimelineAnnotationError};
 use crate::utils::DurationMs;
-
-mod legacy;
-
-pub use legacy::{LegacyImportError, read_legacy_msgpack};
 
 /// An audio source together with all annotations and per-audio metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -183,6 +179,12 @@ impl AudioDoc {
                     });
                 }
             }
+            timeline.validate_annotations().map_err(|error| {
+                AudioValidationError::InvalidAnnotations {
+                    channel: *channel,
+                    error,
+                }
+            })?;
         }
         Ok(())
     }
@@ -224,6 +226,11 @@ pub enum AudioValidationError {
     PredictionAnnotationMissingSource {
         channel: AudioChannel,
         annotation_id: String,
+    },
+    #[error("invalid annotations on {channel:?}: {error}")]
+    InvalidAnnotations {
+        channel: AudioChannel,
+        error: TimelineAnnotationError,
     },
 }
 

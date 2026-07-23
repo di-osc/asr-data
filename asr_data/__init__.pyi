@@ -3,7 +3,6 @@ from collections.abc import Awaitable
 from .annotation import Annotation as Annotation
 from .annotation import AnnotationKind as AnnotationKind
 from .annotation import AnnotationPayload as AnnotationPayload
-from .annotation import AnnotationStatus as AnnotationStatus
 from .annotation import Speaker as Speaker
 from .annotation import Token as Token
 from .annotation import Transcription as Transcription
