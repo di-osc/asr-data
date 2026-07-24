@@ -1142,7 +1142,7 @@ class Timeline:
         end_ms: int,
         annotation: AudioActivity | Token | Transcription | Speaker,
         *,
-        is_reference: bool,
+        is_reference: bool = True,
         source: str | None = None,
     ) -> TimeSpan:
         """添加 reference 或 prediction 标注。
@@ -1151,7 +1151,7 @@ class Timeline:
             start_ms: 全局起始时间。
             end_ms: 全局结束时间。
             annotation: AudioActivity、Token、Transcription 或 Speaker。
-            is_reference: 是否为参考答案。
+            is_reference: 是否为参考答案，默认为 True。
             source: prediction 来源；reference 必须省略。
 
         Returns:
@@ -1163,7 +1163,7 @@ class Timeline:
 
         Examples:
             >>> span = timeline.annotate_span(
-            ...     0, timeline.duration_ms, transcription, is_reference=True
+            ...     0, timeline.duration_ms, transcription
             ... )
         """
     def as_waveform(self) -> Waveform:

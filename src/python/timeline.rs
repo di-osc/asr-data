@@ -895,7 +895,7 @@ impl PyTimeline {
     ///     start_ms: 全局起始时间，单位为毫秒。
     ///     end_ms: 全局结束时间，单位为毫秒。
     ///     annotation: AudioActivity、Transcription、Speaker 或 Token。
-    ///     is_reference: ``True`` 表示参考答案，``False`` 表示模型预测。
+    ///     is_reference: ``True`` 表示参考答案，``False`` 表示模型预测。默认为 ``True``。
     ///     source: prediction 的模型或流程名称；reference 必须省略。
     ///
     /// Returns:
@@ -910,7 +910,7 @@ impl PyTimeline {
     ///     >>> from asr_data.annotation import Transcription
     ///     >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).load().timeline("mono")
     ///     >>> reference = timeline.annotate_span(
-    ///     ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
+    ///     ...     0, timeline.duration_ms, Transcription("你好")
     ///     ... )
     ///     >>> prediction = timeline.annotate_span(
     ///     ...     0,
@@ -919,7 +919,7 @@ impl PyTimeline {
     ///     ...     is_reference=False,
     ///     ...     source="asr",
     ///     ... )
-    #[pyo3(signature = (start_ms, end_ms, annotation, *, is_reference, source=None))]
+    #[pyo3(signature = (start_ms, end_ms, annotation, *, is_reference=true, source=None))]
     fn annotate_span(
         &self,
         start_ms: u64,
