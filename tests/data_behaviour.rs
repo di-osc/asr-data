@@ -124,7 +124,7 @@ fn annotation_model_is_status_free() {
         None,
     );
 
-    timeline.push_reference(annotation).unwrap();
+    timeline.annotate_span(true, annotation).unwrap();
 
     assert_eq!(timeline.reference_transcript().text, "hello");
 }
@@ -139,6 +139,7 @@ fn activity_annotation(
         TimeRange::new(DurationMs(start), DurationMs(end)),
         Annotation::Activity(asr_data::AudioActivity {
             event: event.map(str::to_owned),
+            confidence: None,
         }),
         source.map(str::to_owned),
     )
@@ -156,6 +157,7 @@ fn speaker_annotation(
         Annotation::Speaker(SpeakerPayload {
             name: name.to_owned(),
             transcription: text.map(Transcription::new),
+            confidence: None,
         }),
         source.map(str::to_owned),
     )
@@ -173,14 +175,14 @@ fn transcription_annotation(start: u64, end: u64, text: &str, source: Option<&st
 fn annotation_overlap_reference_activity_is_partitioned_by_event() {
     let mut timeline = Timeline::new("audio", DurationMs(300));
     let first = timeline
-        .push_reference(activity_annotation(0, 100, None, None))
+        .annotate_span(true, activity_annotation(0, 100, None, None))
         .unwrap()
         .id
         .clone();
 
     assert_eq!(
         timeline
-            .push_reference(activity_annotation(0, 100, None, None))
+            .annotate_span(true, activity_annotation(0, 100, None, None))
             .unwrap()
             .id,
         first
@@ -188,22 +190,22 @@ fn annotation_overlap_reference_activity_is_partitioned_by_event() {
     assert_eq!(timeline.reference.len(), 1);
     assert!(
         timeline
-            .push_reference(activity_annotation(100, 200, None, None))
+            .annotate_span(true, activity_annotation(100, 200, None, None))
             .is_ok()
     );
     assert!(
         timeline
-            .push_reference(activity_annotation(50, 150, None, None))
+            .annotate_span(true, activity_annotation(50, 150, None, None))
             .is_err()
     );
     assert!(
         timeline
-            .push_reference(activity_annotation(50, 150, Some("speech"), None))
+            .annotate_span(true, activity_annotation(50, 150, Some("speech"), None))
             .is_ok()
     );
     assert!(
         timeline
-            .push_reference(activity_annotation(200, 250, Some("   "), None))
+            .annotate_span(true, activity_annotation(200, 250, Some("   "), None))
             .is_err()
     );
 }
@@ -212,17 +214,17 @@ fn annotation_overlap_reference_activity_is_partitioned_by_event() {
 fn annotation_overlap_reference_speakers_are_partitioned_by_name() {
     let mut timeline = Timeline::new("audio", DurationMs(300));
     timeline
-        .push_reference(speaker_annotation(0, 100, "alice", None, None))
+        .annotate_span(true, speaker_annotation(0, 100, "alice", None, None))
         .unwrap();
 
     assert!(
         timeline
-            .push_reference(speaker_annotation(50, 150, "alice", None, None))
+            .annotate_span(true, speaker_annotation(50, 150, "alice", None, None))
             .is_err()
     );
     assert!(
         timeline
-            .push_reference(speaker_annotation(50, 150, "bob", None, None))
+            .annotate_span(true, speaker_annotation(50, 150, "bob", None, None))
             .is_ok()
     );
 }
@@ -231,27 +233,36 @@ fn annotation_overlap_reference_speakers_are_partitioned_by_name() {
 fn annotation_overlap_reference_text_uses_one_top_level_lane() {
     let mut timeline = Timeline::new("audio", DurationMs(300));
     timeline
-        .push_reference(transcription_annotation(0, 100, "hello", None))
+        .annotate_span(true, transcription_annotation(0, 100, "hello", None))
         .unwrap();
 
     assert!(
         timeline
-            .push_reference(transcription_annotation(50, 150, "world", None))
+            .annotate_span(true, transcription_annotation(50, 150, "world", None))
             .is_err()
     );
     assert!(
         timeline
-            .push_reference(speaker_annotation(50, 150, "alice", Some("world"), None))
+            .annotate_span(
+                true,
+                speaker_annotation(50, 150, "alice", Some("world"), None)
+            )
             .is_err()
     );
 
     let mut speakers = Timeline::new("audio", DurationMs(300));
     speakers
-        .push_reference(speaker_annotation(0, 100, "alice", Some("hello"), None))
+        .annotate_span(
+            true,
+            speaker_annotation(0, 100, "alice", Some("hello"), None),
+        )
         .unwrap();
     assert!(
         speakers
-            .push_reference(speaker_annotation(50, 150, "bob", Some("world"), None))
+            .annotate_span(
+                true,
+                speaker_annotation(50, 150, "bob", Some("world"), None)
+            )
             .is_ok()
     );
 }
@@ -260,27 +271,27 @@ fn annotation_overlap_reference_text_uses_one_top_level_lane() {
 fn annotation_overlap_prediction_is_partitioned_by_source() {
     let mut timeline = Timeline::new("audio", DurationMs(300));
     timeline
-        .push_prediction(activity_annotation(0, 100, None, Some("vad-a")))
+        .annotate_span(false, activity_annotation(0, 100, None, Some("vad-a")))
         .unwrap();
 
     assert!(
         timeline
-            .push_prediction(activity_annotation(50, 150, None, Some("vad-a")))
+            .annotate_span(false, activity_annotation(50, 150, None, Some("vad-a")))
             .is_err()
     );
     assert!(
         timeline
-            .push_prediction(activity_annotation(50, 150, None, Some("vad-b")))
+            .annotate_span(false, activity_annotation(50, 150, None, Some("vad-b")))
             .is_ok()
     );
     assert!(
         timeline
-            .push_prediction(activity_annotation(150, 200, None, None))
+            .annotate_span(false, activity_annotation(150, 200, None, None))
             .is_err()
     );
     assert!(
         timeline
-            .push_prediction(activity_annotation(150, 200, None, Some("   ")))
+            .annotate_span(false, activity_annotation(150, 200, None, Some("   ")))
             .is_err()
     );
 }
@@ -289,40 +300,55 @@ fn annotation_overlap_prediction_is_partitioned_by_source() {
 fn annotation_overlap_prediction_speaker_and_text_rules_are_per_source() {
     let mut speakers = Timeline::new("audio", DurationMs(300));
     speakers
-        .push_prediction(speaker_annotation(0, 100, "alice", None, Some("diarizer")))
+        .annotate_span(
+            false,
+            speaker_annotation(0, 100, "alice", None, Some("diarizer")),
+        )
         .unwrap();
     assert!(
         speakers
-            .push_prediction(speaker_annotation(50, 150, "alice", None, Some("diarizer")))
+            .annotate_span(
+                false,
+                speaker_annotation(50, 150, "alice", None, Some("diarizer"))
+            )
             .is_err()
     );
     assert!(
         speakers
-            .push_prediction(speaker_annotation(50, 150, "bob", None, Some("diarizer")))
+            .annotate_span(
+                false,
+                speaker_annotation(50, 150, "bob", None, Some("diarizer"))
+            )
             .is_ok()
     );
     assert!(
         speakers
-            .push_prediction(speaker_annotation(50, 150, "alice", None, Some("other")))
+            .annotate_span(
+                false,
+                speaker_annotation(50, 150, "alice", None, Some("other"))
+            )
             .is_ok()
     );
 
     let mut text = Timeline::new("audio", DurationMs(300));
-    text.push_prediction(transcription_annotation(0, 100, "hello", Some("asr")))
-        .unwrap();
+    text.annotate_span(
+        false,
+        transcription_annotation(0, 100, "hello", Some("asr")),
+    )
+    .unwrap();
     assert!(
-        text.push_prediction(speaker_annotation(
-            50,
-            150,
-            "alice",
-            Some("world"),
-            Some("asr")
-        ))
+        text.annotate_span(
+            false,
+            speaker_annotation(50, 150, "alice", Some("world"), Some("asr"))
+        )
         .is_err()
     );
     assert!(
-        text.push_prediction(transcription_annotation(50, 150, "world", Some("other")))
-            .is_ok()
+        text.annotate_span(
+            false,
+            transcription_annotation(50, 150, "world", Some("other"))
+        )
+        .is_ok()
     );
 }
 
@@ -330,10 +356,10 @@ fn annotation_overlap_prediction_speaker_and_text_rules_are_per_source() {
 fn annotation_overlap_prediction_relabel_is_atomic() {
     let mut timeline = Timeline::new("audio", DurationMs(300));
     timeline
-        .push_prediction(activity_annotation(0, 100, None, Some("a")))
+        .annotate_span(false, activity_annotation(0, 100, None, Some("a")))
         .unwrap();
     timeline
-        .push_prediction(activity_annotation(50, 150, None, Some("b")))
+        .annotate_span(false, activity_annotation(50, 150, None, Some("b")))
         .unwrap();
     let before = timeline.prediction.clone();
 
@@ -345,19 +371,20 @@ fn annotation_overlap_prediction_relabel_is_atomic() {
 fn prediction_sources_are_grouped_by_annotation_kind() {
     let mut timeline = Timeline::new("audio", DurationMs(300));
     timeline
-        .push_prediction(activity_annotation(
-            0,
-            100,
-            Some("speech"),
-            Some("silero-vad"),
-        ))
+        .annotate_span(
+            false,
+            activity_annotation(0, 100, Some("speech"), Some("silero-vad")),
+        )
         .unwrap();
     timeline
-        .push_prediction(TimeSpan::new(
-            TimeRange::new(DurationMs(0), DurationMs(100)),
-            Annotation::Transcription(Transcription::new("hello")),
-            Some("qwen-asr".to_owned()),
-        ))
+        .annotate_span(
+            false,
+            TimeSpan::new(
+                TimeRange::new(DurationMs(0), DurationMs(100)),
+                Annotation::Transcription(Transcription::new("hello")),
+                Some("qwen-asr".to_owned()),
+            ),
+        )
         .unwrap();
 
     let sources = timeline.prediction_sources();
@@ -387,41 +414,51 @@ fn annotation_overlap_audio_validation_rejects_direct_vector_mutation() {
 fn timeline_derives_transcript_from_all_text_annotations() {
     let mut timeline = Timeline::new("audio_1", DurationMs(100));
     timeline
-        .push_reference(TimeSpan::new(
-            TimeRange::new(DurationMs(0), DurationMs(40)),
-            Annotation::Transcription(Transcription {
-                text: "partial".to_string(),
-                tokens: vec![],
-                language: None,
-                confidence: None,
-            }),
-            None,
-        ))
+        .annotate_span(
+            true,
+            TimeSpan::new(
+                TimeRange::new(DurationMs(0), DurationMs(40)),
+                Annotation::Transcription(Transcription {
+                    text: "partial".to_string(),
+                    tokens: vec![],
+                    language: None,
+                    confidence: None,
+                }),
+                None,
+            ),
+        )
         .unwrap();
     timeline
-        .push_reference(TimeSpan::new(
-            TimeRange::new(DurationMs(40), DurationMs(100)),
-            Annotation::Transcription(Transcription {
-                text: "hello".to_string(),
-                tokens: vec![
-                    Token::new("hello").with_range(TimeRange::new(DurationMs(40), DurationMs(100))),
-                ],
-                language: Some("English".to_string()),
-                confidence: None,
-            }),
-            None,
-        ))
+        .annotate_span(
+            true,
+            TimeSpan::new(
+                TimeRange::new(DurationMs(40), DurationMs(100)),
+                Annotation::Transcription(Transcription {
+                    text: "hello".to_string(),
+                    tokens: vec![
+                        Token::new("hello")
+                            .with_range(TimeRange::new(DurationMs(40), DurationMs(100))),
+                    ],
+                    language: Some("English".to_string()),
+                    confidence: None,
+                }),
+                None,
+            ),
+        )
         .unwrap();
     timeline
-        .push_reference(TimeSpan::new(
-            TimeRange::new(DurationMs(100), DurationMs(130)),
-            Annotation::Sentence(Sentence {
-                text: "world".to_string(),
-                tokens: vec![],
-                language: None,
-            }),
-            None,
-        ))
+        .annotate_span(
+            true,
+            TimeSpan::new(
+                TimeRange::new(DurationMs(100), DurationMs(130)),
+                Annotation::Sentence(Sentence {
+                    text: "world".to_string(),
+                    tokens: vec![],
+                    language: None,
+                }),
+                None,
+            ),
+        )
         .unwrap();
 
     let transcript = timeline.reference_transcript();
@@ -445,12 +482,12 @@ fn audio_keeps_independent_channel_timelines() {
     audio
         .ensure_timeline(AudioChannel::Left, Some(DurationMs(100)))
         .expect("left timeline")
-        .push_reference(transcription("caller"))
+        .annotate_span(true, transcription("caller"))
         .unwrap();
     audio
         .ensure_timeline(AudioChannel::Right, None)
         .expect("right timeline")
-        .push_reference(transcription("agent"))
+        .annotate_span(true, transcription("agent"))
         .unwrap();
 
     assert_eq!(
@@ -530,6 +567,21 @@ fn waveform_splits_stereo_at_low_energy_without_changing_samples() -> Result<(),
 }
 
 #[test]
+fn audio_chunks_expose_local_audio_and_timeline_coordinates() -> Result<(), AudioError> {
+    let chunks = Waveform::new(vec![0.0; 250], 1_000).chunks_ms(100)?;
+
+    assert_eq!(
+        chunks.iter().map(|chunk| chunk.index).collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+    assert_eq!(chunks[1].to_timeline_range(10, 50)?, (110, 150));
+    assert_eq!(chunks[0].info().frame_count, 100);
+    assert_eq!(chunks[0].as_waveform().frame_count(), 100);
+    assert_eq!(chunks[2].end_ms(), 250);
+    Ok(())
+}
+
+#[test]
 fn waveform_low_energy_split_rejects_zero_duration() {
     let waveform = Waveform::new(vec![0.0], 16_000);
     assert_eq!(
@@ -541,11 +593,14 @@ fn waveform_low_energy_split_rejects_zero_duration() {
 fn annotated_audio() -> Audio {
     let mut timeline = Timeline::new("audio_1", DurationMs(100));
     timeline
-        .push_reference(TimeSpan::new(
-            TimeRange::new(DurationMs(0), DurationMs(100)),
-            Annotation::Transcription(Transcription::new("hello")),
-            None,
-        ))
+        .annotate_span(
+            true,
+            TimeSpan::new(
+                TimeRange::new(DurationMs(0), DurationMs(100)),
+                Annotation::Transcription(Transcription::new("hello")),
+                None,
+            ),
+        )
         .unwrap();
     let audio = Audio::with_id("audio_1", pcm_source(100, 2))
         .expect("audio document")
@@ -692,20 +747,26 @@ fn audio_db_crud_and_difference_update() {
     first
         .ensure_timeline(AudioChannel::Left, None)
         .expect("left timeline")
-        .push_reference(TimeSpan::new(
-            TimeRange::new(DurationMs(0), DurationMs(100)),
-            Annotation::Transcription(Transcription::new("caller")),
-            None,
-        ))
+        .annotate_span(
+            true,
+            TimeSpan::new(
+                TimeRange::new(DurationMs(0), DurationMs(100)),
+                Annotation::Transcription(Transcription::new("caller")),
+                None,
+            ),
+        )
         .unwrap();
     first
         .ensure_timeline(AudioChannel::Right, None)
         .expect("right timeline")
-        .push_reference(TimeSpan::new(
-            TimeRange::new(DurationMs(0), DurationMs(100)),
-            Annotation::Transcription(Transcription::new("agent")),
-            None,
-        ))
+        .annotate_span(
+            true,
+            TimeSpan::new(
+                TimeRange::new(DurationMs(0), DurationMs(100)),
+                Annotation::Transcription(Transcription::new("agent")),
+                None,
+            ),
+        )
         .unwrap();
     let mut second = Audio::with_id("second", pcm_source(250, 1)).expect("second audio document");
     second
@@ -798,14 +859,14 @@ fn audio_db_crud_and_difference_update() {
 }
 
 #[test]
-fn audio_db_rejects_every_schema_before_v10() {
+fn audio_db_rejects_every_schema_before_v11() {
     let path = std::env::temp_dir().join(format!(
         "asr-db-old-schema-{}.vasr",
         uuid::Uuid::new_v4().simple()
     ));
-    assert_eq!(AudioDb::SCHEMA_VERSION, 10);
+    assert_eq!(AudioDb::SCHEMA_VERSION, 11);
 
-    for version in 1..10 {
+    for version in 1..11 {
         let connection = rusqlite::Connection::open(&path).expect("open v1 fixture");
         connection
             .pragma_update(None, "application_id", 0x5641_5352_i64)
@@ -817,7 +878,7 @@ fn audio_db_rejects_every_schema_before_v10() {
 
         assert!(matches!(
             AudioDb::open(&path, AudioDbMode::ReadOnly),
-            Err(AudioDbError::UnsupportedSchema { found, expected: 10 }) if found == version
+            Err(AudioDbError::UnsupportedSchema { found, expected: 11 }) if found == version
         ));
         std::fs::remove_file(&path).ok();
     }

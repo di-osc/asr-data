@@ -234,16 +234,16 @@ def test_annotation_payload_types_are_public_and_complete():
 
 def test_audio_waveform_timeline_and_db(tmp_path):
     pcm = struct.pack("<hhhh", 0, 1000, -1000, 2000)
-    audio = Audio(
-        AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1"
-    )
+    audio = Audio(AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1")
     assert isinstance(audio.source, AudioSource)
     assert set(audio.timelines) == {"left", "right"}
     assert audio.timeline("mono") is None
     audio.metadata["speaker"] = {"name": "alice", "age": 30}
-    audio.timeline("left").reference.annotate_span(0, 1, AudioActivity(), confidence=0.9)
-    audio.timeline("left").reference.annotate_span(
-        0, 1, Transcription("hello", language="en")
+    audio.timeline("left").annotate_span(
+        0, 1, AudioActivity(confidence=0.9), is_reference=True
+    )
+    audio.timeline("left").annotate_span(
+        0, 1, Transcription("hello", language="en"), is_reference=True
     )
 
     waveform = audio.source.load().as_waveform()
@@ -371,20 +371,18 @@ def test_audiodoc_uses_mono_and_indexed_multichannel_timelines():
     assert list(mono_doc.timelines) == ["mono"]
     assert mono_doc.timeline("mono").duration_ms == 667
 
-    multi_doc = Audio(
-        AudioSource.from_pcm(b"\0\0" * 8, sample_rate=1000, channels=4)
-    )
+    multi_doc = Audio(AudioSource.from_pcm(b"\0\0" * 8, sample_rate=1000, channels=4))
     assert list(multi_doc.timelines) == ["left", "right", "2", "3"]
 
     with pytest.raises(asr_data.AsrDataError, match="whole number"):
         AudioSource.from_pcm(b"\0\0\0", sample_rate=16000, channels=2).probe()
 
 
-def test_audio_source_aprobe_and_audiodoc_afrom_source():
+def test_audio_source_aprobe_and_aload():
     source = AudioSource.from_pcm(b"\0\0" * 4, sample_rate=1000, channels=2)
 
     async def run():
-        return await source.aprobe(), await source.aopen(id="async")
+        return await source.aprobe(), await source.aload(id="async")
 
     info, doc = asyncio.run(run())
     assert (info.frame_count, info.channels) == (2, 2)
@@ -441,8 +439,12 @@ def test_audio_channel_timelines_round_trip(tmp_path):
         id="call-stereo",
     )
 
-    audio.timeline("left").reference.annotate_span(0, 100, Transcription("caller"))
-    audio.timeline("right").reference.annotate_span(0, 100, Transcription("agent"))
+    audio.timeline("left").annotate_span(
+        0, 100, Transcription("caller"), is_reference=True
+    )
+    audio.timeline("right").annotate_span(
+        0, 100, Transcription("agent"), is_reference=True
+    )
 
     assert audio.timeline("mono") is None
     assert audio.timeline("left").reference.transcript().text == "caller"
@@ -479,9 +481,7 @@ def test_setting_timeline_audio_id_updates_the_whole_audio():
 
 
 def test_timeline_duration_is_required_shared_and_read_only():
-    audio = Audio(
-        AudioSource.from_pcm(b"\0\0" * 4000, sample_rate=8000), id="duration"
-    )
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 4000, sample_rate=8000), id="duration")
     assert not hasattr(audio, "duration_ms")
 
     mono = audio.timeline("mono")
@@ -557,28 +557,29 @@ def test_all_audio_sources_stream_waveforms_without_padding(tmp_path):
 
     for source in sources:
         full = source.load().as_waveform()
-        chunks = list(source.open().stream(chunk_size_ms=2))
+        chunks = list(source.stream(chunk_size_ms=2))
 
         assert all(type(chunk).__name__ == "AudioChunk" for chunk in chunks)
-        assert [chunk.frame_count for chunk in chunks] == [2, 2, 1]
+        assert [chunk.info.frame_count for chunk in chunks] == [2, 2, 1]
         assert [chunk.offset_ms for chunk in chunks] == [0, 2, 4]
         assert [chunk.is_final for chunk in chunks] == [False, False, True]
-        assert all(chunk.sample_rate == 1000 for chunk in chunks)
-        assert all(chunk.channels == 2 for chunk in chunks)
+        assert all(chunk.info.sample_rate == 1000 for chunk in chunks)
+        assert all(chunk.info.channels == 2 for chunk in chunks)
         np.testing.assert_array_equal(
-            np.concatenate([chunk.samples for chunk in chunks]),
+            np.concatenate([chunk.as_waveform().samples for chunk in chunks]),
             full.samples,
         )
 
-        first_view = chunks[0].samples
-        second_view = chunks[0].samples
+        chunk_waveform = chunks[0].as_waveform()
+        first_view = chunk_waveform.samples
+        second_view = chunk_waveform.samples
         assert np.shares_memory(first_view, second_view)
         assert first_view.flags.writeable is False
         with pytest.raises(ValueError):
             first_view[0] = 0
 
     with pytest.raises(Exception, match="chunk_size_ms must be greater than zero"):
-        list(sources[0].open().stream(chunk_size_ms=0))
+        list(sources[0].stream(chunk_size_ms=0))
 
 
 def test_stream_chunks_can_be_transformed_as_waveforms(tmp_path):
@@ -603,15 +604,12 @@ def test_stream_chunks_can_be_transformed_as_waveforms(tmp_path):
 
     for source in sources:
         full = source.load().as_waveform().to_mono()
-        chunks = list(source.open().stream(chunk_size_ms=2))
-        transformed = [
-            chunk.as_waveform("mono").resample(2000)
-            for chunk in chunks
-        ]
+        chunks = list(source.stream(chunk_size_ms=2))
+        transformed = [chunk.as_waveform("mono").resample(2000) for chunk in chunks]
 
         assert chunks
-        assert all(chunk.sample_rate == 1000 for chunk in chunks)
-        assert all(chunk.channels == 2 for chunk in chunks)
+        assert all(chunk.info.sample_rate == 1000 for chunk in chunks)
+        assert all(chunk.info.channels == 2 for chunk in chunks)
         assert [chunk.offset_ms for chunk in chunks] == sorted(
             chunk.offset_ms for chunk in chunks
         )
@@ -634,39 +632,134 @@ def test_source_stream_default_chunk():
     pcm = struct.pack("<" + "h" * 250, *range(250))
 
     source = AudioSource.from_pcm(pcm, sample_rate=1000)
-    chunks = list(source.open().stream())
+    stream = source.stream()
+    chunks = list(stream)
 
-    assert [chunk.frame_count for chunk in chunks] == [100, 100, 50]
+    assert [chunk.info.frame_count for chunk in chunks] == [100, 100, 50]
     assert [chunk.offset_ms for chunk in chunks] == [0, 100, 200]
     assert [chunk.is_final for chunk in chunks] == [False, False, True]
-    assert not hasattr(source, "stream")
+    assert type(stream).__name__ == "AudioStream"
+    assert hasattr(source, "stream")
     assert not hasattr(source, "astream")
+    assert not hasattr(source, "open")
+    assert not hasattr(source, "aopen")
 
 
-def test_audio_stream_lifecycle_and_single_active_iterator():
+def test_audio_stream_lifecycle_growing_timeline_and_conversion():
     source = AudioSource.from_pcm(b"\0\0" * 250, sample_rate=1000)
-    audio = source.open(id="stream")
-    assert audio.is_loaded is False
+    stream = source.stream(chunk_size_ms=100, id="stream")
+    stream.metadata["model"] = "streaming-vad"
+    assert stream.id == "stream"
+    assert stream.position_ms == 0
+    assert stream.timeline("mono").duration_ms == 0
+    assert stream.as_waveform().frame_count == 0
 
-    iterator = audio.stream(chunk_size_ms=100)
-    first = next(iterator)
+    first = next(stream)
+    assert first.id == stream.id
+    assert first.index == 0
+    assert first.source.kind == stream.source.kind
+    assert first.info.frame_count == 100
+    assert first.info.duration_ms == 100
     assert first.offset_ms == 0
     assert first.end_ms == 100
-    assert first.to_global_span(25, 75) == (25, 75)
-    assert first.timeline("mono").id == audio.timeline("mono").id
-    with pytest.raises(asr_data.AsrDataError, match="already has an active stream"):
-        audio.stream()
+    assert first.to_timeline_range(25, 75) == (25, 75)
+    assert first.timeline("mono").id == stream.timeline("mono").id
+    assert first.metadata is stream.metadata
+    assert first.timelines["mono"].id == stream.timelines["mono"].id
+    assert stream.timeline("mono").duration_ms == 100
+    assert stream.as_waveform().frame_count == 100
+    span = stream.timeline("mono").annotate_span(
+        0,
+        100,
+        AudioActivity(event="speech"),
+        source="vad",
+        is_reference=False,
+    )
 
-    iterator.close()
-    assert audio.is_loaded is False
-
-    chunks = list(audio.stream(chunk_size_ms=100))
+    chunks = [first, *list(stream)]
+    assert [chunk.index for chunk in chunks] == [0, 1, 2]
     assert [chunk.end_ms for chunk in chunks] == [100, 200, 250]
-    assert audio.is_loaded is True
+    assert first.timeline("mono").duration_ms == 250
+    assert first.metadata["model"] == "streaming-vad"
+    assert stream.is_complete is True
+    assert stream.is_closed is False
+    audio = stream.to_audio()
     np.testing.assert_array_equal(
         audio.as_waveform().samples,
-        np.concatenate([chunk.samples for chunk in chunks]),
+        np.concatenate([chunk.as_waveform().samples for chunk in chunks]),
     )
+    assert audio.metadata == {"model": "streaming-vad"}
+    assert audio.timeline("mono").prediction.spans[0].id == span.id
+    assert not hasattr(audio, "is_loaded")
+    assert not hasattr(audio, "unload")
+    assert not hasattr(audio, "stream")
+    for name in (
+        "samples",
+        "sample_rate",
+        "channels",
+        "frame_count",
+        "source_format",
+        "resample",
+        "to_mono",
+        "channel",
+        "slice_ms",
+        "to_global_span",
+    ):
+        assert not hasattr(first, name)
+
+
+def test_audio_stream_close_prevents_conversion():
+    stream = AudioSource.from_pcm(b"\0\0" * 250, sample_rate=1000).stream(100)
+    next(stream)
+    stream.close()
+
+    assert stream.is_complete is False
+    assert stream.is_closed is True
+    assert list(stream) == []
+    with pytest.raises(RuntimeError, match="completely consumed"):
+        stream.to_audio()
+
+
+def test_audio_stream_annotations_are_limited_to_received_audio():
+    stream = AudioSource.from_pcm(b"\0\0" * 500, sample_rate=1000).stream(100)
+    chunk = next(stream)
+    timeline = stream.timeline("mono")
+    span = timeline.annotate_span(
+        10, 90, AudioActivity(event="speech"), is_reference=True
+    )
+
+    assert timeline.duration_ms == chunk.end_ms == 100
+    assert span.as_waveform().frame_count == 80
+    with pytest.raises(ValueError, match="must not exceed timeline"):
+        timeline.annotate_span(
+            100, 200, AudioActivity(event="speech"), is_reference=True
+        )
+
+
+def test_audio_stream_sync_and_async_iteration_cannot_be_mixed():
+    stream = AudioSource.from_pcm(b"\0\0" * 500, sample_rate=1000).stream(100)
+    next(stream)
+
+    async def consume():
+        return [chunk async for chunk in stream]
+
+    with pytest.raises(RuntimeError, match="cannot mix"):
+        asyncio.run(consume())
+
+
+def test_audio_db_accepts_completed_audio_not_audio_stream(tmp_path):
+    db = AudioDB.create(str(tmp_path / "stream.db"))
+    stream = AudioSource.from_pcm(b"\0\0" * 100, sample_rate=1000).stream(
+        50, id="stream"
+    )
+
+    with pytest.raises(TypeError):
+        db.insert(stream)
+
+    list(stream)
+    audio = stream.to_audio()
+    db.insert(audio)
+    assert db["stream"].timeline("mono").duration_ms == 100
 
 
 def test_timeline_and_timespan_waveform_views():
@@ -674,10 +767,10 @@ def test_timeline_and_timespan_waveform_views():
         struct.pack("<" + "h" * 1000, *range(1000)),
         sample_rate=1000,
     )
-    audio = source.open()
+    audio = source.load()
     timeline = audio.timeline("mono")
-    span = timeline.reference.annotate_span(
-        100, 300, AudioActivity(event="speech")
+    span = timeline.annotate_span(
+        100, 300, AudioActivity(event="speech"), is_reference=True
     )
 
     assert not hasattr(span, "kind")
@@ -720,7 +813,7 @@ def test_audio_numpy_constructor_and_output_share_memory():
 def test_normalization_api_is_removed():
     audio = Waveform(np.array([0.1, -0.25, 0.5], dtype=np.float32), sample_rate=16000)
     chunk = next(
-        AudioSource.from_pcm(b"\0\0", sample_rate=16000).open().stream(chunk_size_ms=100)
+        AudioSource.from_pcm(b"\0\0", sample_rate=16000).stream(chunk_size_ms=100)
     )
 
     assert not hasattr(audio, "normalize")
@@ -804,18 +897,20 @@ def test_source_aload_supports_explicit_waveform_transformations():
     np.testing.assert_array_equal(asynchronous.samples, synchronous.samples)
 
 
-def test_source_astream_is_async_and_matches_sync_stream():
+def test_audio_stream_async_iteration_matches_sync_stream():
     pcm = struct.pack("<" + "h" * 800, *[index % 1000 for index in range(800)])
     source = AudioSource.from_pcm(pcm, sample_rate=8000)
 
     async def collect():
+        stream = source.stream(chunk_size_ms=20)
         chunks = []
-        async for chunk in source.open().astream(chunk_size_ms=20):
+        async for chunk in stream:
             chunks.append(chunk)
+        assert stream.is_complete is True
         return chunks
 
     asynchronous = asyncio.run(collect())
-    synchronous = list(source.open().stream(chunk_size_ms=20))
+    synchronous = list(source.stream(chunk_size_ms=20))
 
     assert [chunk.offset_ms for chunk in asynchronous] == [
         chunk.offset_ms for chunk in synchronous
@@ -824,12 +919,12 @@ def test_source_astream_is_async_and_matches_sync_stream():
         chunk.is_final for chunk in synchronous
     ]
     np.testing.assert_array_equal(
-        np.concatenate([chunk.samples for chunk in asynchronous]),
-        np.concatenate([chunk.samples for chunk in synchronous]),
+        np.concatenate([chunk.as_waveform().samples for chunk in asynchronous]),
+        np.concatenate([chunk.as_waveform().samples for chunk in synchronous]),
     )
 
 
-def test_url_astream_does_not_block_the_event_loop():
+def test_url_audio_stream_async_iteration_does_not_block_the_event_loop():
     wav = io.BytesIO()
     with wave.open(wav, "wb") as writer:
         writer.setnchannels(1)
@@ -857,8 +952,8 @@ def test_url_astream_does_not_block_the_event_loop():
 
     async def collect_and_probe():
         async def collect():
-            audio = await source.aopen()
-            return [chunk async for chunk in audio.astream(chunk_size_ms=20)]
+            stream = await asyncio.to_thread(source.stream, 20)
+            return [chunk async for chunk in stream]
 
         task = asyncio.create_task(collect())
         await asyncio.sleep(0.03)
@@ -917,7 +1012,6 @@ def test_url_aload_uses_async_download_and_blocking_decode():
         server.server_close()
         thread.join(timeout=1)
 
-    assert audio.is_loaded is True
     waveform = audio.as_waveform()
     assert waveform.sample_rate == 8000
     assert waveform.channels == 1
@@ -950,16 +1044,48 @@ def test_audio_display_builds_ipython_player_for_selected_range(monkeypatch):
         audio.display(start_ms=500, end_ms=200)
 
 
+def test_all_waveform_views_can_display(monkeypatch):
+    import IPython.display
+
+    players = []
+
+    def make_player(**kwargs):
+        players.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(IPython.display, "Audio", make_player)
+    monkeypatch.setattr(IPython.display, "display", lambda _player: None)
+
+    source = AudioSource.from_pcm(b"\0\0" * 100, sample_rate=1000)
+    audio = source.load(id="complete")
+    timeline = audio.timeline("mono")
+    span = timeline.annotate_span(
+        10,
+        30,
+        AudioActivity(event="speech"),
+        is_reference=True,
+    )
+    stream = source.stream(chunk_size_ms=50, id="stream")
+    chunk = next(stream)
+
+    audio.display()
+    timeline.display()
+    span.display()
+    stream.display()
+    chunk.display()
+
+    assert [len(player["data"]) for player in players] == [100, 100, 20, 50, 50]
+    assert all(player["rate"] == 1000 for player in players)
+
+
 def test_public_types_have_informative_repr(tmp_path):
     pcm = b"\0\0" * (3250 * 8 * 2)
-    audio = Audio(
-        AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1"
-    )
-    annotation = audio.timeline("left").reference.annotate_span(
+    audio = Audio(AudioSource.from_pcm(pcm, sample_rate=8000, channels=2), id="call-1")
+    annotation = audio.timeline("left").annotate_span(
         100,
         800,
-        Transcription("hello world"),
-        confidence=0.95,
+        Transcription("hello world", confidence=0.95),
+        is_reference=True,
     )
     audio.metadata["speaker"] = "alice"
     waveform = audio.source.load().as_waveform()
@@ -991,15 +1117,13 @@ def test_audio_source_url_repr_keeps_filename_and_hides_query():
 
 
 def test_model_annotations_can_be_written_queried_and_removed():
-    audio = Audio(
-        AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="sources"
-    )
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="sources")
     audio.ensure_timeline("mono", duration_ms=1000)
     timeline = audio.timeline("mono")
-    reference = timeline.reference.annotate_span(
-        0, 1000, Transcription("reference", language="zh")
+    reference = timeline.annotate_span(
+        0, 1000, Transcription("reference", language="zh"), is_reference=True
     )
-    prediction = timeline.prediction.annotate_span(
+    prediction = timeline.annotate_span(
         0,
         1000,
         Transcription(
@@ -1009,7 +1133,7 @@ def test_model_annotations_can_be_written_queried_and_removed():
             tokens=[Token("prediction", start_ms=0, end_ms=1000)],
         ),
         source="tegasr",
-        confidence=0.8,
+        is_reference=False,
     )
     transcription = Transcription(
         "speaker text",
@@ -1020,21 +1144,23 @@ def test_model_annotations_can_be_written_queried_and_removed():
             Token("text", start_ms=500, end_ms=1000, confidence=0.85),
         ],
     )
-    speaker = timeline.prediction.annotate_span(
+    speaker = timeline.annotate_span(
         0,
         1000,
-        Speaker("user", transcription=transcription),
+        Speaker("user", transcription=transcription, confidence=0.92),
         source="channel_mapping",
+        is_reference=False,
     )
 
     assert reference.source is None
     assert prediction.source == "tegasr"
     assert prediction.annotation.language == "zh"
-    assert prediction.confidence == pytest.approx(0.8)
+    assert not hasattr(prediction, "confidence")
     assert prediction.annotation.confidence == pytest.approx(0.88)
     assert prediction.annotation.tokens[0].text == "prediction"
     assert isinstance(speaker.annotation, Speaker)
     assert speaker.annotation.name == "user"
+    assert speaker.annotation.confidence == pytest.approx(0.92)
     assert speaker.annotation.transcription.text == "speaker text"
     assert speaker.annotation.transcription.language == "zh"
     assert speaker.annotation.transcription.confidence == pytest.approx(0.9)
@@ -1069,15 +1195,14 @@ def test_model_annotations_can_be_written_queried_and_removed():
 
 
 def test_speaker_transcription_round_trips_through_database(tmp_path):
-    audio = Audio(
-        AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="speaker"
-    )
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 8000, sample_rate=8000), id="speaker")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    timeline.reference.annotate_span(
+    timeline.annotate_span(
         0,
         1000,
         Speaker(
             "agent",
+            confidence=0.87,
             transcription=Transcription(
                 "hello",
                 language="en",
@@ -1085,6 +1210,7 @@ def test_speaker_transcription_round_trips_through_database(tmp_path):
                 tokens=[Token("hello", start_ms=100, end_ms=900, confidence=0.93)],
             ),
         ),
+        is_reference=True,
     )
 
     db = AudioDB.create(str(tmp_path / "speaker.vasr"))
@@ -1093,15 +1219,14 @@ def test_speaker_transcription_round_trips_through_database(tmp_path):
     speaker = loaded.reference.spans[0]
 
     assert speaker.annotation.name == "agent"
+    assert speaker.annotation.confidence == pytest.approx(0.87)
     assert speaker.annotation.transcription.text == "hello"
     assert speaker.annotation.transcription.tokens[0].end_ms == 900
     assert loaded.reference.transcript().text == "hello"
 
 
 def test_speaker_rejects_transcription_token_outside_its_range():
-    audio = Audio(
-        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="speaker"
-    )
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="speaker")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     transcription = Transcription(
         "outside",
@@ -1109,41 +1234,45 @@ def test_speaker_rejects_transcription_token_outside_its_range():
     )
 
     with pytest.raises(ValueError, match="token range must be within"):
-        timeline.reference.annotate_span(
-            100, 800, Speaker("agent", transcription=transcription)
+        timeline.annotate_span(
+            100, 800, Speaker("agent", transcription=transcription), is_reference=True
         )
 
 
 def test_annotation_add_methods_are_idempotent():
-    audio = Audio(
-        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="dedupe"
-    )
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="dedupe")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    activity_payload = AudioActivity(event="speech")
-    first_activity = timeline.reference.annotate_span(
-        0, 1000, activity_payload, confidence=0.9
+    activity_payload = AudioActivity(event="speech", confidence=0.9)
+    first_activity = timeline.annotate_span(
+        0, 1000, activity_payload, is_reference=True
     )
-    duplicate_activity = timeline.reference.annotate_span(
-        0, 1000, activity_payload, confidence=0.9
+    duplicate_activity = timeline.annotate_span(
+        0, 1000, activity_payload, is_reference=True
     )
     speaker_payload = Speaker("agent")
-    first_speaker = timeline.reference.annotate_span(0, 1000, speaker_payload)
-    duplicate_speaker = timeline.reference.annotate_span(0, 1000, speaker_payload)
-    first_text = timeline.reference.annotate_span(0, 1000, Transcription("text"))
-    duplicate_text = timeline.reference.annotate_span(
-        0, 1000, Transcription("text")
+    first_speaker = timeline.annotate_span(0, 1000, speaker_payload, is_reference=True)
+    duplicate_speaker = timeline.annotate_span(
+        0, 1000, speaker_payload, is_reference=True
+    )
+    first_text = timeline.annotate_span(
+        0, 1000, Transcription("text"), is_reference=True
+    )
+    duplicate_text = timeline.annotate_span(
+        0, 1000, Transcription("text"), is_reference=True
     )
 
     assert duplicate_activity.id == first_activity.id
+    assert first_activity.annotation.confidence == pytest.approx(0.9)
     assert duplicate_speaker.id == first_speaker.id
     assert duplicate_text.id == first_text.id
     assert len(timeline.reference.spans) == 3
 
     with pytest.raises(asr_data.AsrDataError, match="overlaps"):
-        timeline.reference.annotate_span(
+        timeline.annotate_span(
             0,
             1000,
             Speaker("agent", transcription=Transcription("updated")),
+            is_reference=True,
         )
     assert len(timeline.reference.spans) == 3
 
@@ -1154,25 +1283,27 @@ def test_annotation_overlap_rules_and_atomic_mutations():
 
     speech = AudioActivity(event="speech")
     music = AudioActivity(event="music")
-    timeline.reference.annotate_span(0, 500, speech)
-    timeline.reference.annotate_span(500, 1000, speech)
+    timeline.annotate_span(0, 500, speech, is_reference=True)
+    timeline.annotate_span(500, 1000, speech, is_reference=True)
     with pytest.raises(asr_data.AsrDataError, match="Activity.*overlaps"):
-        timeline.reference.annotate_span(400, 600, speech)
-    timeline.reference.annotate_span(400, 600, music)
+        timeline.annotate_span(400, 600, speech, is_reference=True)
+    timeline.annotate_span(400, 600, music, is_reference=True)
 
-    alice = timeline.reference.annotate_span(0, 400, Speaker("alice"))
-    timeline.reference.annotate_span(200, 600, Speaker("bob"))
+    alice = timeline.annotate_span(0, 400, Speaker("alice"), is_reference=True)
+    timeline.annotate_span(200, 600, Speaker("bob"), is_reference=True)
     with pytest.raises(asr_data.AsrDataError, match="Speaker.*overlaps"):
-        timeline.reference.annotate_span(300, 500, Speaker("alice"))
+        timeline.annotate_span(300, 500, Speaker("alice"), is_reference=True)
 
-    timeline.reference.annotate_span(300, 500, Transcription("top-level"))
+    timeline.annotate_span(300, 500, Transcription("top-level"), is_reference=True)
     with pytest.raises(asr_data.AsrDataError, match="Transcription.*overlaps"):
         alice.annotation = Speaker("alice", transcription=Transcription("conflict"))
     assert alice.annotation.transcription is None
 
-    timeline.prediction.annotate_span(0, 600, speech, source="vad-a")
-    timeline.prediction.annotate_span(300, 900, speech, source="vad-b")
-    candidate = timeline.prediction.annotate_span(500, 1000, speech, source="vad-c")
+    timeline.annotate_span(0, 600, speech, source="vad-a", is_reference=False)
+    timeline.annotate_span(300, 900, speech, source="vad-b", is_reference=False)
+    candidate = timeline.annotate_span(
+        500, 1000, speech, source="vad-c", is_reference=False
+    )
     with pytest.raises(asr_data.AsrDataError, match="Activity.*overlaps"):
         timeline.prediction.relabel_source("vad-c", "vad-a")
     assert candidate.source == "vad-c"
@@ -1180,34 +1311,34 @@ def test_annotation_overlap_rules_and_atomic_mutations():
 
 def test_annotation_status_api_is_removed():
     audio = Audio(AudioSource.from_pcm(b"\0\0", sample_rate=1000), id="status-free")
-    annotation = audio.ensure_timeline("mono", duration_ms=1).reference.annotate_span(
-        0, 1, AudioActivity()
+    annotation = audio.ensure_timeline("mono", duration_ms=1).annotate_span(
+        0, 1, AudioActivity(), is_reference=True
     )
 
     assert not hasattr(annotation, "status")
     with pytest.raises(TypeError):
-        audio.timeline("mono").reference.annotate_span(
-            0, 1, Transcription("text"), status="final"
+        audio.timeline("mono").annotate_span(
+            0, 1, Transcription("text"), status="final", is_reference=True
         )
 
 
 def test_annotation_add_rejects_ranges_past_timeline_duration():
-    audio = Audio(
-        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="bounds"
-    )
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="bounds")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
     assert not hasattr(timeline.reference, "add_silence")
     assert not hasattr(timeline.prediction, "add_silence")
 
     # The inclusive endpoint may equal the timeline duration.
-    timeline.reference.annotate_span(0, 1000, AudioActivity())
+    timeline.annotate_span(0, 1000, AudioActivity(), is_reference=True)
 
     invalid_adds = [
-        lambda: timeline.reference.annotate_span(0, 1001, AudioActivity()),
-        lambda: timeline.reference.annotate_span(0, 1001, Transcription("outside")),
-        lambda: timeline.reference.annotate_span(0, 1001, Speaker("outside")),
-        lambda: timeline.prediction.annotate_span(
-            0, 1001, AudioActivity(), source="vad"
+        lambda: timeline.annotate_span(0, 1001, AudioActivity(), is_reference=True),
+        lambda: timeline.annotate_span(
+            0, 1001, Transcription("outside"), is_reference=True
+        ),
+        lambda: timeline.annotate_span(0, 1001, Speaker("outside"), is_reference=True),
+        lambda: timeline.annotate_span(
+            0, 1001, AudioActivity(), source="vad", is_reference=False
         ),
     ]
 
@@ -1220,21 +1351,21 @@ def test_annotation_add_rejects_ranges_past_timeline_duration():
 
 
 def test_prediction_source_is_required_preserved_and_queryable(tmp_path):
-    audio = Audio(
-        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="sources"
-    )
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="sources")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    whisper = timeline.prediction.annotate_span(
+    whisper = timeline.annotate_span(
         0,
         500,
         Speaker("caller"),
         source="whisper",
+        is_reference=False,
     )
-    qwen = timeline.prediction.annotate_span(
+    qwen = timeline.annotate_span(
         500,
         1000,
         Speaker("agent"),
         source="qwen-asr",
+        is_reference=False,
     )
 
     assert whisper.source == "whisper"
@@ -1243,11 +1374,9 @@ def test_prediction_source_is_required_preserved_and_queryable(tmp_path):
         annotation.id for annotation in timeline.prediction.by_source("whisper")
     ] == [whisper.id]
     assert timeline.prediction.remove_by_source("qwen-asr") == 1
-    assert [annotation.id for annotation in timeline.prediction.spans] == [
-        whisper.id
-    ]
+    assert [annotation.id for annotation in timeline.prediction.spans] == [whisper.id]
     with pytest.raises(ValueError, match="non-empty"):
-        timeline.prediction.annotate_span(0, 1, AudioActivity(), source="")
+        timeline.annotate_span(0, 1, AudioActivity(), source="", is_reference=False)
 
     db = AudioDB.create(str(tmp_path / "prediction-source.vasr"))
     db.insert(audio)
@@ -1256,11 +1385,9 @@ def test_prediction_source_is_required_preserved_and_queryable(tmp_path):
 
 
 def test_speaker_transcription_can_be_attached_after_creation():
-    audio = Audio(
-        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="attach"
-    )
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="attach")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    speaker = timeline.reference.annotate_span(100, 900, Speaker("agent"))
+    speaker = timeline.annotate_span(100, 900, Speaker("agent"), is_reference=True)
     original_id = speaker.id
 
     speaker.annotation = Speaker(
@@ -1283,12 +1410,12 @@ def test_speaker_transcription_can_be_attached_after_creation():
 
 
 def test_payload_assignment_validates_target_and_token_range():
-    audio = Audio(
-        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="invalid"
-    )
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="invalid")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    speaker = timeline.reference.annotate_span(100, 900, Speaker("agent"))
-    activity = timeline.reference.annotate_span(0, 1000, AudioActivity(event="speech"))
+    speaker = timeline.annotate_span(100, 900, Speaker("agent"), is_reference=True)
+    activity = timeline.annotate_span(
+        0, 1000, AudioActivity(event="speech"), is_reference=True
+    )
     assert activity.annotation.event == "speech"
     outside = Transcription(
         "outside",
@@ -1297,9 +1424,7 @@ def test_payload_assignment_validates_target_and_token_range():
 
     with pytest.raises(ValueError, match="token range must be within"):
         speaker.annotation = Speaker("agent", transcription=outside)
-    with pytest.raises(
-        ValueError, match="activity annotation must be AudioActivity"
-    ):
+    with pytest.raises(ValueError, match="activity annotation must be AudioActivity"):
         activity.annotation = Transcription("not allowed")
 
     activity.annotation = AudioActivity(event="music")
@@ -1316,12 +1441,15 @@ def test_timeline_eval_reports_transcription_metrics_without_normalization():
         AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-text"
     )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    timeline.reference.annotate_span(0, 1000, Transcription("交易停滞"))
-    timeline.prediction.annotate_span(
+    timeline.annotate_span(
+        0, 1000, Transcription("交易停滞"), is_reference=True
+    )
+    timeline.annotate_span(
         0,
         1000,
         Transcription("交易停止"),
         source="qwen-asr",
+        is_reference=False,
     )
 
     evaluation = timeline.eval(transcription="qwen-asr", normalize=False)
@@ -1348,16 +1476,15 @@ def test_timeline_eval_reports_transcription_metrics_without_normalization():
 
 
 def test_timeline_eval_uses_embedded_chinese_tn_by_default():
-    audio = Audio(
-        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-tn"
-    )
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-tn")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    timeline.reference.annotate_span(0, 1000, Transcription("2024年交易"))
-    timeline.prediction.annotate_span(
+    timeline.annotate_span(0, 1000, Transcription("2024年交易"), is_reference=True)
+    timeline.annotate_span(
         0,
         1000,
         Transcription("二零二四年交易"),
         source="qwen-asr",
+        is_reference=False,
     )
 
     result = timeline.eval(transcription="qwen-asr").transcription["qwen-asr"]
@@ -1370,14 +1497,12 @@ def test_timeline_eval_uses_embedded_chinese_tn_by_default():
 
 
 def test_timeline_eval_reports_activity_duration_confusion_matrix():
-    audio = Audio(
-        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-vad"
-    )
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-vad")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    timeline.reference.annotate_span(100, 400, AudioActivity(event="speech"))
-    timeline.reference.annotate_span(400, 600, AudioActivity(event="speech"))
-    timeline.prediction.annotate_span(
-        200, 700, AudioActivity(event="speech"), source="silero-vad"
+    timeline.annotate_span(100, 400, AudioActivity(event="speech"), is_reference=True)
+    timeline.annotate_span(400, 600, AudioActivity(event="speech"), is_reference=True)
+    timeline.annotate_span(
+        200, 700, AudioActivity(event="speech"), source="silero-vad", is_reference=False
     )
 
     evaluation = timeline.eval(activity="silero-vad")
@@ -1403,10 +1528,10 @@ def test_timeline_eval_separates_activity_detection_from_event_classification():
         id="eval-events",
     )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    timeline.reference.annotate_span(0, 400, AudioActivity(event="speech"))
-    timeline.reference.annotate_span(400, 600, AudioActivity())
-    timeline.prediction.annotate_span(
-        0, 600, AudioActivity(event="music"), source="classifier"
+    timeline.annotate_span(0, 400, AudioActivity(event="speech"), is_reference=True)
+    timeline.annotate_span(400, 600, AudioActivity(), is_reference=True)
+    timeline.annotate_span(
+        0, 600, AudioActivity(event="music"), source="classifier", is_reference=False
     )
 
     result = timeline.eval(activity="classifier").activity["classifier"]
@@ -1431,15 +1556,15 @@ def test_timeline_eval_auto_discovers_sources_and_validates_explicit_selection()
     ):
         timeline.eval(transcription="qwen-asr", normalize=False)
 
-    timeline.reference.annotate_span(0, 1000, Transcription("参考"))
+    timeline.annotate_span(0, 1000, Transcription("参考"), is_reference=True)
     with pytest.raises(asr_data.AsrDataError, match="qwen-asr"):
         timeline.eval(transcription="qwen-asr", normalize=False)
 
-    timeline.prediction.annotate_span(
-        0, 1000, Transcription("参考"), source="qwen-asr"
+    timeline.annotate_span(
+        0, 1000, Transcription("参考"), source="qwen-asr", is_reference=False
     )
-    timeline.prediction.annotate_span(
-        0, 1000, Transcription("参照"), source="whisper"
+    timeline.annotate_span(
+        0, 1000, Transcription("参照"), source="whisper", is_reference=False
     )
     result = timeline.eval(normalize=False)
     assert list(result.transcription) == ["qwen-asr", "whisper"]
@@ -1458,10 +1583,10 @@ def test_dataset_eval_aggregates_corpus_metrics_and_coverage(tmp_path):
             id=audio_id,
         )
         timeline = doc.timeline("mono")
-        timeline.reference.annotate_span(0, 1000, Transcription(reference))
+        timeline.annotate_span(0, 1000, Transcription(reference), is_reference=True)
         for source, text in predictions.items():
-            timeline.prediction.annotate_span(
-                0, 1000, Transcription(text), source=source
+            timeline.annotate_span(
+                0, 1000, Transcription(text), source=source, is_reference=False
             )
         docs.append(doc)
 
@@ -1501,9 +1626,9 @@ def test_dataset_eval_aggregates_activity_and_event_metrics():
             id=audio_id,
         )
         timeline = doc.timeline("mono")
-        timeline.reference.annotate_span(0, 400, AudioActivity(event="speech"))
-        timeline.prediction.annotate_span(
-            0, 400, AudioActivity(event=event), source="classifier"
+        timeline.annotate_span(0, 400, AudioActivity(event="speech"), is_reference=True)
+        timeline.annotate_span(
+            0, 400, AudioActivity(event=event), source="classifier", is_reference=False
         )
         docs.append(doc)
 
@@ -1528,8 +1653,8 @@ def test_database_update_detects_changes(tmp_path):
     db = AudioDB.create(str(path))
     db.insert(audio)
 
-    audio.timeline("mono").prediction.annotate_span(
-        0, 1000, Transcription("prediction"), source="old-model"
+    audio.timeline("mono").annotate_span(
+        0, 1000, Transcription("prediction"), source="old-model", is_reference=False
     )
     assert db.update(audio) is True
     assert db.update(audio) is False
@@ -1551,8 +1676,8 @@ def test_database_update_detects_changes(tmp_path):
         loaded.timeline("mono").prediction.transcript("new-model").text == "prediction"
     )
 
-    loaded.timeline("mono").prediction.annotate_span(
-        0, 1000, Transcription("second"), source="second-model"
+    loaded.timeline("mono").annotate_span(
+        0, 1000, Transcription("second"), source="second-model", is_reference=False
     )
     assert db.update(loaded) is True
     assert (
@@ -1613,7 +1738,7 @@ def test_database_query_validates_datetime_filters(tmp_path):
         db.query(updated_from=now, updated_until=now - timedelta(seconds=1))
 
 
-def test_audiodoc_exposes_source_based_loading_only(tmp_path):
+def test_audio_and_audio_stream_convenience_factories(tmp_path):
     wav_path = tmp_path / "audio.wav"
     with wave.open(str(wav_path), "wb") as writer:
         writer.setnchannels(1)
@@ -1621,24 +1746,83 @@ def test_audiodoc_exposes_source_based_loading_only(tmp_path):
         writer.setframerate(8000)
         writer.writeframes(struct.pack("<hh", 0, 1000))
 
-    from_file = Audio(AudioSource.from_path(str(wav_path)), id="file")
-    from_bytes = Audio(AudioSource.from_bytes(wav_path.read_bytes()), id="bytes")
+    encoded = wav_path.read_bytes()
+    encoded_base64 = base64.b64encode(encoded).decode()
+    from_file = Audio.from_path(str(wav_path), id="file")
+    from_url = Audio.from_url(wav_path.as_uri(), id="url")
+    from_bytes = Audio.from_bytes(encoded, id="bytes")
+    from_base64 = Audio.from_base64(encoded_base64, id="base64")
+    from_pcm = Audio.from_pcm(struct.pack("<hh", 0, 1000), 8000, id="pcm")
     assert isinstance(from_file.source, AudioSource)
     assert isinstance(from_bytes.source, AudioSource)
-    assert from_file.source.load().as_waveform().channels == 1
-    assert from_bytes.source.load().as_waveform().channels == 1
+    assert {
+        audio.id
+        for audio in (from_file, from_url, from_bytes, from_base64, from_pcm)
+    } == {"file", "url", "bytes", "base64", "pcm"}
+    assert all(
+        audio.as_waveform().channels == 1
+        for audio in (from_file, from_url, from_bytes, from_base64, from_pcm)
+    )
+
+    streams = [
+        asr_data.AudioStream.from_path(str(wav_path), id="file-stream"),
+        asr_data.AudioStream.from_url(wav_path.as_uri(), id="url-stream"),
+        asr_data.AudioStream.from_bytes(encoded, id="bytes-stream"),
+        asr_data.AudioStream.from_base64(encoded_base64, id="base64-stream"),
+        asr_data.AudioStream.from_pcm(
+            struct.pack("<hh", 0, 1000), 8000, id="pcm-stream"
+        ),
+    ]
+    assert [stream.id for stream in streams] == [
+        "file-stream",
+        "url-stream",
+        "bytes-stream",
+        "base64-stream",
+        "pcm-stream",
+    ]
+    assert all(len(list(stream)) == 1 for stream in streams)
+
     assert Waveform.from_path(str(wav_path)).channels == 1
     assert Waveform.from_bytes(wav_path.read_bytes()).channels == 1
     assert Waveform.from_source(from_file.source).channels == 1
     assert not hasattr(Audio, "from_file")
-    assert not hasattr(Audio, "from_url")
-    assert not hasattr(Audio, "from_bytes")
-    assert not hasattr(Audio, "from_pcm")
     assert not hasattr(from_file, "load")
     assert not hasattr(from_file.source.load().as_waveform(), "num_channels")
     assert repr(from_file).startswith('Audio(id="file", file="')
     assert 'duration="1ms"' in repr(from_file)
     assert str(from_file) == 'Audio "file" (1ms)'
+
+
+def test_timeline_has_one_annotation_write_api():
+    timeline = Audio.from_pcm(b"\0\0" * 100, 1000).timeline("mono")
+
+    reference = timeline.annotate_span(
+        0, 100, AudioActivity(event="speech"), is_reference=True
+    )
+    prediction = timeline.annotate_span(
+        0,
+        100,
+        Transcription("hello"),
+        is_reference=False,
+        source="asr",
+    )
+
+    assert reference.source is None
+    assert prediction.source == "asr"
+    assert not hasattr(timeline.reference, "annotate_span")
+    assert not hasattr(timeline.prediction, "annotate_span")
+    with pytest.raises(ValueError, match="must be omitted"):
+        timeline.annotate_span(
+            0,
+            100,
+            AudioActivity(event="music"),
+            is_reference=True,
+            source="manual",
+        )
+    with pytest.raises(ValueError, match="is required"):
+        timeline.annotate_span(
+            0, 100, AudioActivity(event="music"), is_reference=False
+        )
 
 
 def test_audiodb_restores_audio_info_without_reopening_source(tmp_path):
@@ -1655,7 +1839,7 @@ def test_audiodb_restores_audio_info_without_reopening_source(tmp_path):
     wav_path.unlink()
 
     loaded = db["ephemeral"]
-    assert loaded.is_loaded is False
+    assert not hasattr(loaded, "is_loaded")
     assert loaded.info.sample_rate == 8000
     assert loaded.info.channels == 2
     assert loaded.info.frame_count == 8

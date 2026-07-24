@@ -632,6 +632,7 @@ mod tests {
             TimeRange::new(DurationMs(start), DurationMs(end)),
             Annotation::Activity(crate::timeline::AudioActivity {
                 event: event.map(str::to_owned),
+                confidence: None,
             }),
             source.map(str::to_owned),
         )
@@ -697,18 +698,24 @@ mod tests {
 
         let mut timeline = Timeline::new("audio", DurationMs(1_000));
         timeline
-            .push_reference(TimeSpan::new(
-                TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                Annotation::Transcription(Transcription::new("交易停滞")),
-                None,
-            ))
+            .annotate_span(
+                true,
+                TimeSpan::new(
+                    TimeRange::new(DurationMs(0), DurationMs(1_000)),
+                    Annotation::Transcription(Transcription::new("交易停滞")),
+                    None,
+                ),
+            )
             .unwrap();
         timeline
-            .push_prediction(TimeSpan::new(
-                TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                Annotation::Transcription(Transcription::new("交易停止")),
-                Some("asr".to_owned()),
-            ))
+            .annotate_span(
+                false,
+                TimeSpan::new(
+                    TimeRange::new(DurationMs(0), DurationMs(1_000)),
+                    Annotation::Transcription(Transcription::new("交易停止")),
+                    Some("asr".to_owned()),
+                ),
+            )
             .unwrap();
         let config = TimelineEvalConfig::new()
             .with_transcription("asr")
@@ -731,27 +738,36 @@ mod tests {
 
         let mut timeline = Timeline::new("audio", DurationMs(1_000));
         timeline
-            .push_reference(TimeSpan::new(
-                TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                Annotation::Transcription(Transcription::new("交易停滞")),
-                None,
-            ))
+            .annotate_span(
+                true,
+                TimeSpan::new(
+                    TimeRange::new(DurationMs(0), DurationMs(1_000)),
+                    Annotation::Transcription(Transcription::new("交易停滞")),
+                    None,
+                ),
+            )
             .unwrap();
         timeline
-            .push_prediction(TimeSpan::new(
-                TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                Annotation::Transcription(Transcription::new("交易停滞")),
-                Some("qwen".to_owned()),
-            ))
+            .annotate_span(
+                false,
+                TimeSpan::new(
+                    TimeRange::new(DurationMs(0), DurationMs(1_000)),
+                    Annotation::Transcription(Transcription::new("交易停滞")),
+                    Some("qwen".to_owned()),
+                ),
+            )
             .unwrap();
         let mut speaker = SpeakerPayload::new("agent");
         speaker.transcription = Some(Transcription::new("交易停止"));
         timeline
-            .push_prediction(TimeSpan::new(
-                TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                Annotation::Speaker(speaker),
-                Some("whisper".to_owned()),
-            ))
+            .annotate_span(
+                false,
+                TimeSpan::new(
+                    TimeRange::new(DurationMs(0), DurationMs(1_000)),
+                    Annotation::Speaker(speaker),
+                    Some("whisper".to_owned()),
+                ),
+            )
             .unwrap();
 
         let result = timeline

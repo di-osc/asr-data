@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{AudioEncoding, AudioFormat, AudioSource};
+use super::{AudioEncoding, AudioFormat, AudioInfo, AudioSource};
 use crate::utils::DurationMs;
 
 const LOW_ENERGY_SEARCH_WINDOW_MS: u64 = 5_000;
@@ -17,6 +17,8 @@ pub enum AudioError {
     InvalidChannelCount,
     #[error("chunk size must be greater than zero")]
     InvalidChunkSize,
+    #[error("chunk-local range must be ordered and contained in the chunk")]
+    InvalidChunkRange,
     #[error("channel index is out of range")]
     ChannelIndexOutOfRange,
     #[error("sample count {samples} is not divisible by channel count {channels}")]
@@ -40,6 +42,7 @@ pub struct AudioChunk {
     pub channels: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_format: Option<AudioFormat>,
+    pub index: usize,
     pub offset_ms: u64,
     pub is_final: bool,
 }
@@ -51,6 +54,7 @@ pub struct AudioChunks {
     source_format: Option<AudioFormat>,
     frames_per_chunk: usize,
     next_frame: usize,
+    next_index: usize,
 }
 
 impl Waveform {
@@ -228,6 +232,7 @@ impl Waveform {
             source_format: self.source_format,
             frames_per_chunk,
             next_frame: 0,
+            next_index: 0,
         })
     }
 
@@ -475,14 +480,17 @@ impl Iterator for AudioChunks {
         self.next_frame = self
             .next_frame
             .saturating_add(sample_count / usize::from(self.channels));
-        Some(AudioChunk {
+        let chunk = AudioChunk {
             samples,
             sample_rate: self.sample_rate,
             channels: self.channels,
             source_format: self.source_format.clone(),
+            index: self.next_index,
             offset_ms,
             is_final: self.samples.len() == 0,
-        })
+        };
+        self.next_index = self.next_index.saturating_add(1);
+        Some(chunk)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -503,9 +511,51 @@ impl AudioChunk {
             sample_rate,
             channels,
             source_format: self.source_format.clone(),
+            index: self.index,
             offset_ms: self.offset_ms,
             is_final: self.is_final,
         }
+    }
+
+    /// Return metadata that describes only this chunk.
+    pub fn info(&self) -> AudioInfo {
+        AudioInfo {
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+            frame_count: self.frame_count() as u64,
+            source_format: self.source_format.clone().unwrap_or(AudioFormat {
+                encoding: AudioEncoding::Unknown,
+                sample_rate: self.sample_rate,
+                channels: self.channels,
+            }),
+        }
+    }
+
+    /// Return a standalone waveform containing only this chunk.
+    pub fn as_waveform(&self) -> Waveform {
+        Waveform {
+            samples: self.samples.clone(),
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+            source_format: self.source_format.clone(),
+        }
+    }
+
+    /// Return the chunk end in the parent timeline's global millisecond coordinates.
+    pub fn end_ms(&self) -> u64 {
+        self.offset_ms
+            .saturating_add(self.duration_ms().ceil() as u64)
+    }
+
+    /// Convert a chunk-local millisecond range to parent timeline coordinates.
+    pub fn to_timeline_range(&self, start_ms: u64, end_ms: u64) -> Result<(u64, u64), AudioError> {
+        if end_ms < start_ms || end_ms as f64 > self.duration_ms().ceil() {
+            return Err(AudioError::InvalidChunkRange);
+        }
+        Ok((
+            self.offset_ms.saturating_add(start_ms),
+            self.offset_ms.saturating_add(end_ms),
+        ))
     }
 
     pub fn frame_count(&self) -> usize {

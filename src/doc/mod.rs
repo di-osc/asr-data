@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-use crate::audio::{AudioChannel, AudioEncoding, AudioFormat, AudioInfo, AudioSource, Waveform};
+use crate::audio::{
+    AudioChannel, AudioChunk, AudioEncoding, AudioFormat, AudioInfo, AudioSource, Waveform,
+};
 use crate::timeline::{Timeline, TimelineSpanError};
 use crate::utils::DurationMs;
 
@@ -18,11 +21,33 @@ pub struct Audio {
     pub metadata: BTreeMap<String, serde_json::Value>,
     #[serde(skip)]
     pub(crate) waveform: Option<Waveform>,
-    #[serde(skip)]
-    pub(crate) stream_active: bool,
 }
 
 impl Audio {
+    pub fn from_path(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
+        AudioSource::from_path(path).load()
+    }
+
+    pub fn from_url(url: impl Into<String>) -> anyhow::Result<Self> {
+        AudioSource::from_url(url).load()
+    }
+
+    pub fn from_encoded_bytes(bytes: impl Into<Vec<u8>>) -> anyhow::Result<Self> {
+        AudioSource::from_encoded_bytes(bytes).load()
+    }
+
+    pub fn from_base64(data: impl Into<String>) -> anyhow::Result<Self> {
+        AudioSource::from_base64(data).load()
+    }
+
+    pub fn from_pcm_s16le(
+        bytes: impl Into<Vec<u8>>,
+        sample_rate: u32,
+        channels: u16,
+    ) -> anyhow::Result<Self> {
+        AudioSource::from_pcm_s16le(bytes, sample_rate, channels).load()
+    }
+
     pub fn new(source: impl Into<AudioSource>) -> anyhow::Result<Self> {
         Self::with_id(format!("audio_{}", uuid::Uuid::new_v4().simple()), source)
     }
@@ -83,7 +108,6 @@ impl Audio {
             timelines: BTreeMap::new(),
             metadata: BTreeMap::new(),
             waveform: None,
-            stream_active: false,
         };
         let duration = DurationMs(info.timeline_duration_ms());
         if info.channels == 1 {
@@ -98,6 +122,23 @@ impl Audio {
             }
         }
         doc
+    }
+
+    #[cfg(feature = "python-bindings")]
+    pub(crate) fn with_id_from_stream_info(
+        audio_id: impl Into<String>,
+        source: impl Into<AudioSource>,
+        info: &AudioInfo,
+    ) -> Result<Self, crate::audio::AudioError> {
+        let mut audio = Self::with_id_from_info(audio_id, source, info);
+        for timeline in audio.timelines.values_mut() {
+            timeline.duration = DurationMs(0);
+        }
+        audio.waveform = Some(
+            Waveform::try_new_with_channels(Vec::new(), info.sample_rate, info.channels)?
+                .with_source_format(info.source_format.clone()),
+        );
+        Ok(audio)
     }
 
     pub(crate) fn with_loaded_waveform(
@@ -120,11 +161,7 @@ impl Audio {
         audio
     }
 
-    pub fn is_loaded(&self) -> bool {
-        self.waveform.is_some()
-    }
-
-    pub fn load(&mut self) -> anyhow::Result<&Waveform> {
+    fn ensure_waveform(&mut self) -> anyhow::Result<&Waveform> {
         if self.waveform.is_none() {
             self.waveform = Some(self.source.decode_waveform()?);
         }
@@ -132,36 +169,18 @@ impl Audio {
     }
 
     pub fn as_waveform(&mut self) -> anyhow::Result<Waveform> {
-        Ok(self.load()?.clone())
+        Ok(self.ensure_waveform()?.clone())
     }
 
     pub fn waveform_for_channel(&mut self, channel: AudioChannel) -> anyhow::Result<Waveform> {
         validate_channel(channel)?;
-        let waveform = self.load()?;
+        let waveform = self.ensure_waveform()?;
         match channel {
             AudioChannel::Mono => waveform.to_mono().map_err(Into::into),
             AudioChannel::Left => waveform.channel(0).map_err(Into::into),
             AudioChannel::Right => waveform.channel(1).map_err(Into::into),
             AudioChannel::Channel(index) => waveform.channel(index).map_err(Into::into),
         }
-    }
-
-    pub fn unload(&mut self) {
-        self.waveform = None;
-    }
-
-    #[cfg(feature = "python-bindings")]
-    pub(crate) fn begin_stream(&mut self) -> anyhow::Result<()> {
-        if self.stream_active {
-            anyhow::bail!("audio already has an active stream");
-        }
-        self.stream_active = true;
-        Ok(())
-    }
-
-    #[cfg(feature = "python-bindings")]
-    pub(crate) fn end_stream(&mut self) {
-        self.stream_active = false;
     }
 
     pub fn with_timeline(mut self, timeline: Timeline) -> Self {
@@ -318,6 +337,182 @@ impl Audio {
             })?;
         }
         Ok(())
+    }
+}
+
+/// A growing audio document produced by [`AudioSource::stream`](crate::audio::AudioSource::stream).
+pub struct AudioStream {
+    pub id: String,
+    pub source: AudioSource,
+    pub info: AudioInfo,
+    timelines: BTreeMap<AudioChannel, Timeline>,
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    chunks: crate::audio::stream::SourceAudioStream,
+    waveform: Waveform,
+    position_ms: u64,
+    complete: bool,
+    closed: bool,
+}
+
+impl AudioStream {
+    pub fn from_path(path: impl AsRef<Path>, chunk_size_ms: u64) -> anyhow::Result<Self> {
+        AudioSource::from_path(path.as_ref().to_path_buf()).stream(chunk_size_ms)
+    }
+
+    pub fn from_url(url: impl Into<String>, chunk_size_ms: u64) -> anyhow::Result<Self> {
+        AudioSource::from_url(url).stream(chunk_size_ms)
+    }
+
+    pub fn from_encoded_bytes(
+        bytes: impl Into<Vec<u8>>,
+        chunk_size_ms: u64,
+    ) -> anyhow::Result<Self> {
+        AudioSource::from_encoded_bytes(bytes).stream(chunk_size_ms)
+    }
+
+    pub fn from_base64(data: impl Into<String>, chunk_size_ms: u64) -> anyhow::Result<Self> {
+        AudioSource::from_base64(data).stream(chunk_size_ms)
+    }
+
+    pub fn from_pcm_s16le(
+        bytes: impl Into<Vec<u8>>,
+        sample_rate: u32,
+        channels: u16,
+        chunk_size_ms: u64,
+    ) -> anyhow::Result<Self> {
+        AudioSource::from_pcm_s16le(bytes, sample_rate, channels).stream(chunk_size_ms)
+    }
+
+    pub(crate) fn new(
+        audio_id: impl Into<String>,
+        source: AudioSource,
+        info: AudioInfo,
+        chunk_size_ms: u64,
+    ) -> anyhow::Result<Self> {
+        let id = audio_id.into();
+        let mut timelines = BTreeMap::new();
+        if info.channels == 1 {
+            timelines.insert(AudioChannel::Mono, Timeline::new(id.clone(), DurationMs(0)));
+        } else {
+            for index in 0..info.channels {
+                timelines.insert(
+                    AudioChannel::from_index(index),
+                    Timeline::new(id.clone(), DurationMs(0)),
+                );
+            }
+        }
+        let waveform =
+            Waveform::try_new_with_channels(Vec::new(), info.sample_rate, info.channels)?
+                .with_source_format(info.source_format.clone());
+        let chunks = crate::audio::stream::SourceAudioStream::new(
+            source.clone(),
+            chunk_size_ms,
+            None,
+            None,
+        )?;
+        Ok(Self {
+            id,
+            source,
+            info,
+            timelines,
+            metadata: BTreeMap::new(),
+            chunks,
+            waveform,
+            position_ms: 0,
+            complete: false,
+            closed: false,
+        })
+    }
+
+    pub fn timeline(&self, channel: AudioChannel) -> Result<Option<&Timeline>, AudioChannelError> {
+        validate_channel(channel)?;
+        Ok(self.timelines.get(&channel))
+    }
+
+    pub fn timeline_mut(
+        &mut self,
+        channel: AudioChannel,
+    ) -> Result<Option<&mut Timeline>, AudioChannelError> {
+        validate_channel(channel)?;
+        Ok(self.timelines.get_mut(&channel))
+    }
+
+    pub fn timelines(&self) -> &BTreeMap<AudioChannel, Timeline> {
+        &self.timelines
+    }
+
+    pub fn as_waveform(&self) -> Waveform {
+        self.waveform.clone()
+    }
+
+    pub fn waveform_for_channel(&self, channel: AudioChannel) -> anyhow::Result<Waveform> {
+        validate_channel(channel)?;
+        match channel {
+            AudioChannel::Mono => self.waveform.to_mono().map_err(Into::into),
+            AudioChannel::Left => self.waveform.channel(0).map_err(Into::into),
+            AudioChannel::Right => self.waveform.channel(1).map_err(Into::into),
+            AudioChannel::Channel(index) => self.waveform.channel(index).map_err(Into::into),
+        }
+    }
+
+    pub fn position_ms(&self) -> u64 {
+        self.position_ms
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    pub fn close(&mut self) {
+        if !self.complete {
+            self.closed = true;
+        }
+    }
+
+    pub fn into_audio(self) -> anyhow::Result<Audio> {
+        if !self.complete {
+            anyhow::bail!("audio stream must be completely consumed before conversion");
+        }
+        Ok(Audio {
+            id: self.id,
+            source: self.source,
+            info: self.info,
+            timelines: self.timelines,
+            metadata: self.metadata,
+            waveform: Some(self.waveform),
+        })
+    }
+}
+
+impl Iterator for AudioStream {
+    type Item = anyhow::Result<AudioChunk>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.complete || self.closed {
+            return None;
+        }
+        let chunk = match self.chunks.next()? {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                self.closed = true;
+                return Some(Err(error));
+            }
+        };
+        self.waveform.samples.extend_from_slice(&chunk.samples);
+        self.position_ms = chunk
+            .offset_ms
+            .saturating_add(chunk.duration_ms().ceil() as u64);
+        for timeline in self.timelines.values_mut() {
+            timeline.extend_to(DurationMs(self.position_ms));
+        }
+        if chunk.is_final {
+            self.complete = true;
+        }
+        Some(Ok(chunk))
     }
 }
 

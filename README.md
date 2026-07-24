@@ -40,13 +40,13 @@ cargo add asr-data
 from asr_data import AudioDB, AudioSource
 from asr_data.annotation import AudioActivity, Speaker, Token, Transcription
 
-audio = AudioSource.from_path("audio.wav").open(id="call-001")
+audio = AudioSource.from_path("audio.wav").load(id="call-001")
 timeline = audio.timeline("mono")
 end_ms = timeline.duration_ms
-timeline.reference.annotate_span(
-    0, end_ms, AudioActivity(event="speech")
+timeline.annotate_span(
+    0, end_ms, AudioActivity(event="speech"), is_reference=True
 )
-timeline.reference.annotate_span(
+timeline.annotate_span(
     0,
     end_ms,
     Speaker(
@@ -60,6 +60,7 @@ timeline.reference.annotate_span(
             ],
         ),
     ),
+    is_reference=True,
 )
 
 db = AudioDB.create("dataset.db")

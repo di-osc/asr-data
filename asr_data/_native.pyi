@@ -148,24 +148,11 @@ class AudioSource:
     def sample_rate(self) -> int | None: ...
     @property
     def channels(self) -> int | None: ...
-    def open(self, *, id: str | None = None) -> Audio:
-        """创建尚未解码波形的 Audio。
-
-        Args:
-            id: 可选的稳定 Audio ID。
-
-        Returns:
-            已探测信息并创建时间轴的 Audio。
-
-        Examples:
-            >>> from asr_data import AudioSource
-            >>> audio = AudioSource.from_pcm(b"\0\0", 16000).open(id="sample")
-        """
     def load(self, *, id: str | None = None) -> Audio:
         """创建并完整解码 Audio。
 
         Args:
-            id: 可选的稳定 Audio ID。
+            id: 可选的文档 ID。
 
         Returns:
             已在内存中保留完整 Waveform 的 Audio。
@@ -173,6 +160,25 @@ class AudioSource:
         Examples:
             >>> from asr_data import AudioSource
             >>> audio = AudioSource.from_pcm(b"\0\0", 16000).load(id="sample")
+        """
+    def stream(
+        self, chunk_size_ms: int = 100, *, id: str | None = None
+    ) -> AudioStream:
+        """创建 timeline 随 AudioChunk 迭代增长的 AudioStream。
+
+        Args:
+            chunk_size_ms: 每个 chunk 的目标时长。
+            id: 可选的文档 ID。
+
+        Returns:
+            可同步或异步迭代的 AudioStream。
+
+        Raises:
+            ValueError: chunk_size_ms 为零。
+            AsrDataError: 来源无法探测或初始化流。
+
+        Examples:
+            >>> stream = source.stream(100, id="sample")
         """
     def probe(self) -> AudioInfo:
         """读取格式和时长信息，但不解码浮点采样。
@@ -204,23 +210,11 @@ class AudioSource:
             >>> asyncio.run(source.aprobe()).duration_ms
             1000.0
         """
-    def aopen(self, *, id: str | None = None) -> Awaitable[Audio]:
-        """异步创建尚未解码波形的 Audio。
-
-        Args:
-            id: 可选的稳定 Audio ID。
-
-        Returns:
-            可等待的 Audio。
-
-        Examples:
-            >>> audio = await source.aopen(id="sample")
-        """
     def aload(self, *, id: str | None = None) -> Awaitable[Audio]:
         """异步创建并完整解码 Audio。
 
         Args:
-            id: 可选的稳定 Audio ID。
+            id: 可选的文档 ID。
 
         Returns:
             可等待的已加载 Audio。
@@ -493,11 +487,19 @@ class Waveform:
         """
 
 class AudioChunk:
-    """流式音频中的一个连续解码片段。"""
+    """AudioStream 当前迭代出的局部音频块，共享父流的文档上下文。"""
     @property
-    def sample_rate(self) -> int: ...
+    def id(self) -> str: ...
     @property
-    def channels(self) -> int: ...
+    def source(self) -> AudioSource: ...
+    @property
+    def info(self) -> AudioInfo: ...
+    @property
+    def metadata(self) -> dict[str, JsonValue]: ...
+    @property
+    def timelines(self) -> dict[str, Timeline]: ...
+    @property
+    def index(self) -> int: ...
     @property
     def offset_ms(self) -> int: ...
     @property
@@ -505,25 +507,19 @@ class AudioChunk:
     @property
     def is_final(self) -> bool: ...
     @property
-    def frame_count(self) -> int: ...
-    @property
     def duration_ms(self) -> float: ...
-    @property
-    def source_format(self) -> AudioFormat | None: ...
-    @property
-    def samples(self) -> npt.NDArray[np.float32]: ...
-    def to_global_span(self, start_ms: int, end_ms: int) -> tuple[int, int]:
-        """把 chunk 内的相对范围转换为 Audio 全局范围。
+    def to_timeline_range(self, start_ms: int, end_ms: int) -> tuple[int, int]:
+        """把 chunk 内的局部范围转换为共享 Timeline 的全局范围。
 
         Args:
             start_ms: chunk 内相对起始时间。
             end_ms: chunk 内相对结束时间。
 
         Returns:
-            ``(start_ms, end_ms)`` 全局毫秒范围。
+            ``(start_ms, end_ms)`` Timeline 全局毫秒范围。
 
         Examples:
-            >>> chunk.to_global_span(0, 100)
+            >>> chunk.to_timeline_range(0, 100)
             (1000, 1100)
         """
     def as_waveform(self, channel: str | int | None = None) -> Waveform:
@@ -538,95 +534,196 @@ class AudioChunk:
         Examples:
             >>> waveform = chunk.as_waveform()
         """
+    def display(
+        self,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        autoplay: bool = False,
+    ) -> None:
+        """在 Jupyter 中显示当前 chunk。
+
+        Args:
+            start_ms: chunk 内可选播放起始时间。
+            end_ms: chunk 内可选播放结束时间。
+            autoplay: 是否自动播放。
+
+        Returns:
+            None；播放器直接发送到当前 Jupyter 输出。
+
+        Raises:
+            ValueError: 结束时间早于起始时间。
+            AsrDataError: IPython 不可用。
+
+        Examples:
+            >>> chunk.display(end_ms=50)
+        """
     def timeline(self, channel: str | int) -> Timeline:
-        """返回父 Audio 的完整 Timeline。
+        """返回父 AudioStream 当前的全局 Timeline。
 
         Args:
             channel: 声道名称或索引。
 
         Returns:
-            父 Audio 上对应声道的 Timeline。
+            父 AudioStream 上对应声道的 Timeline。
 
         Examples:
             >>> timeline = chunk.timeline("mono")
         """
-    def to_mono(self) -> AudioChunk:
-        """混合所有声道并返回新的单声道片段。
 
-        Returns:
-            不修改原片段的新 AudioChunk。
-
-        Examples:
-            >>> from asr_data import AudioSource
-            >>> chunk = next(
-            ...     AudioSource.from_pcm(b"\0\0" * 10, 16000).open().stream()
-            ... )
-            >>> chunk.to_mono().channels
-            1
-        """
-    def channel(self, index: int) -> AudioChunk:
-        """提取指定声道。
+class AudioStream:
+    """与 Audio 平级、随 chunk 迭代持续增长的流式音频文档。"""
+    @staticmethod
+    def from_path(
+        path: str, chunk_size_ms: int = 100, *, id: str | None = None
+    ) -> AudioStream:
+        """从本地文件创建流。
 
         Args:
-            index: 从 0 开始的声道索引。
+            path: 文件路径。
+            chunk_size_ms: chunk 目标时长。
+            id: 可选的文档 ID。
 
         Returns:
-            提取出的单声道 AudioChunk。
-
-        Raises:
-            AsrDataError: 索引超出范围。
+            新的 AudioStream。
 
         Examples:
-            >>> from asr_data import AudioSource
-            >>> source = AudioSource.from_pcm(b"\0\0\0\0" * 10, 16000, 2)
-            >>> next(source.open().stream()).channel(0).channels
-            1
+            >>> stream = AudioStream.from_path("audio.wav")
         """
-    def resample(self, sample_rate: int) -> AudioChunk:
-        """重采样并返回新的片段。
+    @staticmethod
+    def from_url(
+        url: str, chunk_size_ms: int = 100, *, id: str | None = None
+    ) -> AudioStream:
+        """从 URL 创建流。
 
         Args:
-            sample_rate: 目标采样率。
+            url: 音频 URL。
+            chunk_size_ms: chunk 目标时长。
+            id: 可选的文档 ID。
 
         Returns:
-            重采样后的 AudioChunk。
-
-        Raises:
-            ValueError: 目标采样率为零。
+            新的 AudioStream。
 
         Examples:
-            >>> from asr_data import AudioSource
-            >>> chunk = next(
-            ...     AudioSource.from_pcm(b"\0\0" * 100, 16000).open().stream()
-            ... )
-            >>> chunk.resample(8000).sample_rate
-            8000
+            >>> stream = AudioStream.from_url("https://example.com/audio.wav")
         """
-    def slice_ms(self, start_ms: int, end_ms: int) -> AudioChunk:
-        """按相对片段起点的半开毫秒范围截取片段。
+    @staticmethod
+    def from_bytes(
+        data: bytes, chunk_size_ms: int = 100, *, id: str | None = None
+    ) -> AudioStream:
+        """从编码音频字节创建流。
 
         Args:
-            start_ms: 相对起始时间。
-            end_ms: 相对结束时间。
+            data: 编码音频字节。
+            chunk_size_ms: chunk 目标时长。
+            id: 可选的文档 ID。
 
         Returns:
-            截取后的 AudioChunk。
+            新的 AudioStream。
 
         Examples:
-            >>> from asr_data import AudioSource
-            >>> chunk = next(
-            ...     AudioSource.from_pcm(b"\0\0" * 16000, 16000).open().stream()
-            ... )
-            >>> chunk.slice_ms(0, 50).duration_ms
-            50.0
+            >>> stream = AudioStream.from_bytes(encoded_audio)
         """
+    @staticmethod
+    def from_base64(
+        data: str, chunk_size_ms: int = 100, *, id: str | None = None
+    ) -> AudioStream:
+        """从 base64 编码音频创建流。
 
-class AudioIterator:
-    """Audio.stream 返回的同步流式迭代器。"""
+        Args:
+            data: base64 字符串。
+            chunk_size_ms: chunk 目标时长。
+            id: 可选的文档 ID。
+
+        Returns:
+            新的 AudioStream。
+
+        Examples:
+            >>> stream = AudioStream.from_base64(encoded)
+        """
+    @staticmethod
+    def from_pcm(
+        data: bytes,
+        sample_rate: int,
+        channels: int = 1,
+        chunk_size_ms: int = 100,
+        *,
+        id: str | None = None,
+    ) -> AudioStream:
+        """从 PCM S16LE 字节创建流。
+
+        Args:
+            data: PCM S16LE 字节。
+            sample_rate: 采样率。
+            channels: 声道数。
+            chunk_size_ms: chunk 目标时长。
+            id: 可选的文档 ID。
+
+        Returns:
+            新的 AudioStream。
+
+        Examples:
+            >>> stream = AudioStream.from_pcm(b"\0\0", 16000)
+        """
     @property
     def position_ms(self) -> int: ...
     @property
-    def is_finished(self) -> bool: ...
+    def is_complete(self) -> bool: ...
+    @property
+    def is_closed(self) -> bool: ...
+    @property
+    def id(self) -> str: ...
+    @property
+    def source(self) -> AudioSource: ...
+    @property
+    def info(self) -> AudioInfo: ...
+    @property
+    def timelines(self) -> dict[str, Timeline]: ...
+    @property
+    def metadata(self) -> dict[str, Any]: ...
+    def as_waveform(self) -> Waveform:
+        """返回目前已经接收的全部波形。
+
+        Returns:
+            当前已接收范围对应的 Waveform。
+
+        Examples:
+            >>> waveform = stream.as_waveform()
+        """
+    def display(
+        self,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        autoplay: bool = False,
+    ) -> None:
+        """在 Jupyter 中显示当前累计音频。
+
+        Args:
+            start_ms: 可选播放起始时间。
+            end_ms: 可选播放结束时间。
+            autoplay: 是否自动播放。
+
+        Returns:
+            None；播放器直接发送到当前 Jupyter 输出。
+
+        Raises:
+            ValueError: 结束时间早于起始时间。
+            AsrDataError: IPython 不可用。
+
+        Examples:
+            >>> stream.display()
+        """
+    def timeline(self, channel: str | int) -> Timeline | None:
+        """查询正在增长的全局 timeline。
+
+        Args:
+            channel: 声道名称或索引。
+
+        Returns:
+            对应 Timeline；不存在时为 None。
+
+        Examples:
+            >>> timeline = stream.timeline("mono")
+        """
     def close(self) -> None:
         """提前关闭流。
 
@@ -634,11 +731,24 @@ class AudioIterator:
             None。
 
         Examples:
-            >>> iterator.close()
+            >>> stream.close()
         """
-    def __iter__(self) -> AudioIterator: ...
+    def to_audio(self) -> Audio:
+        """完整消费后转换为 Audio，不重新解码来源。
+
+        Returns:
+            完整 Audio。
+
+        Raises:
+            RuntimeError: 流尚未完整消费。
+
+        Examples:
+            >>> audio = stream.to_audio()
+        """
+    def _next_async(self) -> AudioChunk | None: ...
+    def __iter__(self) -> AudioStream: ...
     def __next__(self) -> AudioChunk: ...
-    def __enter__(self) -> AudioIterator: ...
+    def __enter__(self) -> AudioStream: ...
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None: ...
 
 class AudioActivity:
@@ -646,18 +756,26 @@ class AudioActivity:
 
     Args:
         event: 可选事件名称；省略时只表示存在活动。
+        confidence: 可选活动检测置信度。
 
     Raises:
         ValueError: event 仅包含空白字符。
 
     Examples:
         >>> from asr_data.annotation import AudioActivity
-        >>> AudioActivity(event="speech").event
+        >>> AudioActivity(event="speech", confidence=0.98).event
         'speech'
     """
-    def __init__(self, *, event: str | None = None) -> None: ...
+    def __init__(
+        self,
+        *,
+        event: str | None = None,
+        confidence: float | None = None,
+    ) -> None: ...
     @property
     def event(self) -> str | None: ...
+    @property
+    def confidence(self) -> float | None: ...
 
 class Token:
     """转写中的细粒度文本单元。
@@ -728,8 +846,9 @@ class Speaker:
     """一次说话人发话的 payload。
 
     Args:
-        name: 说话人名称或稳定业务标识。
+        name: 说话人名称或业务标识。
         transcription: 该次发话携带的可选完整转写。
+        confidence: 可选说话人识别置信度。
 
     Examples:
         >>> from asr_data.annotation import Speaker, Transcription
@@ -741,11 +860,14 @@ class Speaker:
         name: str,
         *,
         transcription: Transcription | None = None,
+        confidence: float | None = None,
     ) -> None: ...
     @property
     def name(self) -> str: ...
     @property
     def transcription(self) -> Transcription | None: ...
+    @property
+    def confidence(self) -> float | None: ...
 
 class TimeSpan:
     """Timeline 上一条带时间范围的标注记录。"""
@@ -755,8 +877,6 @@ class TimeSpan:
     def start_ms(self) -> int: ...
     @property
     def end_ms(self) -> int: ...
-    @property
-    def confidence(self) -> float | None: ...
     @property
     def source(self) -> str | None: ...
     @property
@@ -775,6 +895,29 @@ class TimeSpan:
 
         Examples:
             >>> waveform = span.as_waveform()
+        """
+    def display(
+        self,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        autoplay: bool = False,
+    ) -> None:
+        """在 Jupyter 中显示当前时间范围。
+
+        Args:
+            start_ms: TimeSpan 内可选播放起始时间。
+            end_ms: TimeSpan 内可选播放结束时间。
+            autoplay: 是否自动播放。
+
+        Returns:
+            None；播放器直接发送到当前 Jupyter 输出。
+
+        Raises:
+            ValueError: 结束时间早于起始时间。
+            AsrDataError: IPython 不可用。
+
+        Examples:
+            >>> span.display()
         """
 
 class Transcript:
@@ -884,39 +1027,6 @@ class ReferenceSpans:
     """Timeline 的参考真值标注集合。"""
     @property
     def spans(self) -> list[TimeSpan]: ...
-    def annotate_span(
-        self,
-        start_ms: int,
-        end_ms: int,
-        annotation: AudioActivity | Token | Transcription | Speaker,
-        *,
-        confidence: float | None = None,
-    ) -> TimeSpan:
-        """添加一条 reference 时间范围标注。
-
-        Args:
-            start_ms: 起始时间，包含。
-            end_ms: 结束时间，不包含。
-            annotation: AudioActivity、Token、Transcription 或 Speaker。
-            confidence: 可选的范围级置信度。
-
-        Returns:
-            新建或已有的 TimeSpan。
-
-        Raises:
-            ValueError: 时间范围或 annotation 内容无效。
-            AsrDataError: 与已有 reference 冲突。
-
-        Examples:
-            >>> from asr_data import AudioSource
-            >>> from asr_data.annotation import Transcription
-            >>> timeline = AudioSource.from_pcm(
-            ...     b"\0\0" * 10, 1000
-            ... ).open().timeline("mono")
-            >>> span = timeline.reference.annotate_span(
-            ...     0, timeline.duration_ms, Transcription("你好")
-            ... )
-        """
     def transcript(self) -> Transcript:
         """按时间顺序组合全部 reference 文本。
 
@@ -937,41 +1047,6 @@ class PredictionSpans:
     def spans(self) -> list[TimeSpan]: ...
     @property
     def sources(self) -> dict[str, list[str]]: ...
-    def annotate_span(
-        self,
-        start_ms: int,
-        end_ms: int,
-        annotation: AudioActivity | Token | Transcription | Speaker,
-        *,
-        source: str,
-        confidence: float | None = None,
-    ) -> TimeSpan:
-        """添加一条带 source 的 prediction 时间范围标注。
-
-        Args:
-            start_ms: 起始时间。
-            end_ms: 结束时间。
-            annotation: AudioActivity、Token、Transcription 或 Speaker。
-            source: 模型或流程名称。
-            confidence: 可选的范围级置信度。
-
-        Returns:
-            新建或已有的 TimeSpan。
-
-        Raises:
-            ValueError: source、时间范围或 annotation 内容无效。
-            AsrDataError: 与同 source 已有 prediction 冲突。
-
-        Examples:
-            >>> from asr_data import AudioSource
-            >>> from asr_data.annotation import Transcription
-            >>> timeline = AudioSource.from_pcm(
-            ...     b"\0\0" * 10, 1000
-            ... ).open().timeline("mono")
-            >>> span = timeline.prediction.annotate_span(
-            ...     0, timeline.duration_ms, Transcription("你好"), source="asr"
-            ... )
-        """
     def by_source(self, source: str) -> list[TimeSpan]:
         """返回指定 source 的全部 prediction annotation。
 
@@ -1061,6 +1136,36 @@ class Timeline:
     def reference(self) -> ReferenceSpans: ...
     @property
     def prediction(self) -> PredictionSpans: ...
+    def annotate_span(
+        self,
+        start_ms: int,
+        end_ms: int,
+        annotation: AudioActivity | Token | Transcription | Speaker,
+        *,
+        is_reference: bool,
+        source: str | None = None,
+    ) -> TimeSpan:
+        """添加 reference 或 prediction 标注。
+
+        Args:
+            start_ms: 全局起始时间。
+            end_ms: 全局结束时间。
+            annotation: AudioActivity、Token、Transcription 或 Speaker。
+            is_reference: 是否为参考答案。
+            source: prediction 来源；reference 必须省略。
+
+        Returns:
+            新建或去重后已有的 TimeSpan。
+
+        Raises:
+            ValueError: 时间范围、is_reference 与 source 组合无效。
+            AsrDataError: 标注与已有内容冲突。
+
+        Examples:
+            >>> span = timeline.annotate_span(
+            ...     0, timeline.duration_ms, transcription, is_reference=True
+            ... )
+        """
     def as_waveform(self) -> Waveform:
         """返回当前声道的完整波形。
 
@@ -1069,6 +1174,29 @@ class Timeline:
 
         Examples:
             >>> waveform = timeline.as_waveform()
+        """
+    def display(
+        self,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        autoplay: bool = False,
+    ) -> None:
+        """在 Jupyter 中显示当前声道。
+
+        Args:
+            start_ms: 可选播放起始时间。
+            end_ms: 可选播放结束时间。
+            autoplay: 是否自动播放。
+
+        Returns:
+            None；播放器直接发送到当前 Jupyter 输出。
+
+        Raises:
+            ValueError: 结束时间早于起始时间。
+            AsrDataError: IPython 不可用。
+
+        Examples:
+            >>> timeline.display(end_ms=500)
         """
     def eval(
         self,
@@ -1098,11 +1226,12 @@ class Timeline:
             >>> timeline = Audio(
             ...     AudioSource.from_pcm(b"\0\0" * 10, 16000)
             ... ).timeline("mono")
-            >>> _ = timeline.reference.annotate_span(
-            ...     0, timeline.duration_ms, Transcription("你好")
+            >>> _ = timeline.annotate_span(
+            ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
             ... )
-            >>> _ = timeline.prediction.annotate_span(
-            ...     0, timeline.duration_ms, Transcription("你好"), source="asr"
+            >>> _ = timeline.annotate_span(
+            ...     0, timeline.duration_ms, Transcription("你好"),
+            ...     is_reference=False, source="asr"
             ... )
             >>> timeline.eval().transcription["asr"].cer
             0.0
@@ -1265,11 +1394,12 @@ def evaluate_dataset(
         >>> from asr_data.annotation import Transcription
         >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
         >>> timeline = doc.timeline("mono")
-        >>> _ = timeline.reference.annotate_span(
-        ...     0, timeline.duration_ms, Transcription("你好")
+        >>> _ = timeline.annotate_span(
+        ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
         ... )
-        >>> _ = timeline.prediction.annotate_span(
-        ...     0, timeline.duration_ms, Transcription("你好"), source="asr"
+        >>> _ = timeline.annotate_span(
+        ...     0, timeline.duration_ms, Transcription("你好"),
+        ...     is_reference=False, source="asr"
         ... )
         >>> evaluate_dataset([doc]).transcription["asr"].cer
         0.0
@@ -1278,11 +1408,11 @@ def evaluate_dataset(
 class Audio:
     """音频来源、元信息、时间轴、标注和 metadata 的集合。
 
-    构造时会探测音频信息并按声道自动创建 timeline，但不会解码浮点波形。
+    构造时会完整解码音频并按声道自动创建最终时长的 timeline。
 
     Args:
         source: AudioSource、路径或 URL。
-        id: 可选稳定文档 ID；省略时自动生成。
+        id: 可选的文档 ID；省略时自动生成。
 
     Raises:
         AsrDataError: 来源无法探测。
@@ -1298,16 +1428,92 @@ class Audio:
         source: AudioSource,
         id: str | None = None,
     ) -> None: ...
+    @staticmethod
+    def from_path(path: str, *, id: str | None = None) -> Audio:
+        """从本地文件加载音频。
+
+        Args:
+            path: 文件路径。
+            id: 可选的文档 ID。
+
+        Returns:
+            完整 Audio。
+
+        Examples:
+            >>> audio = Audio.from_path("audio.wav")
+        """
+    @staticmethod
+    def from_url(url: str, *, id: str | None = None) -> Audio:
+        """从 URL 加载音频。
+
+        Args:
+            url: 音频 URL。
+            id: 可选的文档 ID。
+
+        Returns:
+            完整 Audio。
+
+        Examples:
+            >>> audio = Audio.from_url("https://example.com/audio.wav")
+        """
+    @staticmethod
+    def from_bytes(data: bytes, *, id: str | None = None) -> Audio:
+        """从编码音频字节加载音频。
+
+        Args:
+            data: 编码音频字节。
+            id: 可选的文档 ID。
+
+        Returns:
+            完整 Audio。
+
+        Examples:
+            >>> audio = Audio.from_bytes(encoded_audio)
+        """
+    @staticmethod
+    def from_base64(data: str, *, id: str | None = None) -> Audio:
+        """从 base64 编码音频加载音频。
+
+        Args:
+            data: base64 字符串。
+            id: 可选的文档 ID。
+
+        Returns:
+            完整 Audio。
+
+        Examples:
+            >>> audio = Audio.from_base64(encoded)
+        """
+    @staticmethod
+    def from_pcm(
+        data: bytes,
+        sample_rate: int,
+        channels: int = 1,
+        *,
+        id: str | None = None,
+    ) -> Audio:
+        """从 PCM S16LE 字节加载音频。
+
+        Args:
+            data: PCM S16LE 字节。
+            sample_rate: 采样率。
+            channels: 声道数。
+            id: 可选的文档 ID。
+
+        Returns:
+            完整 Audio。
+
+        Examples:
+            >>> audio = Audio.from_pcm(b"\0\0", 16000)
+        """
     @property
     def id(self) -> str: ...
     @property
     def source(self) -> AudioSource: ...
     @property
     def info(self) -> AudioInfo: ...
-    @property
-    def is_loaded(self) -> bool: ...
     def as_waveform(self) -> Waveform:
-        """返回完整波形，必要时按需解码来源。
+        """返回完整波形。
 
         Returns:
             完整的 Waveform。
@@ -1315,26 +1521,28 @@ class Audio:
         Examples:
             >>> waveform = audio.as_waveform()
         """
-    def unload(self) -> None:
-        """释放运行时波形缓存，保留来源、信息、时间轴和标注。
-
-        Returns:
-            None。
-
-        Examples:
-            >>> audio.unload()
-        """
-    def stream(self, chunk_size_ms: int = 100) -> AudioIterator:
-        """按固定目标时长顺序产生 AudioChunk。
+    def display(
+        self,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        autoplay: bool = False,
+    ) -> None:
+        """在 Jupyter 中显示完整音频。
 
         Args:
-            chunk_size_ms: 每个 chunk 的目标时长。
+            start_ms: 可选播放起始时间。
+            end_ms: 可选播放结束时间。
+            autoplay: 是否自动播放。
 
         Returns:
-            同步 AudioIterator。
+            None；播放器直接发送到当前 Jupyter 输出。
+
+        Raises:
+            ValueError: 结束时间早于起始时间。
+            AsrDataError: IPython 不可用。
 
         Examples:
-            >>> chunks = list(audio.stream(chunk_size_ms=100))
+            >>> audio.display(end_ms=500)
         """
     def timeline(self, channel: str | int) -> Timeline | None:
         """查询指定声道的 timeline。
@@ -1566,11 +1774,12 @@ class AudioDB:
             >>> db = AudioDB.create(f"{directory.name}/dataset.db")
             >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
             >>> timeline = doc.timeline("mono")
-            >>> _ = timeline.reference.annotate_span(
-            ...     0, timeline.duration_ms, Transcription("你好")
+            >>> _ = timeline.annotate_span(
+            ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
             ... )
-            >>> _ = timeline.prediction.annotate_span(
-            ...     0, timeline.duration_ms, Transcription("你好"), source="asr"
+            >>> _ = timeline.annotate_span(
+            ...     0, timeline.duration_ms, Transcription("你好"),
+            ...     is_reference=False, source="asr"
             ... )
             >>> db.insert(doc)
             >>> result = db.eval(transcription="asr")

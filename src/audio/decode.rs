@@ -19,6 +19,7 @@ pub struct DecodedAudioChunks {
     samples_per_chunk: usize,
     buffered: VecDeque<f32>,
     offset_frames: usize,
+    next_index: usize,
     finished: bool,
 }
 
@@ -76,6 +77,7 @@ impl DecodedAudioChunks {
             samples_per_chunk: frames.saturating_mul(usize::from(channels)),
             buffered: VecDeque::new(),
             offset_frames: 0,
+            next_index: 0,
             finished: false,
         })
     }
@@ -127,14 +129,17 @@ impl Iterator for DecodedAudioChunks {
         let samples = self.buffered.drain(..count).collect::<Vec<_>>();
         let offset_ms = self.offset_frames as u64 * 1000 / u64::from(self.sample_rate);
         self.offset_frames += count / usize::from(self.channels);
-        Some(Ok(AudioChunk {
+        let chunk = AudioChunk {
             samples,
             sample_rate: self.sample_rate,
             channels: self.channels,
             source_format: Some(self.source_format.clone()),
+            index: self.next_index,
             offset_ms,
             is_final: self.finished && self.buffered.is_empty(),
-        }))
+        };
+        self.next_index = self.next_index.saturating_add(1);
+        Some(Ok(chunk))
     }
 }
 

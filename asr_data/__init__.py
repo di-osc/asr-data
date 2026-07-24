@@ -11,6 +11,7 @@ from ._native import (
     AudioFormat,
     AudioInfo,
     AudioSource,
+    AudioStream,
     DatasetActivityEvaluation,
     DatasetActivityEventEvaluation,
     DatasetEvaluation,
@@ -28,26 +29,11 @@ from ._native import (
 )
 
 
-async def _source_aopen(self, *, id=None):
-    """异步探测来源并返回尚未加载波形的 Audio。
-
-    Args:
-        id: 可选稳定 Audio ID。
-
-    Returns:
-        已包含 info 和 timelines 的 Audio。
-
-    Examples:
-        >>> audio = await source.aopen(id="sample")
-    """
-    return await _asyncio.to_thread(self.open, id=id)
-
-
 async def _source_aload(self, *, id=None):
     """异步解码来源并返回已加载的 Audio。
 
     Args:
-        id: 可选稳定 Audio ID。
+        id: 可选的文档 ID。
 
     Returns:
         已携带完整波形的 Audio。
@@ -70,50 +56,31 @@ async def _source_aprobe(self):
     return await _asyncio.to_thread(self.probe)
 
 
-class _AudioAsyncIterator:
-    def __init__(self, iterator):
-        self._iterator = iterator
+class _AudioStreamAsyncIterator:
+    def __init__(self, stream):
+        self._stream = stream
 
     def __aiter__(self):
         return self
 
     async def __anext__(self):
-        item = await _asyncio.to_thread(_next_or_none, self._iterator)
+        item = await _asyncio.to_thread(self._stream._next_async)
         if item is None:
             raise StopAsyncIteration
         return item
 
     async def aclose(self):
-        await _asyncio.to_thread(self._iterator.close)
+        await _asyncio.to_thread(self._stream.close)
 
 
-def _next_or_none(iterator):
-    try:
-        return next(iterator)
-    except StopIteration:
-        return None
+def _stream_aiter(self):
+    """异步迭代当前 AudioStream，不能与同步迭代混用。"""
+    return _AudioStreamAsyncIterator(self)
 
 
-def _audio_astream(self, chunk_size_ms=100):
-    """异步产生与 ``stream`` 相同的 AudioChunk。
-
-    Args:
-        chunk_size_ms: 每个 chunk 的目标时长，单位为毫秒。
-
-    Returns:
-        AudioChunk 异步迭代器。
-
-    Examples:
-        >>> async for chunk in audio.astream(100):
-        ...     process(chunk)
-    """
-    return _AudioAsyncIterator(self.stream(chunk_size_ms))
-
-
-AudioSource.aopen = _source_aopen
 AudioSource.aload = _source_aload
 AudioSource.aprobe = _source_aprobe
-Audio.astream = _audio_astream
+AudioStream.__aiter__ = _stream_aiter
 
 __all__ = [
     "ActivityEvaluation",
@@ -127,6 +94,7 @@ __all__ = [
     "AudioFormat",
     "AudioInfo",
     "AudioSource",
+    "AudioStream",
     "DatasetActivityEvaluation",
     "DatasetActivityEventEvaluation",
     "DatasetEvaluation",

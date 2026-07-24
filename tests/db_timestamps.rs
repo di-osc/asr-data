@@ -4,7 +4,7 @@ use asr_data::{Audio, AudioDb, AudioDbError, AudioQuery, AudioSource};
 
 #[test]
 fn filters_by_automatic_creation_and_update_times() {
-    assert_eq!(AudioDb::SCHEMA_VERSION, 10);
+    assert_eq!(AudioDb::SCHEMA_VERSION, 11);
     let path = std::env::temp_dir().join(format!(
         "asr-db-timestamps-{}.db",
         uuid::Uuid::new_v4().simple()

@@ -7,16 +7,13 @@ use rubato::{
     WindowFunction,
 };
 
-#[cfg(feature = "python-bindings")]
 use super::{AudioChunk, AudioChunks, AudioFormat, AudioSource};
 
-#[cfg(feature = "python-bindings")]
 enum RawAudioStream {
     Decoded(super::decode::DecodedAudioChunks),
     Pcm(AudioChunks),
 }
 
-#[cfg(feature = "python-bindings")]
 impl Iterator for RawAudioStream {
     type Item = Result<AudioChunk>;
 
@@ -151,7 +148,6 @@ impl StreamingResampler {
     }
 }
 
-#[cfg(feature = "python-bindings")]
 pub(crate) struct SourceAudioStream {
     raw: RawAudioStream,
     sample_rate: Option<u32>,
@@ -163,10 +159,10 @@ pub(crate) struct SourceAudioStream {
     source_format: Option<AudioFormat>,
     resampler: Option<StreamingResampler>,
     next_output_frame: usize,
+    next_output_index: usize,
     finished: bool,
 }
 
-#[cfg(feature = "python-bindings")]
 impl SourceAudioStream {
     pub(crate) fn new(
         source: AudioSource,
@@ -197,6 +193,7 @@ impl SourceAudioStream {
             source_format: None,
             resampler: None,
             next_output_frame: 0,
+            next_output_index: 0,
             finished: false,
         })
     }
@@ -240,7 +237,6 @@ impl SourceAudioStream {
     }
 }
 
-#[cfg(feature = "python-bindings")]
 impl Iterator for SourceAudioStream {
     type Item = Result<AudioChunk>;
 
@@ -268,14 +264,17 @@ impl Iterator for SourceAudioStream {
                 self.next_output_frame = self
                     .next_output_frame
                     .saturating_add(samples.len() / usize::from(channels));
-                return Some(Ok(AudioChunk {
+                let chunk = AudioChunk {
                     samples,
                     sample_rate,
                     channels,
                     source_format: self.source_format.clone(),
+                    index: self.next_output_index,
                     offset_ms,
                     is_final: self.finished && self.output.is_empty(),
-                }));
+                };
+                self.next_output_index = self.next_output_index.saturating_add(1);
+                return Some(Ok(chunk));
             }
             if self.finished {
                 return None;

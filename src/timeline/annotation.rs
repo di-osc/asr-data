@@ -10,10 +10,12 @@ pub type TimeSpanId = String;
 pub type SpeakerId = String;
 pub type LanguageTag = String;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AudioActivity {
     #[serde(default)]
     pub event: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<f32>,
 }
 
 impl AudioActivity {
@@ -23,6 +25,11 @@ impl AudioActivity {
 
     pub fn with_event(mut self, event: impl Into<String>) -> Self {
         self.event = Some(event.into());
+        self
+    }
+
+    pub fn with_confidence(mut self, confidence: f32) -> Self {
+        self.confidence = Some(confidence);
         self
     }
 }
@@ -81,6 +88,8 @@ pub struct SpeakerPayload {
     pub name: SpeakerId,
     #[serde(default)]
     pub transcription: Option<Transcription>,
+    #[serde(default)]
+    pub confidence: Option<f32>,
 }
 
 impl SpeakerPayload {
@@ -88,7 +97,13 @@ impl SpeakerPayload {
         Self {
             name: name.into(),
             transcription: None,
+            confidence: None,
         }
+    }
+
+    pub fn with_confidence(mut self, confidence: f32) -> Self {
+        self.confidence = Some(confidence);
+        self
     }
 }
 
@@ -113,6 +128,16 @@ impl Annotation {
             Self::Language(_) => "language",
         }
     }
+
+    pub fn confidence(&self) -> Option<f32> {
+        match self {
+            Self::Activity(value) => value.confidence,
+            Self::Token(value) => value.confidence,
+            Self::Transcription(value) => value.confidence,
+            Self::Speaker(value) => value.confidence,
+            Self::Sentence(_) | Self::Language(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,7 +145,6 @@ pub struct TimeSpan {
     pub id: TimeSpanId,
     pub range: TimeRange,
     pub source: Option<String>,
-    pub confidence: Option<f32>,
     pub annotation: Annotation,
 }
 
@@ -130,21 +154,40 @@ impl TimeSpan {
             id: format!("span_{}", Uuid::new_v4().simple()),
             range,
             source,
-            confidence: None,
             annotation,
         }
-    }
-
-    pub fn with_confidence(mut self, confidence: f32) -> Self {
-        self.confidence = Some(confidence);
-        self
     }
 
     /// Compares annotation content while ignoring the generated identity.
     pub fn content_eq(&self, other: &Self) -> bool {
         self.range == other.range
             && self.source == other.source
-            && self.confidence == other.confidence
             && self.annotation == other.annotation
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Annotation, AudioActivity, TimeSpan};
+    use crate::utils::{DurationMs, TimeRange};
+
+    #[test]
+    fn confidence_is_serialized_inside_the_annotation_payload() {
+        let span = TimeSpan::new(
+            TimeRange::new(DurationMs(0), DurationMs(1_000)),
+            Annotation::Activity(
+                AudioActivity::new()
+                    .with_event("speech")
+                    .with_confidence(0.98),
+            ),
+            Some("vad".to_owned()),
+        );
+
+        let value = serde_json::to_value(span).expect("serialize span");
+        assert!(value.get("confidence").is_none());
+        let confidence = value["annotation"]["Activity"]["confidence"]
+            .as_f64()
+            .expect("numeric confidence");
+        assert!((confidence - 0.98).abs() < 1e-6);
     }
 }

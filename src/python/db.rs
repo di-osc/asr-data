@@ -314,11 +314,12 @@ impl PyAudioDb {
     ///     >>> db = AudioDB.create(f"{directory.name}/dataset.db")
     ///     >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000), id="one")
     ///     >>> timeline = doc.timeline("mono")
-    ///     >>> _ = timeline.reference.annotate_span(
-    ///     ...     0, timeline.duration_ms, Transcription("你好")
+    ///     >>> _ = timeline.annotate_span(
+    ///     ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
     ///     ... )
-    ///     >>> _ = timeline.prediction.annotate_span(
-    ///     ...     0, timeline.duration_ms, Transcription("你好"), source="qwen-asr"
+    ///     >>> _ = timeline.annotate_span(
+    ///     ...     0, timeline.duration_ms, Transcription("你好"),
+    ///     ...     is_reference=False, source="qwen-asr"
     ///     ... )
     ///     >>> doc.metadata["split"] = "test"
     ///     >>> db.insert(doc)

@@ -16,7 +16,7 @@ pub use db::{
     AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioQuery, DEFAULT_QUERY_LIMIT,
     MAX_QUERY_LIMIT, read_audio_db_info,
 };
-pub use doc::{Audio, AudioChannelError, AudioTimelineError, AudioValidationError};
+pub use doc::{Audio, AudioChannelError, AudioStream, AudioTimelineError, AudioValidationError};
 pub use evaluation::{
     DatasetActivityEvaluation, DatasetActivityEventEvaluation, DatasetEvalError, DatasetEvaluation,
     DatasetEvaluator, DatasetTranscriptionEvaluation, evaluate_dataset,

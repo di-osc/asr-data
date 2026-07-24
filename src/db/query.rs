@@ -464,7 +464,6 @@ fn decode_audio_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Audio> {
         timelines,
         metadata,
         waveform: None,
-        stream_active: false,
     };
     audio.validate().map_err(sql_conversion_error)?;
     Ok(audio)

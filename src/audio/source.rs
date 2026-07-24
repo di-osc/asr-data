@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::{Waveform, data, decode, local_path_from_urlish};
-use crate::doc::Audio;
+use crate::doc::{Audio, AudioStream};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum AudioChannel {
@@ -165,14 +165,6 @@ impl AudioSource {
         Ok(waveform)
     }
 
-    pub fn open(&self) -> anyhow::Result<Audio> {
-        Audio::from_source(self.clone())
-    }
-
-    pub fn open_with_id(&self, audio_id: impl Into<String>) -> anyhow::Result<Audio> {
-        Audio::with_id_from_source(audio_id, self.clone())
-    }
-
     pub fn load(&self) -> anyhow::Result<Audio> {
         self.load_with_id(format!("audio_{}", uuid::Uuid::new_v4().simple()))
     }
@@ -184,6 +176,22 @@ impl AudioSource {
             self.clone(),
             waveform,
         ))
+    }
+
+    pub fn stream(&self, chunk_size_ms: u64) -> anyhow::Result<AudioStream> {
+        self.stream_with_id(
+            format!("audio_{}", uuid::Uuid::new_v4().simple()),
+            chunk_size_ms,
+        )
+    }
+
+    pub fn stream_with_id(
+        &self,
+        audio_id: impl Into<String>,
+        chunk_size_ms: u64,
+    ) -> anyhow::Result<AudioStream> {
+        let info = self.probe()?;
+        AudioStream::new(audio_id, self.clone(), info, chunk_size_ms)
     }
 
     pub fn probe(&self) -> anyhow::Result<AudioInfo> {
@@ -252,12 +260,6 @@ impl AudioSource {
         tokio::task::spawn_blocking(move || source.load())
             .await
             .map_err(|error| anyhow::anyhow!("audio loader worker failed: {error}"))?
-    }
-
-    pub async fn aopen(&self) -> anyhow::Result<Audio> {
-        let source = self.clone();
-        let info = source.aprobe().await?;
-        Ok(Audio::from_info(source, &info))
     }
 }
 

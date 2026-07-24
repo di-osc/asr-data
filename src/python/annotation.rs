@@ -12,13 +12,14 @@ use super::common::truncate;
 ///
 /// Args:
 ///     event: 可选事件名称；省略时只表示存在活动。
+///     confidence: 可选活动检测置信度。
 ///
 /// Raises:
 ///     ValueError: event 仅包含空白字符。
 ///
 /// Examples:
 ///     >>> from asr_data.annotation import AudioActivity
-///     >>> AudioActivity(event="speech").event
+///     >>> AudioActivity(event="speech", confidence=0.98).event
 ///     'speech'
 ///     >>> AudioActivity().event is None
 ///     True
@@ -31,8 +32,8 @@ pub(super) struct PyAudioActivity {
 #[pymethods]
 impl PyAudioActivity {
     #[new]
-    #[pyo3(signature = (*, event=None))]
-    fn new(event: Option<String>) -> PyResult<Self> {
+    #[pyo3(signature = (*, event=None, confidence=None))]
+    fn new(event: Option<String>, confidence: Option<f32>) -> PyResult<Self> {
         if event
             .as_deref()
             .is_some_and(|value| value.trim().is_empty())
@@ -42,7 +43,7 @@ impl PyAudioActivity {
             ));
         }
         Ok(Self {
-            inner: RustAudioActivity { event },
+            inner: RustAudioActivity { event, confidence },
         })
     }
 
@@ -52,11 +53,21 @@ impl PyAudioActivity {
         self.inner.event.clone()
     }
 
+    /// 可选活动检测置信度。
+    #[getter]
+    fn confidence(&self) -> Option<f32> {
+        self.inner.confidence
+    }
+
     fn __repr__(&self) -> String {
-        match &self.inner.event {
-            Some(event) => format!("AudioActivity(event={event:?})"),
-            None => "AudioActivity()".to_owned(),
+        let mut fields = Vec::new();
+        if let Some(event) = &self.inner.event {
+            fields.push(format!("event={event:?}"));
         }
+        if let Some(confidence) = self.inner.confidence {
+            fields.push(format!("confidence={confidence:.3}"));
+        }
+        format!("AudioActivity({})", fields.join(", "))
     }
 }
 
@@ -246,8 +257,9 @@ impl PyTranscription {
 /// 一次说话人发话的 payload。
 ///
 /// Args:
-///     name: 说话人名称或稳定业务标识。
+///     name: 说话人名称或业务标识。
 ///     transcription: 该次发话携带的可选完整转写。
+///     confidence: 可选说话人识别置信度。
 ///
 /// Examples:
 ///     >>> from asr_data.annotation import Speaker, Transcription
@@ -263,20 +275,31 @@ pub(super) struct PySpeaker {
 #[pymethods]
 impl PySpeaker {
     #[new]
-    #[pyo3(signature = (name, *, transcription=None))]
-    fn new(name: String, transcription: Option<PyRef<'_, PyTranscription>>) -> Self {
+    #[pyo3(signature = (name, *, transcription=None, confidence=None))]
+    fn new(
+        name: String,
+        transcription: Option<PyRef<'_, PyTranscription>>,
+        confidence: Option<f32>,
+    ) -> Self {
         Self {
             inner: SpeakerPayload {
                 name,
                 transcription: transcription.map(|value| value.inner.clone()),
+                confidence,
             },
         }
     }
 
-    /// 说话人名称或稳定业务标识。
+    /// 说话人名称或业务标识。
     #[getter]
     fn name(&self) -> String {
         self.inner.name.clone()
+    }
+
+    /// 可选说话人识别置信度。
+    #[getter]
+    fn confidence(&self) -> Option<f32> {
+        self.inner.confidence
     }
 
     /// 该次发话携带的可选完整转写。
@@ -301,7 +324,15 @@ impl PySpeaker {
                 )
             })
             .unwrap_or_default();
-        format!("Speaker(name={:?}{transcription})", self.inner.name)
+        let confidence = self
+            .inner
+            .confidence
+            .map(|value| format!(", confidence={value:.3}"))
+            .unwrap_or_default();
+        format!(
+            "Speaker(name={:?}{transcription}{confidence})",
+            self.inner.name
+        )
     }
 }
 

@@ -32,6 +32,7 @@ fn activity(start: u64, end: u64, event: Option<&str>, source: Option<&str>) -> 
         TimeRange::new(DurationMs(start), DurationMs(end)),
         Annotation::Activity(AudioActivity {
             event: event.map(str::to_owned),
+            confidence: None,
         }),
         source.map(str::to_owned),
     )
@@ -42,29 +43,31 @@ fn aggregates_corpus_metrics_and_source_coverage() {
     let mut first = doc("first");
     let timeline = first.mono_timeline_mut().unwrap();
     timeline
-        .push_reference(transcription("aaaa", None))
+        .annotate_span(true, transcription("aaaa", None))
         .unwrap();
     timeline
-        .push_prediction(transcription("aaab", Some("qwen")))
+        .annotate_span(false, transcription("aaab", Some("qwen")))
         .unwrap();
     timeline
-        .push_prediction(transcription("aaaa", Some("whisper")))
+        .annotate_span(false, transcription("aaaa", Some("whisper")))
         .unwrap();
     timeline
-        .push_reference(activity(100, 500, Some("speech"), None))
+        .annotate_span(true, activity(100, 500, Some("speech"), None))
         .unwrap();
     timeline
-        .push_prediction(activity(200, 600, Some("speech"), Some("vad")))
+        .annotate_span(false, activity(200, 600, Some("speech"), Some("vad")))
         .unwrap();
 
     let mut second = doc("second");
     let timeline = second.mono_timeline_mut().unwrap();
-    timeline.push_reference(transcription("a", None)).unwrap();
     timeline
-        .push_prediction(transcription("", Some("qwen")))
+        .annotate_span(true, transcription("a", None))
         .unwrap();
     timeline
-        .push_reference(activity(100, 500, Some("speech"), None))
+        .annotate_span(false, transcription("", Some("qwen")))
+        .unwrap();
+    timeline
+        .annotate_span(true, activity(100, 500, Some("speech"), None))
         .unwrap();
 
     let third = doc("third");
@@ -111,9 +114,11 @@ fn audio_db_evaluation_pages_through_every_matching_document() {
     for index in 0..101 {
         let mut audio = doc(&format!("audio-{index:03}"));
         let timeline = audio.mono_timeline_mut().unwrap();
-        timeline.push_reference(transcription("a", None)).unwrap();
         timeline
-            .push_prediction(transcription("a", Some("asr")))
+            .annotate_span(true, transcription("a", None))
+            .unwrap();
+        timeline
+            .annotate_span(false, transcription("a", Some("asr")))
             .unwrap();
         db.insert(&audio).unwrap();
     }
@@ -141,9 +146,11 @@ fn audio_db_evaluation_pages_through_every_matching_document() {
 fn streaming_evaluator_matches_the_convenience_function() {
     let mut audio = doc("one");
     let timeline = audio.mono_timeline_mut().unwrap();
-    timeline.push_reference(transcription("a", None)).unwrap();
     timeline
-        .push_prediction(transcription("a", Some("asr")))
+        .annotate_span(true, transcription("a", None))
+        .unwrap();
+    timeline
+        .annotate_span(false, transcription("a", Some("asr")))
         .unwrap();
     let config = TimelineEvalConfig::new()
         .with_transcription("asr")

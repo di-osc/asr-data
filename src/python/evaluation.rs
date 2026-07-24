@@ -496,11 +496,12 @@ impl PyDatasetEvaluation {
 ///     >>> from asr_data.annotation import Transcription
 ///     >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
 ///     >>> timeline = doc.timeline("mono")
-///     >>> _ = timeline.reference.annotate_span(
-///     ...     0, timeline.duration_ms, Transcription("你好")
+///     >>> _ = timeline.annotate_span(
+///     ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
 ///     ... )
-///     >>> _ = timeline.prediction.annotate_span(
-///     ...     0, timeline.duration_ms, Transcription("你好"), source="asr"
+///     >>> _ = timeline.annotate_span(
+///     ...     0, timeline.duration_ms, Transcription("你好"),
+///     ...     is_reference=False, source="asr"
 ///     ... )
 ///     >>> evaluate_dataset([doc], transcription="asr").transcription["asr"].cer
 ///     0.0

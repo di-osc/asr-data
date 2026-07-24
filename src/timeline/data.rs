@@ -52,6 +52,8 @@ impl fmt::Display for TimeSpanOverlap {
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum TimelineSpanError {
+    #[error("reference annotation {annotation_id:?} must not have a source")]
+    ReferenceHasSource { annotation_id: TimeSpanId },
     #[error("prediction annotation {annotation_id:?} must have a non-empty source")]
     PredictionMissingSource { annotation_id: TimeSpanId },
     #[error("prediction source must contain at least one non-whitespace character")]
@@ -73,18 +75,19 @@ impl Timeline {
         }
     }
 
-    pub fn push_reference(
+    pub fn annotate_span(
         &mut self,
-        mut annotation: TimeSpan,
-    ) -> Result<&TimeSpan, TimelineSpanError> {
-        annotation.source = None;
-        push_validated(&mut self.reference, annotation, false)
-    }
-
-    pub fn push_prediction(
-        &mut self,
+        is_reference: bool,
         annotation: TimeSpan,
     ) -> Result<&TimeSpan, TimelineSpanError> {
+        if is_reference {
+            if annotation.source.is_some() {
+                return Err(TimelineSpanError::ReferenceHasSource {
+                    annotation_id: annotation.id,
+                });
+            }
+            return push_validated(&mut self.reference, annotation, false);
+        }
         if annotation
             .source
             .as_deref()
@@ -180,6 +183,12 @@ impl Timeline {
     pub fn validate_spans(&self) -> Result<(), TimelineSpanError> {
         validate_reference_slice(&self.reference)?;
         validate_prediction_slice(&self.prediction)
+    }
+
+    pub(crate) fn extend_to(&mut self, duration: DurationMs) {
+        if duration > self.duration {
+            self.duration = duration;
+        }
     }
 }
 

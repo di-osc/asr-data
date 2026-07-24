@@ -4,13 +4,13 @@ use asr_data::audio::{self, decode};
 use asr_data::{
     ActivityEvaluation, ActivityEventEvaluation, Annotation, Audio, AudioActivity, AudioChannel,
     AudioChunk, AudioChunks, AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioEncoding,
-    AudioError, AudioFormat, AudioInfo, AudioQuery, AudioSource, CerStats, DEFAULT_QUERY_LIMIT,
-    DatasetActivityEvaluation, DatasetActivityEventEvaluation, DatasetEvalError, DatasetEvaluation,
-    DatasetEvaluator, DatasetTranscriptionEvaluation, DurationMs, MAX_QUERY_LIMIT, SampleIndex,
-    Sentence, SpeakerPayload, TextNormalizationError, TimeRange, TimeSpan, Timeline,
-    TimelineEvalConfig, TimelineEvalError, TimelineEvaluation, Token, Transcript, Transcription,
-    TranscriptionEvaluation, TranscriptionNormalization, Waveform, compute_cer, evaluate_dataset,
-    normalize_for_cer, normalize_zh, read_audio_db_info,
+    AudioError, AudioFormat, AudioInfo, AudioQuery, AudioSource, AudioStream, CerStats,
+    DEFAULT_QUERY_LIMIT, DatasetActivityEvaluation, DatasetActivityEventEvaluation,
+    DatasetEvalError, DatasetEvaluation, DatasetEvaluator, DatasetTranscriptionEvaluation,
+    DurationMs, MAX_QUERY_LIMIT, SampleIndex, Sentence, SpeakerPayload, TextNormalizationError,
+    TimeRange, TimeSpan, Timeline, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation,
+    Token, Transcript, Transcription, TranscriptionEvaluation, TranscriptionNormalization,
+    Waveform, compute_cer, evaluate_dataset, normalize_for_cer, normalize_zh, read_audio_db_info,
 };
 
 #[test]
@@ -21,6 +21,7 @@ fn stable_public_paths_compile() {
     let _: Option<AudioChunk> = None;
     let _: Option<AudioChunks> = None;
     let _: Option<Audio> = None;
+    let _: Option<AudioStream> = None;
     let _: Option<TimeSpan> = None;
     let _: Option<Annotation> = None;
     let _: Option<AudioChannel> = None;
@@ -71,4 +72,85 @@ fn stable_public_paths_compile() {
         let path = Path::new("unused");
         let _ = read_audio_db_info(path);
     };
+}
+
+#[test]
+fn audio_stream_grows_timelines_and_converts_without_redecoding() {
+    let source = AudioSource::from_pcm_s16le(vec![0; 2_000], 1_000, 1);
+    let mut stream = source
+        .stream_with_id("stream-1", 250)
+        .expect("create stream");
+
+    assert_eq!(stream.position_ms(), 0);
+    assert_eq!(
+        stream
+            .timeline(AudioChannel::Mono)
+            .expect("valid channel")
+            .expect("mono timeline")
+            .duration,
+        DurationMs(0),
+    );
+
+    let first = stream.next().expect("first chunk").expect("decode chunk");
+    assert_eq!(first.offset_ms, 0);
+    assert_eq!(stream.position_ms(), 250);
+    assert_eq!(
+        stream
+            .timeline(AudioChannel::Mono)
+            .expect("valid channel")
+            .expect("mono timeline")
+            .duration,
+        DurationMs(250),
+    );
+
+    let remaining = stream
+        .by_ref()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("remaining chunks");
+    assert!(!remaining.is_empty());
+    assert!(stream.is_complete());
+    assert_eq!(stream.as_waveform().frame_count(), 1_000);
+
+    let mut audio = stream.into_audio().expect("complete stream converts");
+    assert_eq!(audio.id, "stream-1");
+    assert_eq!(
+        audio.as_waveform().expect("cached waveform").frame_count(),
+        1_000
+    );
+}
+
+#[test]
+fn audio_and_stream_convenience_factories_are_public() {
+    let pcm = vec![0; 2_000];
+    let mut audio = Audio::from_pcm_s16le(pcm.clone(), 1_000, 1).expect("load audio");
+    assert_eq!(audio.as_waveform().expect("waveform").frame_count(), 1_000);
+
+    let mut stream = AudioStream::from_pcm_s16le(pcm, 1_000, 1, 250).expect("create audio stream");
+    assert_eq!(stream.by_ref().count(), 4);
+    assert!(stream.is_complete());
+}
+
+#[test]
+fn timeline_uses_one_annotation_write_method() {
+    let mut timeline = Timeline::new("audio", DurationMs(1_000));
+    let reference = TimeSpan::new(
+        TimeRange::new(DurationMs(0), DurationMs(1_000)),
+        Annotation::Activity(AudioActivity::new().with_event("speech")),
+        None,
+    );
+    timeline
+        .annotate_span(true, reference)
+        .expect("reference annotation");
+
+    let prediction = TimeSpan::new(
+        TimeRange::new(DurationMs(0), DurationMs(1_000)),
+        Annotation::Transcription(Transcription::new("hello")),
+        Some("asr".to_owned()),
+    );
+    timeline
+        .annotate_span(false, prediction)
+        .expect("prediction annotation");
+
+    assert_eq!(timeline.reference.len(), 1);
+    assert_eq!(timeline.prediction.len(), 1);
 }

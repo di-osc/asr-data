@@ -5,11 +5,11 @@ use crate::doc::Audio as RustAudio;
 use crate::utils::DurationMs;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict};
+use pyo3::types::{PyAny, PyBytes, PyDict};
 
 use super::audio::{
-    PyAudioInfo, PyAudioIterator, PyWaveform, async_runtime, py_audio_info_from_rust,
-    py_source_from_rust, rust_source_from_py, stream_audio,
+    PyAudioInfo, PyWaveform, async_runtime, display_rust_waveform, py_audio_info_from_rust,
+    py_source_from_rust, rust_source_from_py,
 };
 use super::common::{
     SharedAudio, audio_channel, audio_channel_name, format_duration_ms, format_source_field,
@@ -19,11 +19,11 @@ use super::timeline::PyTimeline;
 
 /// 音频来源、元信息、时间轴、标注和业务 metadata 的集合。
 ///
-/// 构造时会探测音频信息并根据声道自动创建 timeline，但不会解码浮点波形。
+/// 构造时会完整解码音频并根据声道自动创建最终时长的 timeline。
 ///
 /// Args:
 ///     source: AudioSource、路径或 URL。
-///     id: 可选稳定文档 ID；省略时自动生成。
+///     id: 可选的文档 ID；省略时自动生成。
 ///
 /// Raises:
 ///     AsrDataError: 来源无法探测。
@@ -55,8 +55,8 @@ impl PyAudio {
     fn build(py: Python<'_>, source: RustAudioSource, id: Option<String>) -> PyResult<Self> {
         let audio = py
             .detach(move || match id {
-                Some(id) => RustAudio::with_id_from_source(id, source),
-                None => RustAudio::from_source(source),
+                Some(id) => source.load_with_id(id),
+                None => source.load(),
             })
             .map_err(py_error)?;
         Self::from_rust(py, audio)
@@ -102,10 +102,13 @@ fn spawn_audio_from_source(source: RustAudioSource, id: Option<String>) -> PyAud
     let result: AsyncAudioResult = Arc::new(Mutex::new(None));
     let task_result = Arc::clone(&result);
     async_runtime().spawn(async move {
-        let audio = match id {
-            Some(id) => RustAudio::with_id_afrom_source(id, source).await,
-            None => RustAudio::afrom_source(source).await,
-        }
+        let audio = tokio::task::spawn_blocking(move || match id {
+            Some(id) => source.load_with_id(id),
+            None => source.load(),
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("audio loader worker failed: {error}"))
+        .and_then(|result| result)
         .map_err(|error| format!("{error:#}"));
         if let Ok(mut slot) = task_result.lock() {
             *slot = Some(audio);
@@ -121,6 +124,122 @@ impl PyAudio {
     fn new(py: Python<'_>, source: &Bound<'_, PyAny>, id: Option<String>) -> PyResult<Self> {
         let source = rust_source_from_py(source)?;
         Self::build(py, source, id)
+    }
+
+    /// 从本地文件完整加载 Audio。
+    ///
+    /// Args:
+    ///     path: 音频文件路径。
+    ///     id: 可选的文档 ID。
+    ///
+    /// Returns:
+    ///     已完整解码的 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: 文件无法读取或解码。
+    ///
+    /// Examples:
+    ///     >>> audio = Audio.from_path("audio.wav", id="sample")
+    #[staticmethod]
+    #[pyo3(signature = (path, *, id=None))]
+    fn from_path(py: Python<'_>, path: String, id: Option<String>) -> PyResult<Self> {
+        Self::build(py, RustAudioSource::from_path(path), id)
+    }
+
+    /// 从 URL 完整加载 Audio。
+    ///
+    /// Args:
+    ///     url: HTTP、HTTPS 或 file URL。
+    ///     id: 可选的文档 ID。
+    ///
+    /// Returns:
+    ///     已完整解码的 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: URL 无法读取或音频无法解码。
+    ///
+    /// Examples:
+    ///     >>> audio = Audio.from_url("https://example.com/audio.wav")
+    #[staticmethod]
+    #[pyo3(signature = (url, *, id=None))]
+    fn from_url(py: Python<'_>, url: String, id: Option<String>) -> PyResult<Self> {
+        Self::build(py, RustAudioSource::from_url(url), id)
+    }
+
+    /// 从带容器或编码信息的音频字节完整加载 Audio。
+    ///
+    /// Args:
+    ///     data: WAV、MP3 等编码音频字节。
+    ///     id: 可选的文档 ID。
+    ///
+    /// Returns:
+    ///     已完整解码的 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: 字节不是受支持的音频。
+    ///
+    /// Examples:
+    ///     >>> audio = Audio.from_bytes(encoded_audio)
+    #[staticmethod]
+    #[pyo3(signature = (data, *, id=None))]
+    fn from_bytes(py: Python<'_>, data: &Bound<'_, PyBytes>, id: Option<String>) -> PyResult<Self> {
+        Self::build(
+            py,
+            RustAudioSource::from_encoded_bytes(data.as_bytes().to_vec()),
+            id,
+        )
+    }
+
+    /// 从 base64 编码音频完整加载 Audio。
+    ///
+    /// Args:
+    ///     data: 编码音频的 base64 字符串。
+    ///     id: 可选的文档 ID。
+    ///
+    /// Returns:
+    ///     已完整解码的 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: base64 或其中的音频无效。
+    ///
+    /// Examples:
+    ///     >>> audio = Audio.from_base64(encoded)
+    #[staticmethod]
+    #[pyo3(signature = (data, *, id=None))]
+    fn from_base64(py: Python<'_>, data: String, id: Option<String>) -> PyResult<Self> {
+        Self::build(py, RustAudioSource::from_base64(data), id)
+    }
+
+    /// 从 PCM S16LE 字节完整加载 Audio。
+    ///
+    /// Args:
+    ///     data: 交错排列的 PCM S16LE 字节。
+    ///     sample_rate: 每秒每声道采样帧数。
+    ///     channels: 声道数，默认为 1。
+    ///     id: 可选的文档 ID。
+    ///
+    /// Returns:
+    ///     已完整解码的 Audio。
+    ///
+    /// Raises:
+    ///     AsrDataError: PCM 参数或字节长度无效。
+    ///
+    /// Examples:
+    ///     >>> audio = Audio.from_pcm(b"\0\0" * 16000, 16000)
+    #[staticmethod]
+    #[pyo3(signature = (data, sample_rate, channels=1, *, id=None))]
+    fn from_pcm(
+        py: Python<'_>,
+        data: &Bound<'_, PyBytes>,
+        sample_rate: u32,
+        channels: u16,
+        id: Option<String>,
+    ) -> PyResult<Self> {
+        Self::build(
+            py,
+            RustAudioSource::from_pcm_s16le(data.as_bytes().to_vec(), sample_rate, channels),
+            id,
+        )
     }
 
     #[staticmethod]
@@ -149,24 +268,14 @@ impl PyAudio {
         Ok(self.inner.read().map_err(|_| poisoned("audio"))?.id.clone())
     }
 
-    /// 解码后的波形是否已经保留在内存中。
-    #[getter]
-    fn is_loaded(&self) -> PyResult<bool> {
-        Ok(self
-            .inner
-            .read()
-            .map_err(|_| poisoned("audio"))?
-            .is_loaded())
-    }
-
-    /// 返回完整波形；尚未加载时会按需解码。
+    /// 返回完整波形。
     ///
     /// Returns:
     ///     当前 Audio 的完整 Waveform。
     ///
     /// Examples:
     ///     >>> from asr_data import AudioSource
-    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 10, 16000).open()
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 10, 16000).load()
     ///     >>> audio.as_waveform().frame_count
     ///     10
     fn as_waveform(&self) -> PyResult<PyWaveform> {
@@ -179,41 +288,39 @@ impl PyAudio {
         Ok(PyWaveform::from_rust(waveform))
     }
 
-    /// 释放运行时波形缓存，保留 info、timeline 和标注。
-    ///
-    /// Returns:
-    ///     None。
-    ///
-    /// Examples:
-    ///     >>> from asr_data import AudioSource
-    ///     >>> audio = AudioSource.from_pcm(b"\0\0", 16000).load()
-    ///     >>> audio.unload()
-    fn unload(&self) -> PyResult<()> {
-        self.inner.write().map_err(|_| poisoned("audio"))?.unload();
-        Ok(())
-    }
-
-    /// 按固定时长顺序读取 AudioChunk。
+    /// 在 Jupyter 中显示完整音频播放器。
     ///
     /// Args:
-    ///     chunk_size_ms: 每个 chunk 的目标时长，单位为毫秒。
+    ///     start_ms: 可选播放起始时间。
+    ///     end_ms: 可选播放结束时间。
+    ///     autoplay: 是否自动播放。
     ///
     /// Returns:
-    ///     可迭代的 AudioIterator。
+    ///     None；播放器直接发送到当前 Jupyter 输出。
+    ///
+    /// Raises:
+    ///     ValueError: 结束时间早于起始时间。
+    ///     AsrDataError: IPython 不可用。
     ///
     /// Examples:
     ///     >>> from asr_data import AudioSource
-    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 16000, 16000).open()
-    ///     >>> len(list(audio.stream(500)))
-    ///     2
-    #[pyo3(signature = (chunk_size_ms=100))]
-    fn stream(&self, py: Python<'_>, chunk_size_ms: u64) -> PyResult<PyAudioIterator> {
-        if chunk_size_ms == 0 {
-            return Err(PyValueError::new_err(
-                "chunk_size_ms must be greater than zero",
-            ));
-        }
-        stream_audio(py, self.inner.clone(), chunk_size_ms)
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 100, 1000).load()
+    ///     >>> audio.display(end_ms=50)
+    #[pyo3(signature = (start_ms=None, end_ms=None, autoplay=false))]
+    fn display(
+        &self,
+        py: Python<'_>,
+        start_ms: Option<u64>,
+        end_ms: Option<u64>,
+        autoplay: bool,
+    ) -> PyResult<()> {
+        let waveform = self
+            .inner
+            .write()
+            .map_err(|_| poisoned("audio"))?
+            .as_waveform()
+            .map_err(py_error)?;
+        display_rust_waveform(py, waveform, start_ms, end_ms, autoplay)
     }
 
     /// 查询指定声道的 timeline，不存在时返回 None。

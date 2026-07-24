@@ -13,7 +13,7 @@ mod schema;
 
 pub use query::read_audio_db_info;
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 const APPLICATION_ID: i64 = 0x5641_5352; // "VASR"
 pub const DEFAULT_QUERY_LIMIT: usize = 100;
 pub const MAX_QUERY_LIMIT: usize = 10_000;

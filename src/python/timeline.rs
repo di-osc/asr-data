@@ -12,7 +12,7 @@ use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
 use super::annotation::{PyAudioActivity, PySpeaker, PyToken, PyTranscription};
-use super::audio::PyWaveform;
+use super::audio::{PyWaveform, display_rust_waveform};
 use super::common::{SharedAudio, format_duration_ms, poisoned, py_error, truncate};
 
 /// Timeline 上一条带时间范围的标注记录。
@@ -35,7 +35,7 @@ enum SpanGroup {
 
 #[pymethods]
 impl PyTimeSpan {
-    /// 自动生成且稳定的 annotation ID。
+    /// 自动生成的 annotation ID，创建后不会改变。
     #[getter]
     fn id(&self) -> String {
         self.annotation_id.clone()
@@ -51,12 +51,6 @@ impl PyTimeSpan {
     #[getter]
     fn end_ms(&self) -> PyResult<u64> {
         Ok(self.snapshot()?.range.end.0)
-    }
-
-    /// 可选 annotation 级置信度。
-    #[getter]
-    fn confidence(&self) -> PyResult<Option<f32>> {
-        Ok(self.snapshot()?.confidence)
     }
 
     /// Prediction 来源；reference 始终为 None。
@@ -165,10 +159,10 @@ impl PyTimeSpan {
     /// Examples:
     ///     >>> from asr_data import AudioSource
     ///     >>> from asr_data.annotation import AudioActivity
-    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 1600, 16000).open()
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 1600, 16000).load()
     ///     >>> timeline = audio.timeline("mono")
-    ///     >>> span = timeline.reference.annotate_span(
-    ///     ...     0, timeline.duration_ms, AudioActivity(event="speech")
+    ///     >>> span = timeline.annotate_span(
+    ///     ...     0, timeline.duration_ms, AudioActivity(event="speech"), is_reference=True
     ///     ... )
     ///     >>> span.as_waveform().duration_ms
     ///     100.0
@@ -180,6 +174,45 @@ impl PyTimeSpan {
             .map(|waveform| waveform.slice_ms(span.range.start.0, span.range.end.0))
             .map_err(py_error)?;
         Ok(PyWaveform::from_rust(waveform))
+    }
+
+    /// 在 Jupyter 中显示当前时间范围的音频播放器。
+    ///
+    /// Args:
+    ///     start_ms: TimeSpan 内可选播放起始时间。
+    ///     end_ms: TimeSpan 内可选播放结束时间。
+    ///     autoplay: 是否自动播放。
+    ///
+    /// Returns:
+    ///     None；播放器直接发送到当前 Jupyter 输出。
+    ///
+    /// Raises:
+    ///     ValueError: 结束时间早于起始时间。
+    ///     AsrDataError: IPython 不可用。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> from asr_data.annotation import AudioActivity
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0" * 100, 1000).load().timeline("mono")
+    ///     >>> span = timeline.annotate_span(
+    ///     ...     0, timeline.duration_ms, AudioActivity(event="speech"), is_reference=True
+    ///     ... )
+    ///     >>> span.display()
+    #[pyo3(signature = (start_ms=None, end_ms=None, autoplay=false))]
+    fn display(
+        &self,
+        py: Python<'_>,
+        start_ms: Option<u64>,
+        end_ms: Option<u64>,
+        autoplay: bool,
+    ) -> PyResult<()> {
+        let span = self.snapshot()?;
+        let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
+        let waveform = audio
+            .waveform_for_channel(self.channel)
+            .map(|waveform| waveform.slice_ms(span.range.start.0, span.range.end.0))
+            .map_err(py_error)?;
+        display_rust_waveform(py, waveform, start_ms, end_ms, autoplay)
     }
 
     fn __repr__(&self) -> PyResult<String> {
@@ -195,7 +228,8 @@ impl PyTimeSpan {
             _ => String::new(),
         };
         let confidence = annotation
-            .confidence
+            .annotation
+            .confidence()
             .map(|value| format!(", confidence={value:.3}"))
             .unwrap_or_default();
         let speaker = match &annotation.annotation {
@@ -791,7 +825,7 @@ impl PyTimeline {
     ///
     /// Examples:
     ///     >>> from asr_data import AudioSource
-    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 1600, 16000).open()
+    ///     >>> audio = AudioSource.from_pcm(b"\0\0" * 1600, 16000).load()
     ///     >>> audio.timeline("mono").as_waveform().duration_ms
     ///     100.0
     fn as_waveform(&self) -> PyResult<PyWaveform> {
@@ -802,6 +836,41 @@ impl PyTimeline {
             .waveform_for_channel(self.channel)
             .map_err(py_error)?;
         Ok(PyWaveform::from_rust(waveform))
+    }
+
+    /// 在 Jupyter 中显示当前声道的音频播放器。
+    ///
+    /// Args:
+    ///     start_ms: 可选播放起始时间。
+    ///     end_ms: 可选播放结束时间。
+    ///     autoplay: 是否自动播放。
+    ///
+    /// Returns:
+    ///     None；播放器直接发送到当前 Jupyter 输出。
+    ///
+    /// Raises:
+    ///     ValueError: 结束时间早于起始时间。
+    ///     AsrDataError: IPython 不可用。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0" * 100, 1000).load().timeline("mono")
+    ///     >>> timeline.display(end_ms=50)
+    #[pyo3(signature = (start_ms=None, end_ms=None, autoplay=false))]
+    fn display(
+        &self,
+        py: Python<'_>,
+        start_ms: Option<u64>,
+        end_ms: Option<u64>,
+        autoplay: bool,
+    ) -> PyResult<()> {
+        let waveform = self
+            .audio
+            .write()
+            .map_err(|_| poisoned("audio"))?
+            .waveform_for_channel(self.channel)
+            .map_err(py_error)?;
+        display_rust_waveform(py, waveform, start_ms, end_ms, autoplay)
     }
 
     /// 不带 source 的 reference 标注集合。
@@ -818,6 +887,68 @@ impl PyTimeline {
         PyPredictionSpans {
             core: SpanCollectionCore::new(self, SpanGroup::Prediction),
         }
+    }
+
+    /// 在当前 timeline 中添加 reference 或 prediction 标注。
+    ///
+    /// Args:
+    ///     start_ms: 全局起始时间，单位为毫秒。
+    ///     end_ms: 全局结束时间，单位为毫秒。
+    ///     annotation: AudioActivity、Transcription、Speaker 或 Token。
+    ///     is_reference: ``True`` 表示参考答案，``False`` 表示模型预测。
+    ///     source: prediction 的模型或流程名称；reference 必须省略。
+    ///
+    /// Returns:
+    ///     新建或去重后已有的 TimeSpan。
+    ///
+    /// Raises:
+    ///     ValueError: 时间范围无效、reference 携带 source，或 prediction 缺少 source。
+    ///     AsrDataError: 标注与已有内容冲突。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> from asr_data.annotation import Transcription
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).load().timeline("mono")
+    ///     >>> reference = timeline.annotate_span(
+    ///     ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
+    ///     ... )
+    ///     >>> prediction = timeline.annotate_span(
+    ///     ...     0,
+    ///     ...     timeline.duration_ms,
+    ///     ...     Transcription("你好"),
+    ///     ...     is_reference=False,
+    ///     ...     source="asr",
+    ///     ... )
+    #[pyo3(signature = (start_ms, end_ms, annotation, *, is_reference, source=None))]
+    fn annotate_span(
+        &self,
+        start_ms: u64,
+        end_ms: u64,
+        annotation: &Bound<'_, PyAny>,
+        is_reference: bool,
+        source: Option<&str>,
+    ) -> PyResult<PyTimeSpan> {
+        let group = if is_reference {
+            if source.is_some() {
+                return Err(PyValueError::new_err(
+                    "source must be omitted when is_reference=True",
+                ));
+            }
+            SpanGroup::Reference
+        } else {
+            let source = source.ok_or_else(|| {
+                PyValueError::new_err("source is required when is_reference=False")
+            })?;
+            validate_source(source)?;
+            SpanGroup::Prediction
+        };
+        let range = TimeRange::new(DurationMs(start_ms), DurationMs(end_ms));
+        SpanCollectionCore::new(self, group).annotate_span_inner(
+            start_ms,
+            end_ms,
+            annotation_from_py(annotation, range)?,
+            source,
+        )
     }
 
     /// 评测一个或多个 prediction source。
@@ -844,11 +975,12 @@ impl PyTimeline {
     ///     >>> timeline = Audio(
     ///     ...     AudioSource.from_pcm(b"\0\0" * 10, 16000)
     ///     ... ).timeline("mono")
-    ///     >>> _ = timeline.reference.annotate_span(
-    ///     ...     0, timeline.duration_ms, Transcription("你好")
+    ///     >>> _ = timeline.annotate_span(
+    ///     ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
     ///     ... )
-    ///     >>> _ = timeline.prediction.annotate_span(
-    ///     ...     0, timeline.duration_ms, Transcription("你好"), source="qwen-asr"
+    ///     >>> _ = timeline.annotate_span(
+    ///     ...     0, timeline.duration_ms, Transcription("你好"),
+    ///     ...     is_reference=False, source="qwen-asr"
     ///     ... )
     ///     >>> result = timeline.eval()
     ///     >>> result.transcription["qwen-asr"].cer
@@ -989,17 +1121,15 @@ impl SpanCollectionCore {
         end_ms: u64,
         annotation: Annotation,
         source: Option<&str>,
-        confidence: Option<f32>,
     ) -> PyResult<PyTimeSpan> {
         if end_ms < start_ms {
             return Err(PyValueError::new_err("end_ms must be >= start_ms"));
         }
-        let mut annotation = RustTimeSpan::new(
+        let annotation = RustTimeSpan::new(
             TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
             annotation,
             source.map(str::to_string),
         );
-        annotation.confidence = confidence;
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
         let timeline = self.selected_mut(&mut audio)?;
         if end_ms > timeline.duration.0 {
@@ -1008,13 +1138,11 @@ impl SpanCollectionCore {
                 timeline.duration.0
             )));
         }
-        let annotation_id = match self.group {
-            SpanGroup::Reference => timeline.push_reference(annotation),
-            SpanGroup::Prediction => timeline.push_prediction(annotation),
-        }
-        .map_err(py_error)?
-        .id
-        .clone();
+        let annotation_id = timeline
+            .annotate_span(matches!(self.group, SpanGroup::Reference), annotation)
+            .map_err(py_error)?
+            .id
+            .clone();
         Ok(self.span_handle(annotation_id))
     }
 }
@@ -1036,8 +1164,8 @@ impl PyReferenceSpans {
     ///     >>> from asr_data import Audio, AudioSource
     ///     >>> from asr_data.annotation import Transcription
     ///     >>> timeline = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000)).timeline("mono")
-    ///     >>> _ = timeline.reference.annotate_span(
-    ///     ...     0, timeline.duration_ms, Transcription("你好")
+    ///     >>> _ = timeline.annotate_span(
+    ///     ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
     ///     ... )
     ///     >>> timeline.reference.transcript().text
     ///     '你好'
@@ -1057,42 +1185,6 @@ impl PyReferenceSpans {
         self.core.all()
     }
 
-    /// 在 reference 中添加一条带时间范围的标注。
-    ///
-    /// Args:
-    ///     start_ms: 全局起始时间，单位为毫秒。
-    ///     end_ms: 全局结束时间，单位为毫秒。
-    ///     annotation: AudioActivity、Transcription、Speaker 或 Token。
-    ///     confidence: 可选的 span 级置信度。
-    ///
-    /// Returns:
-    ///     新建或去重后已有的 TimeSpan。
-    ///
-    /// Examples:
-    ///     >>> from asr_data import AudioSource
-    ///     >>> from asr_data.annotation import AudioActivity
-    ///     >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).open().timeline("mono")
-    ///     >>> span = timeline.reference.annotate_span(
-    ///     ...     0, timeline.duration_ms, AudioActivity(event="speech")
-    ///     ... )
-    #[pyo3(signature = (start_ms, end_ms, annotation, *, confidence=None))]
-    fn annotate_span(
-        &self,
-        start_ms: u64,
-        end_ms: u64,
-        annotation: &Bound<'_, PyAny>,
-        confidence: Option<f32>,
-    ) -> PyResult<PyTimeSpan> {
-        let range = TimeRange::new(DurationMs(start_ms), DurationMs(end_ms));
-        self.core.annotate_span_inner(
-            start_ms,
-            end_ms,
-            annotation_from_py(annotation, range)?,
-            None,
-            confidence,
-        )
-    }
-
     #[pyo3(name = "transcript")]
     /// 按时间顺序组合 reference 文本。
     ///
@@ -1102,8 +1194,10 @@ impl PyReferenceSpans {
     /// Examples:
     ///     >>> from asr_data import AudioSource
     ///     >>> from asr_data.annotation import Transcription
-    ///     >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).open().timeline("mono")
-    ///     >>> _ = timeline.reference.annotate_span(0, 10, Transcription("你好"))
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).load().timeline("mono")
+    ///     >>> _ = timeline.annotate_span(
+    ///     ...     0, 10, Transcription("你好"), is_reference=True
+    ///     ... )
     ///     >>> timeline.reference.transcript().text
     ///     '你好'
     fn py_transcript(&self) -> PyResult<PyTranscript> {
@@ -1219,45 +1313,6 @@ impl PyPredictionSpans {
         self.core.all()
     }
 
-    /// 在 prediction 中添加一条带模型来源的标注。
-    ///
-    /// Args:
-    ///     start_ms: 全局起始时间，单位为毫秒。
-    ///     end_ms: 全局结束时间，单位为毫秒。
-    ///     annotation: AudioActivity、Transcription、Speaker 或 Token。
-    ///     source: 模型或导入流程名称。
-    ///     confidence: 可选的 span 级置信度。
-    ///
-    /// Returns:
-    ///     新建或去重后已有的 TimeSpan。
-    ///
-    /// Examples:
-    ///     >>> from asr_data import AudioSource
-    ///     >>> from asr_data.annotation import Transcription
-    ///     >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).open().timeline("mono")
-    ///     >>> span = timeline.prediction.annotate_span(
-    ///     ...     0, timeline.duration_ms, Transcription("你好"), source="asr"
-    ///     ... )
-    #[pyo3(signature = (start_ms, end_ms, annotation, *, source, confidence=None))]
-    fn annotate_span(
-        &self,
-        start_ms: u64,
-        end_ms: u64,
-        annotation: &Bound<'_, PyAny>,
-        source: &str,
-        confidence: Option<f32>,
-    ) -> PyResult<PyTimeSpan> {
-        validate_source(source)?;
-        let range = TimeRange::new(DurationMs(start_ms), DurationMs(end_ms));
-        self.core.annotate_span_inner(
-            start_ms,
-            end_ms,
-            annotation_from_py(annotation, range)?,
-            Some(source),
-            confidence,
-        )
-    }
-
     /// 按 Annotation 类型分组的 prediction source。
     #[getter]
     fn sources(&self) -> PyResult<std::collections::BTreeMap<&'static str, Vec<String>>> {
@@ -1287,7 +1342,7 @@ impl PyPredictionSpans {
     ///
     /// Examples:
     ///     >>> from asr_data import AudioSource
-    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).open().timeline("mono")
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).load().timeline("mono")
     ///     >>> timeline.prediction.by_source("asr")
     ///     []
     fn py_by_source(&self, source: &str) -> PyResult<Vec<PyTimeSpan>> {
@@ -1305,7 +1360,7 @@ impl PyPredictionSpans {
     ///
     /// Examples:
     ///     >>> from asr_data import AudioSource
-    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).open().timeline("mono")
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).load().timeline("mono")
     ///     >>> timeline.prediction.transcript("asr").text
     ///     ''
     fn py_transcript(&self, source: &str) -> PyResult<PyTranscript> {
@@ -1323,7 +1378,7 @@ impl PyPredictionSpans {
     ///
     /// Examples:
     ///     >>> from asr_data import AudioSource
-    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).open().timeline("mono")
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).load().timeline("mono")
     ///     >>> timeline.prediction.remove_by_source("asr")
     ///     0
     fn py_remove_by_source(&self, source: &str) -> PyResult<usize> {
@@ -1342,7 +1397,7 @@ impl PyPredictionSpans {
     ///
     /// Examples:
     ///     >>> from asr_data import AudioSource
-    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).open().timeline("mono")
+    ///     >>> timeline = AudioSource.from_pcm(b"\0\0", 1000).load().timeline("mono")
     ///     >>> timeline.prediction.relabel_source("asr", "asr-v2")
     ///     0
     fn py_relabel_source(&self, from_source: &str, to_source: &str) -> PyResult<usize> {
