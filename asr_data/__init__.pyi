@@ -1,10 +1,5 @@
 from collections.abc import AsyncIterator
 
-from .annotation import Annotation as Annotation
-from .annotation import AudioActivity as AudioActivity
-from .annotation import Speaker as Speaker
-from .annotation import Token as Token
-from .annotation import Transcription as Transcription
 from ._native import ActivityEvaluation as ActivityEvaluation
 from ._native import ActivityEventEvaluation as ActivityEventEvaluation
 from ._native import AsrDataError as AsrDataError
