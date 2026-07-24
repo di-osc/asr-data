@@ -18,6 +18,7 @@ import pytest
 
 from asr_data import (
     AudioDB,
+    AudioDataset,
     Audio,
     AudioSource,
     Waveform,
@@ -145,6 +146,7 @@ def test_local_public_runtime_docstring_examples_are_executable():
         "from_base64",
         "display",
         "aload_from_path",
+        "from_modelscope",
     }
     seen = set()
 
@@ -327,6 +329,43 @@ def test_audio_db_create_and_open_are_explicit(tmp_path):
     assert len(opened) == len(readonly) == 0
 
 
+def test_audio_dataset_wraps_optional_audio_databases(tmp_path):
+    train = AudioDB.create(str(tmp_path / "train.db"))
+    test = AudioDB.create(str(tmp_path / "test.db"))
+    audio = Audio(
+        AudioSource.from_pcm(b"\0\0" * 10, sample_rate=16000),
+        id="sample-1",
+    )
+    train.insert(audio)
+
+    dataset = AudioDataset(train=train, test=test)
+
+    assert dataset.name == ""
+    assert dataset.version == ""
+    assert dataset.license == ""
+    assert [item.id for item in dataset.train] == ["sample-1"]
+    assert dataset.val is None
+    assert len(dataset.test) == 0
+    assert not hasattr(dataset, "split")
+    assert not hasattr(dataset, "db")
+    assert "AudioDataset" in repr(dataset)
+    assert "val=None" in repr(dataset)
+    assert str(dataset) == ""
+
+    with pytest.raises(AttributeError):
+        dataset.name = "other"
+
+    empty = AudioDataset()
+    assert empty.train is empty.val is empty.test is None
+
+
+def test_audio_dataset_from_modelscope_validates_identity_before_download():
+    with pytest.raises(ValueError, match="repository id"):
+        AudioDataset.from_modelscope("")
+    with pytest.raises(ValueError, match="revision"):
+        AudioDataset.from_modelscope("di-osc/calls", revision="")
+
+
 def test_ensure_timeline_accepts_fractional_audio_duration():
     waveform = Waveform([0.0, 0.0], sample_rate=3)
     doc = Audio(AudioSource.from_pcm(b"\0\0" * 2, sample_rate=3), id="fractional")
@@ -370,6 +409,7 @@ def test_audiodoc_uses_mono_and_indexed_multichannel_timelines():
 
     assert list(mono_doc.timelines) == ["mono"]
     assert mono_doc.timeline("mono").duration_ms == 667
+    assert mono_doc.timeline().id == mono_doc.timeline("mono").id
 
     multi_doc = Audio(AudioSource.from_pcm(b"\0\0" * 8, sample_rate=1000, channels=4))
     assert list(multi_doc.timelines) == ["left", "right", "2", "3"]
@@ -1382,6 +1422,54 @@ def test_prediction_source_is_required_preserved_and_queryable(tmp_path):
     db.insert(audio)
     loaded = db["sources"].timeline("mono").prediction.spans[0]
     assert loaded.source == "whisper"
+
+
+def test_timeline_exposes_all_top_level_annotations_by_type():
+    audio = Audio(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="types")
+    timeline = audio.ensure_timeline("mono", duration_ms=1000)
+
+    timeline.annotate_span(
+        0, 500, Transcription("reference"), is_reference=True
+    )
+    timeline.annotate_span(
+        0,
+        500,
+        Transcription("prediction"),
+        is_reference=False,
+        source="asr",
+    )
+    timeline.annotate_span(
+        0, 500, AudioActivity(event="speech"), is_reference=True
+    )
+    timeline.annotate_span(
+        0,
+        500,
+        AudioActivity(event="speech"),
+        is_reference=False,
+        source="vad",
+    )
+    timeline.annotate_span(
+        0, 500, Speaker("caller"), is_reference=True
+    )
+    timeline.annotate_span(
+        0, 500, Speaker("caller"), is_reference=False, source="diarization"
+    )
+
+    assert [annotation.text for annotation in timeline.transcriptions] == [
+        "reference",
+        "prediction",
+    ]
+    assert [annotation.event for annotation in timeline.activities] == [
+        "speech",
+        "speech",
+    ]
+    assert [annotation.name for annotation in timeline.speakers] == [
+        "caller",
+        "caller",
+    ]
+    assert not hasattr(timeline, "tokens")
+    assert not hasattr(timeline, "sentences")
+    assert not hasattr(timeline, "languages")
 
 
 def test_speaker_transcription_can_be_attached_after_creation():

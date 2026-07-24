@@ -8,6 +8,7 @@ pub use annotation::{
     TimeSpanId, TimelineId, Token, Transcription,
 };
 pub use data::{TimeSpanConflictKind, TimeSpanOverlap, Timeline, TimelineSpanError};
+pub(crate) use evaluation::normalize_transcription_text;
 pub use evaluation::{
     ActivityEvaluation, ActivityEventEvaluation, TimelineEvalConfig, TimelineEvalError,
     TimelineEvaluation, TranscriptionEvaluation, TranscriptionNormalization,

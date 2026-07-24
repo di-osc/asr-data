@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, RwLock};
 
-use crate::audio::AudioSource as RustAudioSource;
+use crate::audio::{AudioChannel as RustAudioChannel, AudioSource as RustAudioSource};
 use crate::doc::Audio as RustAudio;
 use crate::utils::DurationMs;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -326,7 +326,7 @@ impl PyAudio {
     /// 查询指定声道的 timeline，不存在时返回 None。
     ///
     /// Args:
-    ///     channel: ``"mono"``、``"left"``、``"right"`` 或声道索引。
+    ///     channel: ``"mono"``、``"left"``、``"right"`` 或声道索引，默认为 ``"mono"``。
     ///
     /// Returns:
     ///     对应 Timeline；不存在时为 None。
@@ -337,10 +337,14 @@ impl PyAudio {
     /// Examples:
     ///     >>> from asr_data import Audio, AudioSource
     ///     >>> audio = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
-    ///     >>> audio.timeline("mono").duration_ms
+    ///     >>> audio.timeline().duration_ms
     ///     1
-    fn timeline(&self, channel: &Bound<'_, PyAny>) -> PyResult<Option<PyTimeline>> {
-        let channel = audio_channel(channel)?;
+    #[pyo3(signature = (channel=None))]
+    fn timeline(&self, channel: Option<&Bound<'_, PyAny>>) -> PyResult<Option<PyTimeline>> {
+        let channel = channel
+            .map(audio_channel)
+            .transpose()?
+            .unwrap_or(RustAudioChannel::Mono);
         let exists = self
             .inner
             .read()

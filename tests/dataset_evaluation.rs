@@ -161,3 +161,38 @@ fn streaming_evaluator_matches_the_convenience_function() {
     evaluator.push(&audio).unwrap();
     assert_eq!(evaluator.finish().unwrap(), expected);
 }
+
+#[test]
+fn combined_sources_match_separate_source_evaluations_with_normalization() {
+    let mut audio = doc("normalized");
+    let timeline = audio.mono_timeline_mut().unwrap();
+    timeline
+        .annotate_span(true, transcription("今天是2024年1月2日", None))
+        .unwrap();
+    timeline
+        .annotate_span(
+            false,
+            transcription("今天是二零二四年一月二日", Some("qwen")),
+        )
+        .unwrap();
+    timeline
+        .annotate_span(false, transcription("今天是2024年1月3日", Some("whisper")))
+        .unwrap();
+
+    let combined = evaluate_dataset(
+        [&audio],
+        &TimelineEvalConfig::new().with_all_transcriptions(),
+    )
+    .unwrap();
+    for source in ["qwen", "whisper"] {
+        let separate = evaluate_dataset(
+            [&audio],
+            &TimelineEvalConfig::new().with_transcription(source),
+        )
+        .unwrap();
+        assert_eq!(
+            combined.transcription[source],
+            separate.transcription[source]
+        );
+    }
+}

@@ -889,6 +889,45 @@ impl PyTimeline {
         }
     }
 
+    /// 全部顶层 Transcription payload，包括 reference 和 prediction。
+    #[getter]
+    fn transcriptions(&self) -> PyResult<Vec<PyTranscription>> {
+        Ok(self
+            .annotations_by_kind("transcription")?
+            .into_iter()
+            .filter_map(|annotation| match annotation {
+                Annotation::Transcription(inner) => Some(PyTranscription { inner }),
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// 全部顶层 AudioActivity payload，包括 reference 和 prediction。
+    #[getter]
+    fn activities(&self) -> PyResult<Vec<PyAudioActivity>> {
+        Ok(self
+            .annotations_by_kind("activity")?
+            .into_iter()
+            .filter_map(|annotation| match annotation {
+                Annotation::Activity(inner) => Some(PyAudioActivity { inner }),
+                _ => None,
+            })
+            .collect())
+    }
+
+    /// 全部顶层 Speaker payload，包括 reference 和 prediction。
+    #[getter]
+    fn speakers(&self) -> PyResult<Vec<PySpeaker>> {
+        Ok(self
+            .annotations_by_kind("speaker")?
+            .into_iter()
+            .filter_map(|annotation| match annotation {
+                Annotation::Speaker(inner) => Some(PySpeaker { inner }),
+                _ => None,
+            })
+            .collect())
+    }
+
     /// 在当前 timeline 中添加 reference 或 prediction 标注。
     ///
     /// Args:
@@ -1060,6 +1099,18 @@ impl PyTimeline {
             .timeline(self.channel)
             .map_err(py_error)?
             .ok_or_else(|| PyRuntimeError::new_err("selected timeline does not exist"))
+    }
+
+    fn annotations_by_kind(&self, kind: &str) -> PyResult<Vec<Annotation>> {
+        let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
+        let timeline = self.selected(&audio)?;
+        Ok(timeline
+            .reference
+            .iter()
+            .chain(&timeline.prediction)
+            .filter(|span| span.annotation.source_group() == kind)
+            .map(|span| span.annotation.clone())
+            .collect())
     }
 }
 

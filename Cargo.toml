@@ -16,6 +16,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
+modelhub = "=0.1.1"
 numpy = { version = "0.27", optional = true }
 pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
 pythonize = { version = "0.27", optional = true }
@@ -31,6 +32,7 @@ symphonia = { version = "0.6", features = ["all-codecs", "all-formats"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 unicode-general-category = "1.1.0"
+urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [features]

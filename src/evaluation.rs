@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::thread;
 
 use thiserror::Error;
 
@@ -7,6 +8,7 @@ use crate::doc::Audio;
 use crate::metrics::CerStats;
 use crate::timeline::{
     Annotation, Timeline, TimelineEvalConfig, TimelineEvalError, TranscriptionNormalization,
+    normalize_transcription_text,
 };
 
 #[derive(Debug, Error)]
@@ -175,6 +177,7 @@ pub struct DatasetEvaluator {
     activity_unannotated: BTreeSet<String>,
     transcription: BTreeMap<String, TranscriptionAccumulator>,
     activity: BTreeMap<String, ActivityAccumulator>,
+    normalization_cache: HashMap<String, String>,
 }
 
 impl DatasetEvaluator {
@@ -204,10 +207,18 @@ impl DatasetEvaluator {
             activity_unannotated: BTreeSet::new(),
             transcription,
             activity,
+            normalization_cache: HashMap::new(),
         }
     }
 
     pub fn push(&mut self, doc: &Audio) -> Result<(), DatasetEvalError> {
+        self.prewarm_normalization_cache([doc])?;
+        let result = self.push_cached(doc);
+        self.normalization_cache.clear();
+        result
+    }
+
+    fn push_cached(&mut self, doc: &Audio) -> Result<(), DatasetEvalError> {
         self.documents += 1;
         for (channel, timeline) in doc.timelines() {
             self.timelines += 1;
@@ -215,6 +226,58 @@ impl DatasetEvaluator {
             self.push_transcription(doc, timeline, &timeline_key)?;
             self.push_activity(doc, timeline, &timeline_key)?;
         }
+        Ok(())
+    }
+
+    fn push_batch(&mut self, docs: &[&Audio]) -> Result<(), DatasetEvalError> {
+        self.prewarm_normalization_cache(docs.iter().copied())?;
+        let result = docs.iter().try_for_each(|doc| self.push_cached(doc));
+        self.normalization_cache.clear();
+        result
+    }
+
+    fn prewarm_normalization_cache<'a>(
+        &mut self,
+        docs: impl IntoIterator<Item = &'a Audio>,
+    ) -> Result<(), DatasetEvalError> {
+        if self.config.transcription_normalization == TranscriptionNormalization::None {
+            return Ok(());
+        }
+        let Some(selection) = self.transcription_selection.as_deref() else {
+            return Ok(());
+        };
+        let mut seen = HashSet::new();
+        let mut texts = Vec::new();
+        for doc in docs {
+            for timeline in doc.timelines().values() {
+                if !timeline.reference.iter().any(is_text_annotation) {
+                    continue;
+                }
+                let sources = sources_for_timeline(selection, &timeline.transcription_sources());
+                if sources.is_empty() {
+                    continue;
+                }
+                let reference = timeline.reference_transcript().text;
+                if !self.normalization_cache.contains_key(&reference)
+                    && seen.insert(reference.clone())
+                {
+                    texts.push(reference);
+                }
+                for source in sources {
+                    let hypothesis = timeline.prediction_transcript(&source).text;
+                    if !self.normalization_cache.contains_key(&hypothesis)
+                        && seen.insert(hypothesis.clone())
+                    {
+                        texts.push(hypothesis);
+                    }
+                }
+            }
+        }
+        let normalized =
+            normalize_transcriptions_parallel(&texts, self.config.transcription_normalization)
+                .map_err(TimelineEvalError::from)?;
+        self.normalization_cache
+            .extend(texts.into_iter().zip(normalized));
         Ok(())
     }
 
@@ -258,15 +321,20 @@ impl DatasetEvaluator {
         }
         self.transcription_eligible.insert(timeline_key.to_owned());
         let available = timeline.transcription_sources();
-        for source in sources_for_timeline(selection, &available) {
-            let mut result = timeline
-                .eval(
-                    &TimelineEvalConfig::new()
-                        .with_transcription(&source)
-                        .with_transcription_normalization(self.config.transcription_normalization),
-                )?
-                .transcription;
-            let result = result
+        let sources = sources_for_timeline(selection, &available);
+        if sources.is_empty() {
+            return Ok(());
+        }
+        let mut results = timeline
+            .evaluate_with_normalization_cache(
+                &TimelineEvalConfig::new()
+                    .with_transcriptions(sources.iter().cloned())
+                    .with_transcription_normalization(self.config.transcription_normalization),
+                &mut self.normalization_cache,
+            )?
+            .transcription;
+        for source in sources {
+            let result = results
                 .remove(&source)
                 .expect("a selected transcription source produced a result");
             self.transcription.entry(source.clone()).or_default().add(
@@ -318,8 +386,9 @@ pub fn evaluate_dataset<'a>(
     config: &TimelineEvalConfig,
 ) -> Result<DatasetEvaluation, DatasetEvalError> {
     let mut evaluator = DatasetEvaluator::new(config.clone());
-    for doc in docs {
-        evaluator.push(doc)?;
+    let docs = docs.into_iter().collect::<Vec<_>>();
+    for batch in docs.chunks(100) {
+        evaluator.push_batch(batch)?;
     }
     evaluator.finish()
 }
@@ -339,15 +408,47 @@ impl AudioDb {
                 break;
             }
             page_query.after = page.last().map(Audio::audio_id);
-            for doc in &page {
-                evaluator.push(doc)?;
-            }
+            let docs = page.iter().collect::<Vec<_>>();
+            evaluator.push_batch(&docs)?;
             if page.len() < page_query.limit {
                 break;
             }
         }
         evaluator.finish()
     }
+}
+
+fn normalize_transcriptions_parallel(
+    texts: &[String],
+    normalization: TranscriptionNormalization,
+) -> Result<Vec<String>, crate::metrics::TextNormalizationError> {
+    let available = thread::available_parallelism().map_or(1, usize::from);
+    let workers = available.min(4).min(texts.len());
+    if workers <= 1 {
+        return texts
+            .iter()
+            .map(|text| normalize_transcription_text(text, normalization))
+            .collect();
+    }
+    let chunk_size = texts.len().div_ceil(workers);
+    thread::scope(|scope| {
+        let handles = texts
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|text| normalize_transcription_text(text, normalization))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut normalized = Vec::with_capacity(texts.len());
+        for handle in handles {
+            normalized.extend(handle.join().expect("normalization worker panicked")?);
+        }
+        Ok(normalized)
+    })
 }
 
 #[derive(Debug, Default)]

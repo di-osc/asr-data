@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use thiserror::Error;
 
@@ -217,6 +217,14 @@ impl Timeline {
         &self,
         config: &TimelineEvalConfig,
     ) -> Result<TimelineEvaluation, TimelineEvalError> {
+        self.evaluate_with_normalization_cache(config, &mut HashMap::new())
+    }
+
+    pub(crate) fn evaluate_with_normalization_cache(
+        &self,
+        config: &TimelineEvalConfig,
+        normalization_cache: &mut HashMap<String, String>,
+    ) -> Result<TimelineEvaluation, TimelineEvalError> {
         let auto_all = config.transcription_sources.is_none() && config.activity_sources.is_none();
         let transcription_selection = if auto_all {
             Some(&[][..])
@@ -234,8 +242,11 @@ impl Timeline {
             let has_reference = self.reference.iter().any(is_final_text_annotation);
             if has_reference {
                 for source in selected_sources(selection, self.transcription_sources()) {
-                    let evaluation =
-                        self.evaluate_transcription(&source, config.transcription_normalization)?;
+                    let evaluation = self.evaluate_transcription(
+                        &source,
+                        config.transcription_normalization,
+                        normalization_cache,
+                    )?;
                     transcription.insert(source, evaluation);
                 }
             } else if !selection.is_empty() {
@@ -290,6 +301,7 @@ impl Timeline {
         &self,
         source: &str,
         normalization: TranscriptionNormalization,
+        normalization_cache: &mut HashMap<String, String>,
     ) -> Result<TranscriptionEvaluation, TimelineEvalError> {
         if !self.reference.iter().any(is_final_text_annotation) {
             return Err(TimelineEvalError::MissingReference {
@@ -307,16 +319,10 @@ impl Timeline {
         }
         let reference = self.reference_transcript().text;
         let hypothesis = self.prediction_transcript(source).text;
-        let normalize = |text: &str| -> Result<String, TextNormalizationError> {
-            match normalization {
-                TranscriptionNormalization::None => Ok(text.to_owned()),
-                TranscriptionNormalization::ChineseTn => {
-                    normalize_zh(text).map(|text| normalize_for_cer(&text, true))
-                }
-            }
-        };
-        let normalized_reference = normalize(&reference)?;
-        let normalized_hypothesis = normalize(&hypothesis)?;
+        let normalized_reference =
+            normalize_transcription(&reference, normalization, normalization_cache)?;
+        let normalized_hypothesis =
+            normalize_transcription(&hypothesis, normalization, normalization_cache)?;
         let stats = compute_cer(&normalized_reference, &normalized_hypothesis);
         let hypothesis_chars = normalized_hypothesis.chars().count();
         Ok(TranscriptionEvaluation {
@@ -392,6 +398,63 @@ impl Timeline {
             events,
         })
     }
+}
+
+fn normalize_transcription(
+    text: &str,
+    normalization: TranscriptionNormalization,
+    cache: &mut HashMap<String, String>,
+) -> Result<String, TextNormalizationError> {
+    normalize_transcription_with(text, normalization, cache, |text| {
+        normalize_transcription_text(text, normalization)
+    })
+}
+
+pub(crate) fn normalize_transcription_text(
+    text: &str,
+    normalization: TranscriptionNormalization,
+) -> Result<String, TextNormalizationError> {
+    match normalization {
+        TranscriptionNormalization::None => Ok(text.to_owned()),
+        TranscriptionNormalization::ChineseTn if requires_chinese_tn(text) => {
+            normalize_zh(text).map(|text| normalize_for_cer(&text, true))
+        }
+        TranscriptionNormalization::ChineseTn => Ok(normalize_for_cer(text, true)),
+    }
+}
+
+fn requires_chinese_tn(text: &str) -> bool {
+    use unicode_general_category::{GeneralCategory, get_general_category};
+
+    text.chars().any(|character| {
+        matches!(
+            get_general_category(character),
+            GeneralCategory::DecimalNumber
+                | GeneralCategory::LetterNumber
+                | GeneralCategory::OtherNumber
+                | GeneralCategory::MathSymbol
+                | GeneralCategory::CurrencySymbol
+                | GeneralCategory::ModifierSymbol
+                | GeneralCategory::OtherSymbol
+        )
+    })
+}
+
+fn normalize_transcription_with(
+    text: &str,
+    normalization: TranscriptionNormalization,
+    cache: &mut HashMap<String, String>,
+    normalize: impl FnOnce(&str) -> Result<String, TextNormalizationError>,
+) -> Result<String, TextNormalizationError> {
+    if normalization == TranscriptionNormalization::None {
+        return Ok(text.to_owned());
+    }
+    if let Some(normalized) = cache.get(text) {
+        return Ok(normalized.clone());
+    }
+    let normalized = normalize(text)?;
+    cache.insert(text.to_owned(), normalized.clone());
+    Ok(normalized)
 }
 
 fn selected_sources(selection: &[String], available: BTreeSet<String>) -> BTreeSet<String> {
@@ -623,6 +686,8 @@ fn interval_iou(true_positive_ms: u64, false_positive_ms: u64, false_negative_ms
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
     use crate::timeline::TimeSpan;
     use crate::utils::DurationMs;
@@ -783,5 +848,62 @@ mod tests {
         assert!(result.activity.is_empty());
         assert_eq!(result.transcription["qwen"].stats.cer(), 0.0);
         assert_eq!(result.transcription["whisper"].stats.cer(), 0.25);
+    }
+
+    #[test]
+    fn caches_identical_transcription_normalization_inputs() {
+        let calls = Cell::new(0);
+        let mut cache = HashMap::new();
+        let mut normalize = |text: &str| {
+            calls.set(calls.get() + 1);
+            Ok(format!("normalized:{text}"))
+        };
+
+        let first = normalize_transcription_with(
+            "2024年",
+            TranscriptionNormalization::ChineseTn,
+            &mut cache,
+            &mut normalize,
+        )
+        .unwrap();
+        let second = normalize_transcription_with(
+            "2024年",
+            TranscriptionNormalization::ChineseTn,
+            &mut cache,
+            &mut normalize,
+        )
+        .unwrap();
+
+        assert_eq!(first, "normalized:2024年");
+        assert_eq!(second, first);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn skips_fst_without_numbers_or_symbols_without_changing_cer_text() {
+        for text in [
+            "普通中文文本。",
+            "ASR text without numbers!",
+            "首尾有空白\n",
+            "三十二号楼四单元",
+        ] {
+            assert!(!requires_chinese_tn(text));
+            let expected = normalize_for_cer(&normalize_zh(text).unwrap(), true);
+            assert_eq!(
+                normalize_transcription_text(text, TranscriptionNormalization::ChineseTn),
+                Ok(expected),
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_fst_for_all_unicode_number_and_symbol_categories() {
+        for text in ["2024年", "Ⅳ号", "房间①", "价格¥100", "增长50%"] {
+            assert!(requires_chinese_tn(text), "{text:?} must use Chinese TN");
+        }
+        assert_eq!(
+            normalize_transcription_text("2024年", TranscriptionNormalization::ChineseTn),
+            Ok("二零二四年".to_owned()),
+        );
     }
 }

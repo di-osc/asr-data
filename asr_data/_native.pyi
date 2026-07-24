@@ -1136,6 +1136,15 @@ class Timeline:
     def reference(self) -> ReferenceSpans: ...
     @property
     def prediction(self) -> PredictionSpans: ...
+    @property
+    def transcriptions(self) -> list[Transcription]:
+        """全部顶层 Transcription payload，包括 reference 和 prediction。"""
+    @property
+    def activities(self) -> list[AudioActivity]:
+        """全部顶层 AudioActivity payload，包括 reference 和 prediction。"""
+    @property
+    def speakers(self) -> list[Speaker]:
+        """全部顶层 Speaker payload，包括 reference 和 prediction。"""
     def annotate_span(
         self,
         start_ms: int,
@@ -1544,11 +1553,11 @@ class Audio:
         Examples:
             >>> audio.display(end_ms=500)
         """
-    def timeline(self, channel: str | int) -> Timeline | None:
+    def timeline(self, channel: str | int = "mono") -> Timeline | None:
         """查询指定声道的 timeline。
 
         Args:
-            channel: 声道名称或索引。
+            channel: 声道名称或索引，默认为 ``"mono"``。
 
         Returns:
             对应 Timeline；不存在时为 None。
@@ -1559,7 +1568,7 @@ class Audio:
         Examples:
             >>> from asr_data import Audio, AudioSource
             >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
-            >>> doc.timeline("mono").duration_ms
+            >>> doc.timeline().duration_ms
             1
         """
     def ensure_timeline(
@@ -1620,6 +1629,56 @@ class Audio:
             >>> doc.validate() is None
             True
         """
+
+class AudioDataset:
+    """具名、带版本，并由可选 train、val、test AudioDB 支撑的数据集。"""
+    def __init__(
+        self,
+        train: AudioDB | None = None,
+        val: AudioDB | None = None,
+        test: AudioDB | None = None,
+    ) -> None: ...
+    @staticmethod
+    def from_modelscope(
+        repo_id: str,
+        *,
+        revision: str | None = None,
+        cache_dir: str | None = None,
+    ) -> AudioDataset:
+        """通过 modelhub 下载完整 ModelScope 数据集仓库。
+
+        name 使用 repo_id，version 使用实际 revision，license 从同一
+        revision 的 README.md front matter 读取。仓库中不存在的切分数据库
+        返回 None，存在的数据库只读打开。
+
+        Args:
+            repo_id: ModelScope 数据集仓库 ID。
+            revision: 可选仓库 revision，默认 master。
+            cache_dir: 可选 ModelScope 缓存根目录。
+
+        Returns:
+            train、val、test 为只读 AudioDB 或 None 的 AudioDataset。
+
+        Raises:
+            ValueError: repo_id、revision 或 README.md license 无效。
+            AsrDataError: 整仓下载失败，或已有切分数据库不是受支持的 AudioDB。
+
+        Examples:
+            >>> from asr_data import AudioDataset
+            >>> dataset = AudioDataset.from_modelscope("di-osc/aishell-1")
+        """
+    @property
+    def name(self) -> str: ...
+    @property
+    def version(self) -> str: ...
+    @property
+    def license(self) -> str: ...
+    @property
+    def train(self) -> AudioDB | None: ...
+    @property
+    def val(self) -> AudioDB | None: ...
+    @property
+    def test(self) -> AudioDB | None: ...
 
 class AudioDB:
     """持久化 Audio 的 SQLite 数据库。"""

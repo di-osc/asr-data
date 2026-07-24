@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::dataset::{AudioDataset as RustAudioDataset, AudioDatasetError};
 use crate::db::{AudioDb as RustAudioDb, AudioDbMode, AudioQuery};
 use crate::doc::Audio as RustAudio;
 use crate::utils::DurationMs;
@@ -9,6 +11,7 @@ use pyo3::exceptions::{PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDateTime, PyDict};
 
+use super::audio::async_runtime;
 use super::common::{format_duration_ms, poisoned, py_db_error, py_error, truncate};
 use super::doc::PyAudio;
 use super::evaluation::{PyDatasetEvaluation, eval_config};
@@ -17,10 +20,210 @@ use super::evaluation::{PyDatasetEvaluation, eval_config};
 ///
 /// 使用 AudioDB.create 创建新数据库，使用 AudioDB.open 打开已有数据库。
 #[pyclass(name = "AudioDB")]
+#[derive(Clone)]
 struct PyAudioDb {
     inner: Arc<Mutex<RustAudioDb>>,
     path: String,
     read_only: bool,
+}
+
+/// 具名、带版本，并由可选 train、val、test AudioDB 支撑的数据集。
+///
+/// Args:
+///     train: 可选训练集 AudioDB。
+///     val: 可选验证集 AudioDB。
+///     test: 可选测试集 AudioDB。
+///
+/// Examples:
+///     >>> from tempfile import TemporaryDirectory
+///     >>> from asr_data import AudioDB, AudioDataset
+///     >>> directory = TemporaryDirectory()
+///     >>> train = AudioDB.create(f"{directory.name}/train.db")
+///     >>> dataset = AudioDataset(train=train)
+///     >>> len(dataset.train)
+///     0
+///     >>> dataset.val is None
+///     True
+#[pyclass(name = "AudioDataset", frozen)]
+struct PyAudioDataset {
+    name: String,
+    version: String,
+    license: String,
+    train: Option<PyAudioDb>,
+    val: Option<PyAudioDb>,
+    test: Option<PyAudioDb>,
+}
+
+#[pymethods]
+impl PyAudioDataset {
+    #[new]
+    #[pyo3(signature = (train=None, val=None, test=None))]
+    fn new(
+        train: Option<PyRef<'_, PyAudioDb>>,
+        val: Option<PyRef<'_, PyAudioDb>>,
+        test: Option<PyRef<'_, PyAudioDb>>,
+    ) -> Self {
+        Self {
+            name: String::new(),
+            version: String::new(),
+            license: String::new(),
+            train: train.map(|db| db.clone()),
+            val: val.map(|db| db.clone()),
+            test: test.map(|db| db.clone()),
+        }
+    }
+
+    /// 通过 modelhub 下载完整 ModelScope 数据集仓库。
+    ///
+    /// 下载和缓存完全由 modelhub 管理。未传 cache_dir 时使用
+    /// modelhub/ModelScope 的默认缓存目录，未传 revision 时使用 master。
+    /// name 使用 repo_id，version 使用实际 revision，license 从同一
+    /// revision 的 README.md front matter 读取。仓库中不存在的切分数据库
+    /// 返回 None，存在的数据库只读打开。
+    ///
+    /// Args:
+    ///     repo_id: ModelScope 数据集仓库 ID。
+    ///     revision: 可选仓库 revision，默认 master。
+    ///     cache_dir: 可选 ModelScope 缓存根目录。
+    ///
+    /// Returns:
+    ///     train、val、test 为只读 AudioDB 或 None 的 AudioDataset。
+    ///
+    /// Raises:
+    ///     ValueError: repo_id、revision 或 README.md license 无效。
+    ///     AsrDataError: 整仓下载失败，或已有切分数据库不是受支持的 AudioDB。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDataset
+    ///     >>> dataset = AudioDataset.from_modelscope("di-osc/aishell-1")
+    #[staticmethod]
+    #[pyo3(signature = (
+        repo_id,
+        *,
+        revision=None,
+        cache_dir=None
+    ))]
+    fn from_modelscope(
+        py: Python<'_>,
+        repo_id: String,
+        revision: Option<String>,
+        cache_dir: Option<PathBuf>,
+    ) -> PyResult<Self> {
+        let dataset = py
+            .detach(move || {
+                async_runtime().block_on(RustAudioDataset::from_modelscope(
+                    &repo_id,
+                    revision.as_deref(),
+                    cache_dir.as_deref(),
+                ))
+            })
+            .map_err(py_dataset_error)?;
+        let name = dataset.name().to_owned();
+        let version = dataset.version().to_owned();
+        let license = dataset.license().to_owned();
+        let train_path = dataset
+            .train_database_path()
+            .map(|path| path.display().to_string());
+        let val_path = dataset
+            .val_database_path()
+            .map(|path| path.display().to_string());
+        let test_path = dataset
+            .test_database_path()
+            .map(|path| path.display().to_string());
+        let (train, val, test) = dataset.into_databases();
+        Ok(Self {
+            name,
+            version,
+            license,
+            train: wrap_optional_dataset_db(train_path, train),
+            val: wrap_optional_dataset_db(val_path, val),
+            test: wrap_optional_dataset_db(test_path, test),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[getter]
+    fn version(&self) -> &str {
+        &self.version
+    }
+
+    #[getter]
+    fn license(&self) -> &str {
+        &self.license
+    }
+
+    /// 返回训练集的只读 AudioDB。
+    #[getter]
+    fn train(&self) -> Option<PyAudioDb> {
+        self.train.clone()
+    }
+
+    /// 返回验证集的只读 AudioDB。
+    #[getter]
+    fn val(&self) -> Option<PyAudioDb> {
+        self.val.clone()
+    }
+
+    /// 返回测试集的只读 AudioDB。
+    #[getter]
+    fn test(&self) -> Option<PyAudioDb> {
+        self.test.clone()
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        let train_len = optional_dataset_db_len(&self.train)?;
+        let val_len = optional_dataset_db_len(&self.val)?;
+        let test_len = optional_dataset_db_len(&self.test)?;
+        Ok(format!(
+            "AudioDataset(name={:?}, version={:?}, license={:?}, train={}, val={}, test={})",
+            truncate(&self.name, 48),
+            truncate(&self.version, 32),
+            truncate(&self.license, 32),
+            format_optional_count(train_len),
+            format_optional_count(val_len),
+            format_optional_count(test_len),
+        ))
+    }
+
+    fn __str__(&self) -> String {
+        if self.version.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}@{}", self.name, self.version)
+        }
+    }
+}
+
+fn wrap_optional_dataset_db(path: Option<String>, db: Option<RustAudioDb>) -> Option<PyAudioDb> {
+    match (path, db) {
+        (Some(path), Some(db)) => Some(PyAudioDb {
+            inner: Arc::new(Mutex::new(db)),
+            path,
+            read_only: true,
+        }),
+        (None, None) => None,
+        _ => unreachable!("AudioDataset database and path must both be present or absent"),
+    }
+}
+
+fn optional_dataset_db_len(db: &Option<PyAudioDb>) -> PyResult<Option<usize>> {
+    db.as_ref()
+        .map(|db| {
+            db.inner
+                .lock()
+                .map_err(|_| poisoned("AudioDB"))?
+                .len()
+                .map_err(py_error)
+        })
+        .transpose()
+}
+
+fn format_optional_count(count: Option<usize>) -> String {
+    count.map_or_else(|| "None".to_owned(), |count| count.to_string())
 }
 
 #[pyclass(name = "AudioDBIterator")]
@@ -345,6 +548,7 @@ impl PyAudioDb {
     #[allow(clippy::too_many_arguments)]
     fn eval(
         &self,
+        py: Python<'_>,
         transcription: Option<&Bound<'_, PyAny>>,
         activity: Option<&Bound<'_, PyAny>>,
         normalize: bool,
@@ -385,25 +589,21 @@ impl PyAudioDb {
             })
             .transpose()?
             .unwrap_or_default();
-        let inner = self
-            .inner
-            .lock()
-            .map_err(|_| poisoned("AudioDB"))?
-            .eval(
-                &AudioQuery {
-                    limit: batch_size,
-                    after,
-                    min_duration: min_duration_ms.map(DurationMs),
-                    max_duration: max_duration_ms.map(DurationMs),
-                    created_from,
-                    created_until,
-                    updated_from,
-                    updated_until,
-                    metadata,
-                },
-                &config,
-            )
-            .map_err(py_error)?;
+        let query = AudioQuery {
+            limit: batch_size,
+            after,
+            min_duration: min_duration_ms.map(DurationMs),
+            max_duration: max_duration_ms.map(DurationMs),
+            created_from,
+            created_until,
+            updated_from,
+            updated_until,
+            metadata,
+        };
+        let inner = py.detach(|| {
+            let db = self.inner.lock().map_err(|_| poisoned("AudioDB"))?;
+            db.eval(&query, &config).map_err(py_error)
+        })?;
         Ok(PyDatasetEvaluation { inner })
     }
 
@@ -671,7 +871,20 @@ fn validate_time_range(
     Ok(())
 }
 
+fn py_dataset_error(error: AudioDatasetError) -> PyErr {
+    match error {
+        error @ (AudioDatasetError::EmptyRepositoryId
+        | AudioDatasetError::EmptyRevision
+        | AudioDatasetError::InvalidLicense { .. }) => PyValueError::new_err(error.to_string()),
+        AudioDatasetError::Database { source, .. } => py_db_error(source),
+        AudioDatasetError::ModelScopeDownload { .. } | AudioDatasetError::ReadLicense { .. } => {
+            py_error(error)
+        }
+    }
+}
+
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyAudioDataset>()?;
     module.add_class::<PyAudioDb>()?;
     module.add_class::<PyAudioDbIterator>()?;
     Ok(())

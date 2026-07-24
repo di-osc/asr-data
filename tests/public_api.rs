@@ -3,14 +3,15 @@ use std::path::Path;
 use asr_data::audio::{self, decode};
 use asr_data::{
     ActivityEvaluation, ActivityEventEvaluation, Annotation, Audio, AudioActivity, AudioChannel,
-    AudioChunk, AudioChunks, AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioEncoding,
-    AudioError, AudioFormat, AudioInfo, AudioQuery, AudioSource, AudioStream, CerStats,
-    DEFAULT_QUERY_LIMIT, DatasetActivityEvaluation, DatasetActivityEventEvaluation,
-    DatasetEvalError, DatasetEvaluation, DatasetEvaluator, DatasetTranscriptionEvaluation,
-    DurationMs, MAX_QUERY_LIMIT, SampleIndex, Sentence, SpeakerPayload, TextNormalizationError,
-    TimeRange, TimeSpan, Timeline, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation,
-    Token, Transcript, Transcription, TranscriptionEvaluation, TranscriptionNormalization,
-    Waveform, compute_cer, evaluate_dataset, normalize_for_cer, normalize_zh, read_audio_db_info,
+    AudioChunk, AudioChunks, AudioDataset, AudioDatasetError, AudioDb, AudioDbError, AudioDbInfo,
+    AudioDbMode, AudioEncoding, AudioError, AudioFormat, AudioInfo, AudioQuery, AudioSource,
+    AudioStream, CerStats, DEFAULT_QUERY_LIMIT, DatasetActivityEvaluation,
+    DatasetActivityEventEvaluation, DatasetEvalError, DatasetEvaluation, DatasetEvaluator,
+    DatasetTranscriptionEvaluation, DurationMs, MAX_QUERY_LIMIT, SampleIndex, Sentence,
+    SpeakerPayload, TextNormalizationError, TimeRange, TimeSpan, Timeline, TimelineEvalConfig,
+    TimelineEvalError, TimelineEvaluation, Token, Transcript, Transcription,
+    TranscriptionEvaluation, TranscriptionNormalization, Waveform, compute_cer, evaluate_dataset,
+    normalize_for_cer, normalize_zh, read_audio_db_info,
 };
 
 #[test]
@@ -18,6 +19,8 @@ fn stable_public_paths_compile() {
     let _: Option<Waveform> = None;
     let _: Option<audio::Waveform> = None;
     let _: Option<AudioDb> = None;
+    let _: Option<AudioDataset> = None;
+    let _: Option<AudioDatasetError> = None;
     let _: Option<AudioChunk> = None;
     let _: Option<AudioChunks> = None;
     let _: Option<Audio> = None;

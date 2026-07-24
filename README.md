@@ -67,6 +67,13 @@ db = AudioDB.create("dataset.db")
 db.insert(audio)
 ```
 
+## 数据集
+
+`AudioDataset` 是带名称、版本和许可证的数据集抽象，可通过 modelhub 下载完整
+ModelScope 仓库，并将其中可选的 `train.db`、`val.db`、`test.db` 作为只读
+`AudioDB` 暴露。
+完整用法、缓存约定和 API 请查看[在线文档](https://libraries-793f13szd-di-osc1.vercel.app/asr-data/database#audio-dataset)。
+
 ## 文档
 
 音频探测、标注、评测、数据库以及完整 API 请查看

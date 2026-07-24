@@ -6,6 +6,7 @@ from ._native import AsrDataError as AsrDataError
 from ._native import Audio as Audio
 from ._native import AudioChunk as AudioChunk
 from ._native import AudioDB as AudioDB
+from ._native import AudioDataset as AudioDataset
 from ._native import AudioFormat as AudioFormat
 from ._native import AudioInfo as AudioInfo
 from ._native import AudioSource as AudioSource

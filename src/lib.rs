@@ -1,6 +1,7 @@
 //! ASR data model types shared by offline and realtime inference.
 
 pub mod audio;
+mod dataset;
 mod db;
 mod doc;
 mod evaluation;
@@ -12,6 +13,7 @@ mod utils;
 
 pub use audio::{AudioChannel, AudioEncoding, AudioFormat, AudioInfo, AudioSource};
 pub use audio::{AudioChunk, AudioChunks, AudioError, Waveform};
+pub use dataset::{AudioDataset, AudioDatasetError};
 pub use db::{
     AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioQuery, DEFAULT_QUERY_LIMIT,
     MAX_QUERY_LIMIT, read_audio_db_info,
