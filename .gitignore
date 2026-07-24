@@ -222,3 +222,4 @@ docs/superpowers
 
 # Git worktrees
 .worktrees/
+.vscode/
