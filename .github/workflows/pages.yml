@@ -1,0 +1,95 @@
+name: Documentation Pages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to deploy, for example v0.1.1"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install website dependencies
+        working-directory: website
+        run: npm ci
+
+      - name: Build static website
+        working-directory: website
+        env:
+          NEXT_PUBLIC_BASE_PATH: /asr-data
+          NEXT_PUBLIC_ASSET_PREFIX: /asr-data
+          SITE_URL: https://di-osc.github.io
+        run: npm run build
+
+      - name: Prepare Pages artifact
+        working-directory: website
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf deploy
+          mkdir -p deploy
+
+          # Flatten the generated /asr-data route so it becomes /asr-data/ externally.
+          cp -R out/asr-data/. deploy/
+          cp -R out/_next deploy/_next
+          cp -R out/pagefind deploy/pagefind
+
+          for file in robots.txt sitemap.xml sitemap-0.xml manifest.webmanifest sw.js workbox-*.js; do
+            if compgen -G "out/$file" > /dev/null; then
+              cp out/$file deploy/
+            fi
+          done
+
+          printf '%s\n' \
+            'User-agent: *' \
+            'Allow: /' \
+            'Sitemap: https://di-osc.github.io/asr-data/sitemap.xml' \
+            > deploy/robots.txt
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: website/deploy
+
+  deploy:
+    name: Deploy documentation
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

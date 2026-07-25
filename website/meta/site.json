@@ -1,0 +1,31 @@
+{
+    "title": "asr-data",
+    "description": "统一管理 ASR 音频、标注与模型预测。",
+    "slogan": "ASR audio, annotation, and prediction data model",
+    "domain": "di-osc.github.io/asr-data",
+    "company": "di-osc",
+    "companyUrl": "https://github.com/di-osc",
+    "repo": "di-osc/asr-data",
+    "theme": "#09a3d5",
+    "sections": [
+        { "id": "asr-data", "title": "asr-data Documentation", "theme": "blue" }
+    ],
+    "navigation": [
+        { "text": "asr-data", "url": "/asr-data" }
+    ],
+    "footer": [
+        {
+            "label": "Libraries",
+            "items": [
+                { "text": "asr-data", "url": "/asr-data" }
+            ]
+        },
+        {
+            "label": "Source",
+            "items": [
+                { "text": "Documentation", "url": "https://github.com/di-osc/asr-data/tree/main/website" },
+                { "text": "asr-data", "url": "https://github.com/di-osc/asr-data" }
+            ]
+        }
+    ]
+}

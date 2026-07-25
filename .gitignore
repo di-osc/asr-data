@@ -3,6 +3,11 @@
 __pycache__/
 *.py[codz]
 *$py.class
+/website/node_modules/
+/website/node_modules
+/website/.next/
+/website/out/
+/website/deploy/
 
 # C extensions
 *.so

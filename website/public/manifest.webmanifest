@@ -1,0 +1,9 @@
+{
+    "theme_color": "#09a3d5",
+    "background_color": "#ffffff",
+    "display": "minimal-ui",
+    "scope": "/asr-data/",
+    "start_url": "/asr-data/",
+    "name": "asr-data",
+    "short_name": "asr-data"
+}
