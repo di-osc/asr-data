@@ -14,7 +14,10 @@ use pyo3::types::{PyAny, PyDateTime, PyDict};
 use super::audio::async_runtime;
 use super::common::{format_duration_ms, poisoned, py_db_error, py_error, truncate};
 use super::doc::PyAudio;
-use super::evaluation::{PyDatasetEvaluation, eval_config};
+use super::evaluation::{
+    PyDatasetActivityEvaluation, PyDatasetSpeakerEvaluation, PyDatasetTranscriptionEvaluation,
+    activity_eval_config, speaker_eval_sources, transcription_eval_config,
+};
 
 /// 持久化 Audio 的 SQLite 数据库。
 ///
@@ -483,58 +486,32 @@ impl PyAudioDb {
             .collect()
     }
 
-    /// 评测数据库中全部匹配文档。
-    ///
-    /// 不传 source 时自动发现全部可评测来源。内部使用 ID 游标分页，
-    /// batch_size 只控制单批读取量，不限制最终数据集大小。
+    /// 评测数据库中的转写结果。
     ///
     /// Args:
-    ///     transcription: 转写来源或来源列表。
-    ///     activity: Activity 来源或来源列表。
-    ///     normalize: 是否执行中文文本标准化。
-    ///     batch_size: 每批读取的文档数。
-    ///     after: 可选起始 Audio ID 游标。
-    ///     min_duration_ms: 可选最短时长。
-    ///     max_duration_ms: 可选最长时长。
-    ///     created_from: 创建时间下界。
-    ///     created_until: 创建时间上界，不包含。
-    ///     updated_from: 修改时间下界。
-    ///     updated_until: 修改时间上界，不包含。
-    ///     metadata: 要精确匹配的 JSON metadata。
+    ///     source: 转写来源或来源列表；省略时自动发现。
+    ///     normalize: 是否执行中文 TN 和 CER 清洗。
+    ///     traditional_to_simple: 是否将繁体中文转换为简体中文。
+    ///     full_to_half: 是否将全角字符转换为半角字符。
+    ///     remove_erhua: 是否去除儿化音“儿”。
+    ///     remove_interjections: 是否去除“嗯”“啊”“呃”等语气词。
+    ///     remove_puncts: 是否去除标点符号。
     ///
     /// Returns:
-    ///     按任务和 source 分组的数据集级评测结果。
-    ///
-    /// Raises:
-    ///     ValueError: batch_size 为零或筛选范围无效。
-    ///     AsrDataError: 没有可评测内容或显式 source 不存在。
+    ///     按 prediction source 分组的转写评测结果。
     ///
     /// Examples:
-    ///     >>> from tempfile import TemporaryDirectory
-    ///     >>> from asr_data import AudioDB, Audio, AudioSource
-    ///     >>> from asr_data.annotation import Transcription
-    ///     >>> directory = TemporaryDirectory()
-    ///     >>> db = AudioDB.create(f"{directory.name}/dataset.db")
-    ///     >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000), id="one")
-    ///     >>> timeline = doc.timeline("mono")
-    ///     >>> _ = timeline.annotate_span(
-    ///     ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
-    ///     ... )
-    ///     >>> _ = timeline.annotate_span(
-    ///     ...     0, timeline.duration_ms, Transcription("你好"),
-    ///     ...     is_reference=False, source="qwen-asr"
-    ///     ... )
-    ///     >>> doc.metadata["split"] = "test"
-    ///     >>> db.insert(doc)
-    ///     >>> result = db.eval(
-    ///     ...     transcription="qwen-asr",
-    ///     ...     metadata={"split": "test"},
-    ///     ... )
+    ///     在已写入 reference 和 prediction 的数据库上调用
+    ///     ``db.eval_transcription("qwen-asr")``。
     #[pyo3(signature = (
+        source=None,
         *,
-        transcription=None,
-        activity=None,
         normalize=true,
+        traditional_to_simple=true,
+        full_to_half=true,
+        remove_erhua=true,
+        remove_interjections=true,
+        remove_puncts=true,
         batch_size=100,
         after=None,
         min_duration_ms=None,
@@ -546,12 +523,16 @@ impl PyAudioDb {
         metadata=None
     ))]
     #[allow(clippy::too_many_arguments)]
-    fn eval(
+    fn eval_transcription(
         &self,
         py: Python<'_>,
-        transcription: Option<&Bound<'_, PyAny>>,
-        activity: Option<&Bound<'_, PyAny>>,
+        source: Option<&Bound<'_, PyAny>>,
         normalize: bool,
+        traditional_to_simple: bool,
+        full_to_half: bool,
+        remove_erhua: bool,
+        remove_interjections: bool,
+        remove_puncts: bool,
         batch_size: usize,
         after: Option<String>,
         min_duration_ms: Option<u64>,
@@ -561,50 +542,159 @@ impl PyAudioDb {
         updated_from: Option<&Bound<'_, PyAny>>,
         updated_until: Option<&Bound<'_, PyAny>>,
         metadata: Option<&Bound<'_, PyDict>>,
-    ) -> PyResult<PyDatasetEvaluation> {
-        if batch_size == 0 {
-            return Err(PyValueError::new_err(
-                "batch_size must be greater than zero",
-            ));
-        }
-        let config = eval_config(transcription, activity, normalize)?;
-        let created_from = datetime_to_system_time(created_from, "created_from")?;
-        let created_until = datetime_to_system_time(created_until, "created_until")?;
-        let updated_from = datetime_to_system_time(updated_from, "updated_from")?;
-        let updated_until = datetime_to_system_time(updated_until, "updated_until")?;
-        validate_time_range(
-            created_from,
-            created_until,
-            "created_from must not exceed created_until",
+    ) -> PyResult<BTreeMap<String, PyDatasetTranscriptionEvaluation>> {
+        let config = transcription_eval_config(
+            source,
+            normalize,
+            traditional_to_simple,
+            full_to_half,
+            remove_erhua,
+            remove_interjections,
+            remove_puncts,
         )?;
-        validate_time_range(
-            updated_from,
-            updated_until,
-            "updated_from must not exceed updated_until",
-        )?;
-        let metadata = metadata
-            .map(|metadata| {
-                pythonize::depythonize::<BTreeMap<String, serde_json::Value>>(metadata.as_any())
-                    .map_err(py_error)
-            })
-            .transpose()?
-            .unwrap_or_default();
-        let query = AudioQuery {
-            limit: batch_size,
+        let query = evaluation_query(
+            batch_size,
             after,
-            min_duration: min_duration_ms.map(DurationMs),
-            max_duration: max_duration_ms.map(DurationMs),
+            min_duration_ms,
+            max_duration_ms,
             created_from,
             created_until,
             updated_from,
             updated_until,
             metadata,
-        };
-        let inner = py.detach(|| {
+        )?;
+        let result = py.detach(|| {
             let db = self.inner.lock().map_err(|_| poisoned("AudioDB"))?;
             db.eval(&query, &config).map_err(py_error)
         })?;
-        Ok(PyDatasetEvaluation { inner })
+        Ok(result
+            .transcription
+            .into_iter()
+            .map(|(source, inner)| (source, PyDatasetTranscriptionEvaluation { inner }))
+            .collect())
+    }
+
+    /// 评测数据库中的 AudioActivity 结果。
+    ///
+    /// Args:
+    ///     source: Activity 来源或来源列表；省略时自动发现。
+    ///
+    /// Returns:
+    ///     按 prediction source 分组的 Activity 评测结果。
+    ///
+    /// Examples:
+    ///     在已写入 Activity reference 和 prediction 的数据库上调用
+    ///     ``db.eval_activity("silero-vad")``。
+    #[pyo3(signature = (
+        source=None,
+        *,
+        batch_size=100,
+        after=None,
+        min_duration_ms=None,
+        max_duration_ms=None,
+        created_from=None,
+        created_until=None,
+        updated_from=None,
+        updated_until=None,
+        metadata=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn eval_activity(
+        &self,
+        py: Python<'_>,
+        source: Option<&Bound<'_, PyAny>>,
+        batch_size: usize,
+        after: Option<String>,
+        min_duration_ms: Option<u64>,
+        max_duration_ms: Option<u64>,
+        created_from: Option<&Bound<'_, PyAny>>,
+        created_until: Option<&Bound<'_, PyAny>>,
+        updated_from: Option<&Bound<'_, PyAny>>,
+        updated_until: Option<&Bound<'_, PyAny>>,
+        metadata: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<BTreeMap<String, PyDatasetActivityEvaluation>> {
+        let config = activity_eval_config(source)?;
+        let query = evaluation_query(
+            batch_size,
+            after,
+            min_duration_ms,
+            max_duration_ms,
+            created_from,
+            created_until,
+            updated_from,
+            updated_until,
+            metadata,
+        )?;
+        let result = py.detach(|| {
+            let db = self.inner.lock().map_err(|_| poisoned("AudioDB"))?;
+            db.eval(&query, &config).map_err(py_error)
+        })?;
+        Ok(result
+            .activity
+            .into_iter()
+            .map(|(source, inner)| (source, PyDatasetActivityEvaluation { inner }))
+            .collect())
+    }
+
+    /// 使用标签无关的最佳映射评测数据库中的 Speaker 结果。
+    ///
+    /// Args:
+    ///     source: Speaker prediction 来源或来源列表；省略时自动发现。
+    ///
+    /// Returns:
+    ///     按 prediction source 分组的 DER 结果。
+    ///
+    /// Examples:
+    ///     在已写入 Speaker reference 和 prediction 的数据库上调用
+    ///     ``db.eval_speaker("diarizer")``。
+    #[pyo3(signature = (
+        source=None,
+        *,
+        batch_size=100,
+        after=None,
+        min_duration_ms=None,
+        max_duration_ms=None,
+        created_from=None,
+        created_until=None,
+        updated_from=None,
+        updated_until=None,
+        metadata=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn eval_speaker(
+        &self,
+        py: Python<'_>,
+        source: Option<&Bound<'_, PyAny>>,
+        batch_size: usize,
+        after: Option<String>,
+        min_duration_ms: Option<u64>,
+        max_duration_ms: Option<u64>,
+        created_from: Option<&Bound<'_, PyAny>>,
+        created_until: Option<&Bound<'_, PyAny>>,
+        updated_from: Option<&Bound<'_, PyAny>>,
+        updated_until: Option<&Bound<'_, PyAny>>,
+        metadata: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<BTreeMap<String, PyDatasetSpeakerEvaluation>> {
+        let sources = speaker_eval_sources(source)?;
+        let query = evaluation_query(
+            batch_size,
+            after,
+            min_duration_ms,
+            max_duration_ms,
+            created_from,
+            created_until,
+            updated_from,
+            updated_until,
+            metadata,
+        )?;
+        let result = py.detach(|| {
+            let db = self.inner.lock().map_err(|_| poisoned("AudioDB"))?;
+            db.eval_speaker(&query, &sources).map_err(py_error)
+        })?;
+        Ok(result
+            .into_iter()
+            .map(|(source, inner)| (source, PyDatasetSpeakerEvaluation { inner }))
+            .collect())
     }
 
     fn __getitem__(&self, py: Python<'_>, audio_id: &str) -> PyResult<PyAudio> {
@@ -822,6 +912,57 @@ impl PyAudioDb {
             len
         ))
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluation_query(
+    batch_size: usize,
+    after: Option<String>,
+    min_duration_ms: Option<u64>,
+    max_duration_ms: Option<u64>,
+    created_from: Option<&Bound<'_, PyAny>>,
+    created_until: Option<&Bound<'_, PyAny>>,
+    updated_from: Option<&Bound<'_, PyAny>>,
+    updated_until: Option<&Bound<'_, PyAny>>,
+    metadata: Option<&Bound<'_, PyDict>>,
+) -> PyResult<AudioQuery> {
+    if batch_size == 0 {
+        return Err(PyValueError::new_err(
+            "batch_size must be greater than zero",
+        ));
+    }
+    let created_from = datetime_to_system_time(created_from, "created_from")?;
+    let created_until = datetime_to_system_time(created_until, "created_until")?;
+    let updated_from = datetime_to_system_time(updated_from, "updated_from")?;
+    let updated_until = datetime_to_system_time(updated_until, "updated_until")?;
+    validate_time_range(
+        created_from,
+        created_until,
+        "created_from must not exceed created_until",
+    )?;
+    validate_time_range(
+        updated_from,
+        updated_until,
+        "updated_from must not exceed updated_until",
+    )?;
+    let metadata = metadata
+        .map(|metadata| {
+            pythonize::depythonize::<BTreeMap<String, serde_json::Value>>(metadata.as_any())
+                .map_err(py_error)
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(AudioQuery {
+        limit: batch_size,
+        after,
+        min_duration: min_duration_ms.map(DurationMs),
+        max_duration: max_duration_ms.map(DurationMs),
+        created_from,
+        created_until,
+        updated_from,
+        updated_until,
+        metadata,
+    })
 }
 
 fn datetime_to_system_time(

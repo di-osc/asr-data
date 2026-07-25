@@ -21,9 +21,12 @@ pub use db::{
 pub use doc::{Audio, AudioChannelError, AudioStream, AudioTimelineError, AudioValidationError};
 pub use evaluation::{
     DatasetActivityEvaluation, DatasetActivityEventEvaluation, DatasetEvalError, DatasetEvaluation,
-    DatasetEvaluator, DatasetTranscriptionEvaluation, evaluate_dataset,
+    DatasetEvaluator, DatasetSpeakerEvaluation, DatasetTranscriptionEvaluation, evaluate_dataset,
 };
-pub use metrics::{CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh};
+pub use metrics::{
+    CerStats, ChineseTextNormalizationOptions, TextNormalizationError, compute_cer,
+    normalize_for_cer, normalize_zh, normalize_zh_with_options,
+};
 pub use timeline::{
     ActivityEvaluation, ActivityEventEvaluation, Annotation, AudioActivity, AudioId, LanguageTag,
     Sentence, SpeakerId, SpeakerPayload, TimeSpan, TimeSpanConflictKind, TimeSpanId,

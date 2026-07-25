@@ -135,6 +135,41 @@ pub struct DatasetActivityEvaluation {
     pub events: BTreeMap<String, DatasetActivityEventEvaluation>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatasetSpeakerEvaluation {
+    pub source: String,
+    pub evaluated_documents: usize,
+    pub evaluated_timelines: usize,
+    pub unannotated_timelines: usize,
+    pub missing_predictions: usize,
+    pub unannotated_ids: Vec<String>,
+    pub missing_prediction_ids: Vec<String>,
+    pub reference_speaker_ms: u64,
+    pub predicted_speaker_ms: u64,
+    pub correct_speaker_ms: u64,
+    pub missed_speaker_ms: u64,
+    pub false_alarm_ms: u64,
+    pub speaker_confusion_ms: u64,
+}
+
+impl DatasetSpeakerEvaluation {
+    pub fn der(&self) -> f64 {
+        ratio(
+            self.missed_speaker_ms
+                .saturating_add(self.false_alarm_ms)
+                .saturating_add(self.speaker_confusion_ms) as usize,
+            self.reference_speaker_ms as usize,
+        )
+    }
+
+    pub fn coverage(&self) -> f64 {
+        ratio(
+            self.evaluated_timelines,
+            self.evaluated_timelines + self.missing_predictions,
+        )
+    }
+}
+
 impl DatasetActivityEvaluation {
     pub fn precision(&self) -> f64 {
         interval_precision(self.true_positive_ms, self.false_positive_ms)
@@ -273,9 +308,12 @@ impl DatasetEvaluator {
                 }
             }
         }
-        let normalized =
-            normalize_transcriptions_parallel(&texts, self.config.transcription_normalization)
-                .map_err(TimelineEvalError::from)?;
+        let normalized = normalize_transcriptions_parallel(
+            &texts,
+            self.config.transcription_normalization,
+            self.config.chinese_tn_options(),
+        )
+        .map_err(TimelineEvalError::from)?;
         self.normalization_cache
             .extend(texts.into_iter().zip(normalized));
         Ok(())
@@ -416,18 +454,352 @@ impl AudioDb {
         }
         evaluator.finish()
     }
+
+    pub fn eval_speaker(
+        &self,
+        query: &AudioQuery,
+        sources: &[String],
+    ) -> Result<BTreeMap<String, DatasetSpeakerEvaluation>, DatasetEvalError> {
+        let mut evaluator = SpeakerDatasetEvaluator::new(sources);
+        let mut page_query = query.clone();
+        page_query.limit = page_query.limit.max(1);
+        loop {
+            let page = self.query(&page_query)?;
+            if page.is_empty() {
+                break;
+            }
+            page_query.after = page.last().map(Audio::audio_id);
+            for doc in &page {
+                evaluator.push(doc);
+            }
+            if page.len() < page_query.limit {
+                break;
+            }
+        }
+        evaluator.finish()
+    }
+}
+
+#[derive(Debug, Default)]
+struct SpeakerStats {
+    reference_speaker_ms: u64,
+    predicted_speaker_ms: u64,
+    correct_speaker_ms: u64,
+    missed_speaker_ms: u64,
+    false_alarm_ms: u64,
+    speaker_confusion_ms: u64,
+}
+
+#[derive(Debug, Default)]
+struct SpeakerAccumulator {
+    evaluated_documents: BTreeSet<String>,
+    evaluated_timelines: BTreeSet<String>,
+    stats: SpeakerStats,
+}
+
+impl SpeakerAccumulator {
+    fn add(&mut self, audio_id: &str, timeline_id: &str, stats: SpeakerStats) {
+        self.evaluated_documents.insert(audio_id.to_owned());
+        self.evaluated_timelines.insert(timeline_id.to_owned());
+        self.stats.reference_speaker_ms = self
+            .stats
+            .reference_speaker_ms
+            .saturating_add(stats.reference_speaker_ms);
+        self.stats.predicted_speaker_ms = self
+            .stats
+            .predicted_speaker_ms
+            .saturating_add(stats.predicted_speaker_ms);
+        self.stats.correct_speaker_ms = self
+            .stats
+            .correct_speaker_ms
+            .saturating_add(stats.correct_speaker_ms);
+        self.stats.missed_speaker_ms = self
+            .stats
+            .missed_speaker_ms
+            .saturating_add(stats.missed_speaker_ms);
+        self.stats.false_alarm_ms = self
+            .stats
+            .false_alarm_ms
+            .saturating_add(stats.false_alarm_ms);
+        self.stats.speaker_confusion_ms = self
+            .stats
+            .speaker_confusion_ms
+            .saturating_add(stats.speaker_confusion_ms);
+    }
+}
+
+struct SpeakerDatasetEvaluator {
+    selection: Vec<String>,
+    eligible: BTreeSet<String>,
+    unannotated: BTreeSet<String>,
+    accumulators: BTreeMap<String, SpeakerAccumulator>,
+}
+
+impl SpeakerDatasetEvaluator {
+    fn new(sources: &[String]) -> Self {
+        Self {
+            selection: sources.to_vec(),
+            eligible: BTreeSet::new(),
+            unannotated: BTreeSet::new(),
+            accumulators: sources
+                .iter()
+                .cloned()
+                .map(|source| (source, SpeakerAccumulator::default()))
+                .collect(),
+        }
+    }
+
+    fn push(&mut self, doc: &Audio) {
+        for (channel, timeline) in doc.timelines() {
+            let timeline_id = format!("{}:{}", doc.id, channel.name());
+            if !timeline.reference.iter().any(is_speaker_annotation) {
+                self.unannotated.insert(timeline_id);
+                continue;
+            }
+            self.eligible.insert(timeline_id.clone());
+            let available = timeline
+                .prediction
+                .iter()
+                .filter(|span| is_speaker_annotation(span))
+                .filter_map(|span| span.source.clone())
+                .collect::<BTreeSet<_>>();
+            let sources = sources_for_timeline(&self.selection, &available);
+            for source in sources {
+                let stats = evaluate_speakers(timeline, &source);
+                self.accumulators
+                    .entry(source)
+                    .or_default()
+                    .add(&doc.id, &timeline_id, stats);
+            }
+        }
+    }
+
+    fn finish(self) -> Result<BTreeMap<String, DatasetSpeakerEvaluation>, DatasetEvalError> {
+        if self.eligible.is_empty() || self.accumulators.is_empty() {
+            return Err(DatasetEvalError::NoEvaluableAnnotations);
+        }
+        self.accumulators
+            .into_iter()
+            .map(|(source, accumulator)| {
+                if accumulator.evaluated_timelines.is_empty() {
+                    return Err(TimelineEvalError::MissingPrediction {
+                        kind: "speaker",
+                        prediction_source: source,
+                    }
+                    .into());
+                }
+                let missing_prediction_ids = self
+                    .eligible
+                    .difference(&accumulator.evaluated_timelines)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                Ok((
+                    source.clone(),
+                    DatasetSpeakerEvaluation {
+                        source,
+                        evaluated_documents: accumulator.evaluated_documents.len(),
+                        evaluated_timelines: accumulator.evaluated_timelines.len(),
+                        unannotated_timelines: self.unannotated.len(),
+                        missing_predictions: missing_prediction_ids.len(),
+                        unannotated_ids: self.unannotated.iter().cloned().collect(),
+                        missing_prediction_ids,
+                        reference_speaker_ms: accumulator.stats.reference_speaker_ms,
+                        predicted_speaker_ms: accumulator.stats.predicted_speaker_ms,
+                        correct_speaker_ms: accumulator.stats.correct_speaker_ms,
+                        missed_speaker_ms: accumulator.stats.missed_speaker_ms,
+                        false_alarm_ms: accumulator.stats.false_alarm_ms,
+                        speaker_confusion_ms: accumulator.stats.speaker_confusion_ms,
+                    },
+                ))
+            })
+            .collect()
+    }
+}
+
+fn is_speaker_annotation(span: &crate::timeline::TimeSpan) -> bool {
+    matches!(span.annotation, Annotation::Speaker(_))
+}
+
+fn evaluate_speakers(timeline: &Timeline, source: &str) -> SpeakerStats {
+    let reference = timeline
+        .reference
+        .iter()
+        .filter_map(speaker_span)
+        .collect::<Vec<_>>();
+    let prediction = timeline
+        .prediction
+        .iter()
+        .filter(|span| span.source.as_deref() == Some(source))
+        .filter_map(speaker_span)
+        .collect::<Vec<_>>();
+    let reference_labels = reference
+        .iter()
+        .map(|(label, _, _)| (*label).to_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let prediction_labels = prediction
+        .iter()
+        .map(|(label, _, _)| (*label).to_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let reference_index = reference_labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| (label.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    let prediction_index = prediction_labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| (label.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    let mut boundaries = reference
+        .iter()
+        .chain(&prediction)
+        .flat_map(|(_, start, end)| [*start, *end])
+        .collect::<Vec<_>>();
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    let mut overlap = vec![vec![0_u64; prediction_labels.len()]; reference_labels.len()];
+    let mut stats = SpeakerStats::default();
+    for window in boundaries.windows(2) {
+        let start = window[0];
+        let end = window[1];
+        let duration = end.saturating_sub(start);
+        if duration == 0 {
+            continue;
+        }
+        let active_reference = reference
+            .iter()
+            .filter(|(_, span_start, span_end)| *span_start < end && *span_end > start)
+            .map(|(label, _, _)| reference_index[label])
+            .collect::<Vec<_>>();
+        let active_prediction = prediction
+            .iter()
+            .filter(|(_, span_start, span_end)| *span_start < end && *span_end > start)
+            .map(|(label, _, _)| prediction_index[label])
+            .collect::<Vec<_>>();
+        let reference_count = active_reference.len() as u64;
+        let prediction_count = active_prediction.len() as u64;
+        stats.reference_speaker_ms = stats
+            .reference_speaker_ms
+            .saturating_add(duration.saturating_mul(reference_count));
+        stats.predicted_speaker_ms = stats
+            .predicted_speaker_ms
+            .saturating_add(duration.saturating_mul(prediction_count));
+        stats.missed_speaker_ms = stats.missed_speaker_ms.saturating_add(
+            duration.saturating_mul(reference_count.saturating_sub(prediction_count)),
+        );
+        stats.false_alarm_ms = stats.false_alarm_ms.saturating_add(
+            duration.saturating_mul(prediction_count.saturating_sub(reference_count)),
+        );
+        stats.speaker_confusion_ms = stats
+            .speaker_confusion_ms
+            .saturating_add(duration.saturating_mul(reference_count.min(prediction_count)));
+        for reference in &active_reference {
+            for prediction in &active_prediction {
+                overlap[*reference][*prediction] =
+                    overlap[*reference][*prediction].saturating_add(duration);
+            }
+        }
+    }
+    stats.correct_speaker_ms = maximum_weight_assignment(&overlap);
+    stats.speaker_confusion_ms = stats
+        .speaker_confusion_ms
+        .saturating_sub(stats.correct_speaker_ms);
+    stats
+}
+
+fn speaker_span(span: &crate::timeline::TimeSpan) -> Option<(&str, u64, u64)> {
+    let Annotation::Speaker(speaker) = &span.annotation else {
+        return None;
+    };
+    Some((speaker.name.as_str(), span.range.start.0, span.range.end.0))
+}
+
+fn maximum_weight_assignment(weights: &[Vec<u64>]) -> u64 {
+    let rows = weights.len();
+    let columns = weights.first().map_or(0, Vec::len);
+    let size = rows.max(columns);
+    if size == 0 {
+        return 0;
+    }
+    let maximum = weights.iter().flatten().copied().max().unwrap_or_default() as i128;
+    let mut u = vec![0_i128; size + 1];
+    let mut v = vec![0_i128; size + 1];
+    let mut p = vec![0_usize; size + 1];
+    let mut way = vec![0_usize; size + 1];
+    for row in 1..=size {
+        p[0] = row;
+        let mut column = 0;
+        let mut min_value = vec![i128::MAX; size + 1];
+        let mut used = vec![false; size + 1];
+        loop {
+            used[column] = true;
+            let current_row = p[column];
+            let mut delta = i128::MAX;
+            let mut next_column = 0;
+            for candidate in 1..=size {
+                if used[candidate] {
+                    continue;
+                }
+                let weight = if current_row <= rows && candidate <= columns {
+                    weights[current_row - 1][candidate - 1] as i128
+                } else {
+                    0
+                };
+                let cost = maximum - weight - u[current_row] - v[candidate];
+                if cost < min_value[candidate] {
+                    min_value[candidate] = cost;
+                    way[candidate] = column;
+                }
+                if min_value[candidate] < delta {
+                    delta = min_value[candidate];
+                    next_column = candidate;
+                }
+            }
+            for candidate in 0..=size {
+                if used[candidate] {
+                    u[p[candidate]] += delta;
+                    v[candidate] -= delta;
+                } else {
+                    min_value[candidate] -= delta;
+                }
+            }
+            column = next_column;
+            if p[column] == 0 {
+                break;
+            }
+        }
+        loop {
+            let previous = way[column];
+            p[column] = p[previous];
+            column = previous;
+            if column == 0 {
+                break;
+            }
+        }
+    }
+    (1..=size)
+        .filter_map(|column| {
+            let row = p[column];
+            (row > 0 && row <= rows && column <= columns).then_some(weights[row - 1][column - 1])
+        })
+        .sum()
 }
 
 fn normalize_transcriptions_parallel(
     texts: &[String],
     normalization: TranscriptionNormalization,
+    options: crate::metrics::ChineseTextNormalizationOptions,
 ) -> Result<Vec<String>, crate::metrics::TextNormalizationError> {
     let available = thread::available_parallelism().map_or(1, usize::from);
     let workers = available.min(4).min(texts.len());
     if workers <= 1 {
         return texts
             .iter()
-            .map(|text| normalize_transcription_text(text, normalization))
+            .map(|text| normalize_transcription_text(text, normalization, options))
             .collect();
     }
     let chunk_size = texts.len().div_ceil(workers);
@@ -438,7 +810,7 @@ fn normalize_transcriptions_parallel(
                 scope.spawn(move || {
                     chunk
                         .iter()
-                        .map(|text| normalize_transcription_text(text, normalization))
+                        .map(|text| normalize_transcription_text(text, normalization, options))
                         .collect::<Result<Vec<_>, _>>()
                 })
             })

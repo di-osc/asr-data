@@ -999,6 +999,11 @@ impl PyTimeline {
     ///     transcription: 转写来源或来源名称列表。
     ///     activity: Activity 来源或来源名称列表。
     ///     normalize: 是否在计算 CER 前执行中文文本标准化。
+    ///     traditional_to_simple: 是否将繁体中文转换为简体中文。
+    ///     full_to_half: 是否将全角字符转换为半角字符。
+    ///     remove_erhua: 是否去除儿化音“儿”。
+    ///     remove_interjections: 是否去除“嗯”“啊”“呃”等语气词。
+    ///     remove_puncts: 是否去除标点符号。
     ///
     /// Returns:
     ///     按任务和 source 分组的 TimelineEvaluation。
@@ -1024,12 +1029,27 @@ impl PyTimeline {
     ///     >>> result = timeline.eval()
     ///     >>> result.transcription["qwen-asr"].cer
     ///     0.0
-    #[pyo3(signature = (*, transcription=None, activity=None, normalize=true))]
+    #[pyo3(signature = (
+        *,
+        transcription=None,
+        activity=None,
+        normalize=true,
+        traditional_to_simple=true,
+        full_to_half=true,
+        remove_erhua=true,
+        remove_interjections=true,
+        remove_puncts=true
+    ))]
     fn eval(
         &self,
         transcription: Option<&Bound<'_, PyAny>>,
         activity: Option<&Bound<'_, PyAny>>,
         normalize: bool,
+        traditional_to_simple: bool,
+        full_to_half: bool,
+        remove_erhua: bool,
+        remove_interjections: bool,
+        remove_puncts: bool,
     ) -> PyResult<PyTimelineEvaluation> {
         let normalization = if normalize {
             TranscriptionNormalization::ChineseTn
@@ -1040,6 +1060,11 @@ impl PyTimeline {
             transcription_sources: extract_eval_sources(transcription, "transcription")?,
             activity_sources: extract_eval_sources(activity, "activity")?,
             transcription_normalization: normalization,
+            traditional_to_simple,
+            full_to_half,
+            remove_erhua,
+            remove_interjections,
+            remove_puncts,
         };
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
         let inner = self.selected(&audio)?.eval(&config).map_err(py_error)?;

@@ -33,6 +33,27 @@ struct FstTextNormalizer {
     fst: VectorFst<TropicalWeight>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChineseTextNormalizationOptions {
+    pub traditional_to_simple: bool,
+    pub full_to_half: bool,
+    pub remove_erhua: bool,
+    pub remove_interjections: bool,
+    pub remove_puncts: bool,
+}
+
+impl Default for ChineseTextNormalizationOptions {
+    fn default() -> Self {
+        Self {
+            traditional_to_simple: true,
+            full_to_half: true,
+            remove_erhua: true,
+            remove_interjections: true,
+            remove_puncts: true,
+        }
+    }
+}
+
 impl FstTextNormalizer {
     fn from_bytes(resource: &'static str, bytes: &[u8]) -> Result<Self, TextNormalizationError> {
         let fst = VectorFst::<TropicalWeight>::load(bytes).map_err(|error| {
@@ -109,6 +130,11 @@ fn fst_output(fst: &VectorFst<TropicalWeight>) -> Result<String, TextNormalizati
 struct ChineseTn {
     tagger: FstTextNormalizer,
     verbalizer: FstTextNormalizer,
+    verbalizer_remove_erhua: FstTextNormalizer,
+    traditional_to_simple: FstTextNormalizer,
+    full_to_half: FstTextNormalizer,
+    remove_interjections: FstTextNormalizer,
+    remove_puncts: FstTextNormalizer,
 }
 
 impl ChineseTn {
@@ -127,25 +153,140 @@ impl ChineseTn {
                 "/assets/wetext/verbalizer.fst"
             )),
         )?;
-        Ok(Self { tagger, verbalizer })
+        let verbalizer_remove_erhua = FstTextNormalizer::from_bytes(
+            "zh/tn/verbalizer_remove_erhua.fst",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/wetext/verbalizer_remove_erhua.fst"
+            )),
+        )?;
+        let remove_interjections = FstTextNormalizer::from_bytes(
+            "remove_interjections.fst",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/wetext/remove_interjections.fst"
+            )),
+        )?;
+        let traditional_to_simple = FstTextNormalizer::from_bytes(
+            "traditional_to_simple.fst",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/wetext/traditional_to_simple.fst"
+            )),
+        )?;
+        let full_to_half = FstTextNormalizer::from_bytes(
+            "full_to_half.fst",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/wetext/full_to_half.fst"
+            )),
+        )?;
+        let remove_puncts = FstTextNormalizer::from_bytes(
+            "remove_puncts.fst",
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/wetext/remove_puncts.fst"
+            )),
+        )?;
+        Ok(Self {
+            tagger,
+            verbalizer,
+            verbalizer_remove_erhua,
+            traditional_to_simple,
+            full_to_half,
+            remove_interjections,
+            remove_puncts,
+        })
     }
 
-    fn normalize(&self, text: &str) -> Result<String, TextNormalizationError> {
-        let text = text.trim();
+    fn normalize(
+        &self,
+        text: &str,
+        options: ChineseTextNormalizationOptions,
+    ) -> Result<String, TextNormalizationError> {
+        let text = self.preprocess(text.trim(), options)?;
         if text.is_empty() {
             return Ok(String::new());
         }
-        let tagged = self.tagger.normalize(text)?;
+        let tagged = self.tagger.normalize(&text)?;
         let reordered = reorder_zh_tn_tokens(&tagged).unwrap_or(tagged);
-        self.verbalizer.normalize(reordered.trim())
+        let normalized = if options.remove_erhua {
+            self.verbalizer_remove_erhua.normalize(reordered.trim())?
+        } else {
+            self.verbalizer.normalize(reordered.trim())?
+        };
+        self.postprocess(&normalized, options)
+    }
+
+    fn preprocess(
+        &self,
+        text: &str,
+        options: ChineseTextNormalizationOptions,
+    ) -> Result<String, TextNormalizationError> {
+        if options.traditional_to_simple {
+            self.traditional_to_simple.normalize(text)
+        } else {
+            Ok(text.to_owned())
+        }
+    }
+
+    fn postprocess(
+        &self,
+        text: &str,
+        options: ChineseTextNormalizationOptions,
+    ) -> Result<String, TextNormalizationError> {
+        let mut normalized = text.to_owned();
+        if options.full_to_half {
+            normalized = self.full_to_half.normalize(&normalized)?;
+        }
+        if options.remove_interjections {
+            normalized = self.remove_interjections(&normalized)?;
+        }
+        if options.remove_puncts {
+            normalized = self.remove_puncts.normalize(&normalized)?;
+        }
+        Ok(normalized.trim().to_owned())
+    }
+
+    fn remove_interjections(&self, text: &str) -> Result<String, TextNormalizationError> {
+        // The upstream FST currently removes `呃` and `啊`; its public option also
+        // documents `嗯`, so keep that documented behavior explicit here.
+        self.remove_interjections
+            .normalize(text)
+            .map(|text| text.replace('嗯', ""))
     }
 }
 
 /// Normalize Chinese written text to its spoken form with the embedded WeText FSTs.
 pub fn normalize_zh(text: &str) -> Result<String, TextNormalizationError> {
+    normalize_zh_with_options(text, ChineseTextNormalizationOptions::default())
+}
+
+pub fn normalize_zh_with_options(
+    text: &str,
+    options: ChineseTextNormalizationOptions,
+) -> Result<String, TextNormalizationError> {
+    chinese_tn()?.normalize(text, options)
+}
+
+#[cfg(test)]
+fn remove_zh_interjections(text: &str) -> Result<String, TextNormalizationError> {
+    chinese_tn()?.remove_interjections(text)
+}
+
+pub(crate) fn normalize_zh_without_tn(
+    text: &str,
+    options: ChineseTextNormalizationOptions,
+) -> Result<String, TextNormalizationError> {
+    let normalizer = chinese_tn()?;
+    let preprocessed = normalizer.preprocess(text.trim(), options)?;
+    normalizer.postprocess(&preprocessed, options)
+}
+
+fn chinese_tn() -> Result<&'static ChineseTn, TextNormalizationError> {
     static NORMALIZER: OnceLock<Result<ChineseTn, TextNormalizationError>> = OnceLock::new();
     match NORMALIZER.get_or_init(ChineseTn::embedded) {
-        Ok(normalizer) => normalizer.normalize(text),
+        Ok(normalizer) => Ok(normalizer),
         Err(error) => Err(error.clone()),
     }
 }
@@ -299,7 +440,10 @@ fn parse_quoted_value(chars: &[char], index: &mut usize) -> Result<String, TextN
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_zh, reorder_zh_tn_tokens};
+    use super::{
+        ChineseTextNormalizationOptions, normalize_zh, normalize_zh_with_options,
+        remove_zh_interjections, reorder_zh_tn_tokens,
+    };
 
     #[test]
     fn reorders_chinese_tn_token_fields() {
@@ -318,5 +462,48 @@ mod tests {
     #[test]
     fn normalizes_chinese_numbers_from_embedded_fsts() {
         assert_eq!(normalize_zh("2024年"), Ok("二零二四年".to_owned()));
+    }
+
+    #[test]
+    fn removes_erhua_by_default() {
+        assert_eq!(normalize_zh("花儿"), Ok("花".to_owned()));
+        assert_eq!(
+            normalize_zh_with_options(
+                "花儿",
+                ChineseTextNormalizationOptions {
+                    remove_erhua: false,
+                    ..ChineseTextNormalizationOptions::default()
+                },
+            ),
+            Ok("花儿".to_owned()),
+        );
+    }
+
+    #[test]
+    fn removes_interjections_by_default() {
+        let options = ChineseTextNormalizationOptions {
+            remove_interjections: false,
+            ..ChineseTextNormalizationOptions::default()
+        };
+        assert_eq!(
+            normalize_zh_with_options("嗯啊呃你好", options),
+            Ok("嗯啊呃你好".to_owned()),
+        );
+        assert_eq!(remove_zh_interjections("嗯啊呃你好"), Ok("你好".to_owned()));
+        assert_eq!(normalize_zh("嗯啊呃你好"), Ok("你好".to_owned()));
+    }
+
+    #[test]
+    fn applies_optional_pre_and_postprocessors() {
+        let options = ChineseTextNormalizationOptions {
+            traditional_to_simple: true,
+            full_to_half: true,
+            remove_puncts: true,
+            ..ChineseTextNormalizationOptions::default()
+        };
+        assert_eq!(
+            normalize_zh_with_options("這是ＡＢＣ！", options),
+            Ok("这是ABC".to_owned()),
+        );
     }
 }

@@ -14,6 +14,7 @@ from ._native import AudioStream as _AudioStream
 from ._native import DatasetActivityEvaluation as DatasetActivityEvaluation
 from ._native import DatasetActivityEventEvaluation as DatasetActivityEventEvaluation
 from ._native import DatasetEvaluation as DatasetEvaluation
+from ._native import DatasetSpeakerEvaluation as DatasetSpeakerEvaluation
 from ._native import DatasetTranscriptionEvaluation as DatasetTranscriptionEvaluation
 from ._native import PredictionSpans as PredictionSpans
 from ._native import ReferenceSpans as ReferenceSpans

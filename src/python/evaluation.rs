@@ -4,6 +4,7 @@ use crate::{
     DatasetActivityEvaluation as RustDatasetActivityEvaluation,
     DatasetActivityEventEvaluation as RustDatasetActivityEventEvaluation,
     DatasetEvaluation as RustDatasetEvaluation,
+    DatasetSpeakerEvaluation as RustDatasetSpeakerEvaluation,
     DatasetTranscriptionEvaluation as RustDatasetTranscriptionEvaluation, TimelineEvalConfig,
     TranscriptionNormalization, evaluate_dataset as rust_evaluate_dataset,
 };
@@ -19,7 +20,102 @@ use super::timeline::extract_eval_sources;
 #[pyclass(name = "DatasetTranscriptionEvaluation", frozen)]
 #[derive(Clone)]
 pub(super) struct PyDatasetTranscriptionEvaluation {
-    inner: RustDatasetTranscriptionEvaluation,
+    pub(super) inner: RustDatasetTranscriptionEvaluation,
+}
+
+/// 单个 prediction source 的数据集说话人分离结果。
+#[pyclass(name = "DatasetSpeakerEvaluation", frozen)]
+#[derive(Clone)]
+pub(super) struct PyDatasetSpeakerEvaluation {
+    pub(super) inner: RustDatasetSpeakerEvaluation,
+}
+
+#[pymethods]
+impl PyDatasetSpeakerEvaluation {
+    #[getter]
+    fn source(&self) -> String {
+        self.inner.source.clone()
+    }
+
+    #[getter]
+    fn evaluated_documents(&self) -> usize {
+        self.inner.evaluated_documents
+    }
+
+    #[getter]
+    fn evaluated_timelines(&self) -> usize {
+        self.inner.evaluated_timelines
+    }
+
+    #[getter]
+    fn unannotated_timelines(&self) -> usize {
+        self.inner.unannotated_timelines
+    }
+
+    #[getter]
+    fn missing_predictions(&self) -> usize {
+        self.inner.missing_predictions
+    }
+
+    #[getter]
+    fn unannotated_ids(&self) -> Vec<String> {
+        self.inner.unannotated_ids.clone()
+    }
+
+    #[getter]
+    fn missing_prediction_ids(&self) -> Vec<String> {
+        self.inner.missing_prediction_ids.clone()
+    }
+
+    #[getter]
+    fn reference_speaker_ms(&self) -> u64 {
+        self.inner.reference_speaker_ms
+    }
+
+    #[getter]
+    fn predicted_speaker_ms(&self) -> u64 {
+        self.inner.predicted_speaker_ms
+    }
+
+    #[getter]
+    fn correct_speaker_ms(&self) -> u64 {
+        self.inner.correct_speaker_ms
+    }
+
+    #[getter]
+    fn missed_speaker_ms(&self) -> u64 {
+        self.inner.missed_speaker_ms
+    }
+
+    #[getter]
+    fn false_alarm_ms(&self) -> u64 {
+        self.inner.false_alarm_ms
+    }
+
+    #[getter]
+    fn speaker_confusion_ms(&self) -> u64 {
+        self.inner.speaker_confusion_ms
+    }
+
+    #[getter]
+    fn der(&self) -> f64 {
+        self.inner.der()
+    }
+
+    #[getter]
+    fn coverage(&self) -> f64 {
+        self.inner.coverage()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "DatasetSpeakerEvaluation(source={:?}, der={:.4}, coverage={:.4}, timelines={})",
+            self.inner.source,
+            self.inner.der(),
+            self.inner.coverage(),
+            self.inner.evaluated_timelines,
+        )
+    }
 }
 
 #[pymethods]
@@ -263,7 +359,7 @@ impl PyDatasetActivityEventEvaluation {
 #[pyclass(name = "DatasetActivityEvaluation", frozen)]
 #[derive(Clone)]
 pub(super) struct PyDatasetActivityEvaluation {
-    inner: RustDatasetActivityEvaluation,
+    pub(super) inner: RustDatasetActivityEvaluation,
 }
 
 #[pymethods]
@@ -479,6 +575,11 @@ impl PyDatasetEvaluation {
 ///     transcription: 转写来源或来源列表；省略时自动发现。
 ///     activity: Activity 来源或来源列表；省略时自动发现。
 ///     normalize: 是否在计算 CER 前执行中文文本标准化。
+///     traditional_to_simple: 是否将繁体中文转换为简体中文。
+///     full_to_half: 是否将全角字符转换为半角字符。
+///     remove_erhua: 是否去除儿化音“儿”。
+///     remove_interjections: 是否去除“嗯”“啊”“呃”等语气词。
+///     remove_puncts: 是否去除标点符号。
 ///
 /// Returns:
 ///     按任务和 source 分组的数据集级结果。
@@ -506,15 +607,40 @@ impl PyDatasetEvaluation {
 ///     >>> evaluate_dataset([doc], transcription="asr").transcription["asr"].cer
 ///     0.0
 #[pyfunction(name = "evaluate_dataset")]
-#[pyo3(signature = (docs, *, transcription=None, activity=None, normalize=true))]
+#[pyo3(signature = (
+    docs,
+    *,
+    transcription=None,
+    activity=None,
+    normalize=true,
+    traditional_to_simple=true,
+    full_to_half=true,
+    remove_erhua=true,
+    remove_interjections=true,
+    remove_puncts=true
+))]
 fn py_evaluate_dataset(
     py: Python<'_>,
     docs: Vec<Py<PyAudio>>,
     transcription: Option<&Bound<'_, PyAny>>,
     activity: Option<&Bound<'_, PyAny>>,
     normalize: bool,
+    traditional_to_simple: bool,
+    full_to_half: bool,
+    remove_erhua: bool,
+    remove_interjections: bool,
+    remove_puncts: bool,
 ) -> PyResult<PyDatasetEvaluation> {
-    let config = eval_config(transcription, activity, normalize)?;
+    let config = eval_config(
+        transcription,
+        activity,
+        normalize,
+        traditional_to_simple,
+        full_to_half,
+        remove_erhua,
+        remove_interjections,
+        remove_puncts,
+    )?;
     let docs = docs
         .iter()
         .map(|doc| doc.bind(py).borrow().cloned_inner(py))
@@ -527,6 +653,11 @@ pub(super) fn eval_config(
     transcription: Option<&Bound<'_, PyAny>>,
     activity: Option<&Bound<'_, PyAny>>,
     normalize: bool,
+    traditional_to_simple: bool,
+    full_to_half: bool,
+    remove_erhua: bool,
+    remove_interjections: bool,
+    remove_puncts: bool,
 ) -> PyResult<TimelineEvalConfig> {
     Ok(TimelineEvalConfig {
         transcription_sources: extract_eval_sources(transcription, "transcription")?,
@@ -536,7 +667,54 @@ pub(super) fn eval_config(
         } else {
             TranscriptionNormalization::None
         },
+        traditional_to_simple,
+        full_to_half,
+        remove_erhua,
+        remove_interjections,
+        remove_puncts,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn transcription_eval_config(
+    source: Option<&Bound<'_, PyAny>>,
+    normalize: bool,
+    traditional_to_simple: bool,
+    full_to_half: bool,
+    remove_erhua: bool,
+    remove_interjections: bool,
+    remove_puncts: bool,
+) -> PyResult<TimelineEvalConfig> {
+    Ok(TimelineEvalConfig {
+        transcription_sources: Some(
+            extract_eval_sources(source, "transcription")?.unwrap_or_default(),
+        ),
+        activity_sources: None,
+        transcription_normalization: if normalize {
+            TranscriptionNormalization::ChineseTn
+        } else {
+            TranscriptionNormalization::None
+        },
+        traditional_to_simple,
+        full_to_half,
+        remove_erhua,
+        remove_interjections,
+        remove_puncts,
+    })
+}
+
+pub(super) fn activity_eval_config(
+    source: Option<&Bound<'_, PyAny>>,
+) -> PyResult<TimelineEvalConfig> {
+    Ok(TimelineEvalConfig {
+        transcription_sources: None,
+        activity_sources: Some(extract_eval_sources(source, "activity")?.unwrap_or_default()),
+        ..TimelineEvalConfig::default()
+    })
+}
+
+pub(super) fn speaker_eval_sources(source: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<String>> {
+    Ok(extract_eval_sources(source, "speaker")?.unwrap_or_default())
 }
 
 fn normalization_name(normalization: TranscriptionNormalization) -> &'static str {
@@ -550,6 +728,7 @@ pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDatasetTranscriptionEvaluation>()?;
     module.add_class::<PyDatasetActivityEventEvaluation>()?;
     module.add_class::<PyDatasetActivityEvaluation>()?;
+    module.add_class::<PyDatasetSpeakerEvaluation>()?;
     module.add_class::<PyDatasetEvaluation>()?;
     module.add_function(wrap_pyfunction!(py_evaluate_dataset, module)?)?;
     Ok(())

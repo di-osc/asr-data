@@ -6,11 +6,24 @@ import numpy.typing as npt
 
 class AsrDataError(Exception): ...
 
-def normalize_zh(text: str) -> str:
+def normalize_zh(
+    text: str,
+    *,
+    traditional_to_simple: bool = True,
+    full_to_half: bool = True,
+    remove_erhua: bool = True,
+    remove_interjections: bool = True,
+    remove_puncts: bool = True,
+) -> str:
     """使用内嵌中文 TN 资源把书写形式转换为口语形式。
 
     Args:
         text: 要标准化的原始文本。
+        traditional_to_simple: 是否将繁体中文转换为简体中文。
+        full_to_half: 是否将全角字符转换为半角字符。
+        remove_erhua: 是否去除儿化音“儿”。
+        remove_interjections: 是否去除“嗯”“啊”“呃”等语气词。
+        remove_puncts: 是否去除标点符号。
 
     Returns:
         转换为口语形式的文本。
@@ -1213,6 +1226,11 @@ class Timeline:
         transcription: str | list[str] | None = None,
         activity: str | list[str] | None = None,
         normalize: bool = True,
+        traditional_to_simple: bool = True,
+        full_to_half: bool = True,
+        remove_erhua: bool = True,
+        remove_interjections: bool = True,
+        remove_puncts: bool = True,
     ) -> TimelineEvaluation:
         """评测一个或多个 prediction source。
 
@@ -1220,6 +1238,11 @@ class Timeline:
             transcription: 转写来源或来源名称列表。
             activity: Activity 来源或来源名称列表。
             normalize: 是否在计算 CER 前执行中文文本标准化。
+            traditional_to_simple: 是否将繁体中文转换为简体中文。
+            full_to_half: 是否将全角字符转换为半角字符。
+            remove_erhua: 是否去除儿化音“儿”。
+            remove_interjections: 是否去除“嗯”“啊”“呃”等语气词。
+            remove_puncts: 是否去除标点符号。
 
         Returns:
             按任务和 source 分组的 TimelineEvaluation。
@@ -1361,6 +1384,39 @@ class DatasetActivityEvaluation:
     @property
     def events(self) -> dict[str, DatasetActivityEventEvaluation]: ...
 
+class DatasetSpeakerEvaluation:
+    """单个 source 的标签无关说话人分离聚合结果。"""
+    @property
+    def source(self) -> str: ...
+    @property
+    def evaluated_documents(self) -> int: ...
+    @property
+    def evaluated_timelines(self) -> int: ...
+    @property
+    def unannotated_timelines(self) -> int: ...
+    @property
+    def missing_predictions(self) -> int: ...
+    @property
+    def unannotated_ids(self) -> list[str]: ...
+    @property
+    def missing_prediction_ids(self) -> list[str]: ...
+    @property
+    def reference_speaker_ms(self) -> int: ...
+    @property
+    def predicted_speaker_ms(self) -> int: ...
+    @property
+    def correct_speaker_ms(self) -> int: ...
+    @property
+    def missed_speaker_ms(self) -> int: ...
+    @property
+    def false_alarm_ms(self) -> int: ...
+    @property
+    def speaker_confusion_ms(self) -> int: ...
+    @property
+    def der(self) -> float: ...
+    @property
+    def coverage(self) -> float: ...
+
 class DatasetEvaluation:
     """按任务和 source 分组的数据集级评测结果。"""
     @property
@@ -1378,6 +1434,11 @@ def evaluate_dataset(
     transcription: str | list[str] | None = None,
     activity: str | list[str] | None = None,
     normalize: bool = True,
+    traditional_to_simple: bool = True,
+    full_to_half: bool = True,
+    remove_erhua: bool = True,
+    remove_interjections: bool = True,
+    remove_puncts: bool = True,
 ) -> DatasetEvaluation:
     """聚合内存中多个 Audio 的评测统计量。
 
@@ -1386,6 +1447,11 @@ def evaluate_dataset(
         transcription: 转写来源或来源列表；省略时自动发现。
         activity: Activity 来源或来源列表；省略时自动发现。
         normalize: 是否在计算 CER 前执行中文文本标准化。
+        traditional_to_simple: 是否将繁体中文转换为简体中文。
+        full_to_half: 是否将全角字符转换为半角字符。
+        remove_erhua: 是否去除儿化音“儿”。
+        remove_interjections: 是否去除“嗯”“啊”“呃”等语气词。
+        remove_puncts: 是否去除标点符号。
 
     Returns:
         按任务和 source 分组的数据集级结果。
@@ -1786,12 +1852,16 @@ class AudioDB:
             >>> db.insert(doc)
             >>> page = db.query(limit=10, metadata={"split": "test"})
         """
-    def eval(
+    def eval_transcription(
         self,
+        source: str | list[str] | None = None,
         *,
-        transcription: str | list[str] | None = None,
-        activity: str | list[str] | None = None,
         normalize: bool = True,
+        traditional_to_simple: bool = True,
+        full_to_half: bool = True,
+        remove_erhua: bool = True,
+        remove_interjections: bool = True,
+        remove_puncts: bool = True,
         batch_size: int = 100,
         after: str | None = None,
         min_duration_ms: int | None = None,
@@ -1801,47 +1871,75 @@ class AudioDB:
         updated_from: datetime | None = None,
         updated_until: datetime | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> DatasetEvaluation:
-        """自动分页评测全部匹配文档。
+    ) -> dict[str, DatasetTranscriptionEvaluation]:
+        """评测转写，并按 prediction source 返回结果。
+
+        ``normalize=False`` 时忽略其他文本标准化选项。
 
         Args:
-            transcription: 转写来源或来源列表。
-            activity: Activity 来源或来源列表。
-            normalize: 是否执行中文文本标准化。
-            batch_size: 每批读取的文档数。
-            after: 可选起始 Audio ID 游标。
-            min_duration_ms: 可选最短时长。
-            max_duration_ms: 可选最长时长。
-            created_from: 创建时间下界。
-            created_until: 创建时间上界，不包含。
-            updated_from: 修改时间下界。
-            updated_until: 修改时间上界，不包含。
-            metadata: 要精确匹配的 JSON metadata。
+            source: 转写 prediction 来源或来源列表；省略时自动发现。
+            normalize: 是否执行中文 TN 和 CER 清洗。
+            traditional_to_simple: 是否将繁体中文转换为简体中文。
+            full_to_half: 是否将全角字符转换为半角字符。
+            remove_erhua: 是否去除儿化音“儿”。
+            remove_interjections: 是否去除“嗯”“啊”“呃”等语气词。
+            remove_puncts: 是否去除标点符号。
 
         Returns:
-            按任务和 source 分组的数据集级评测结果。
-
-        Raises:
-            ValueError: batch_size 为零或筛选范围无效。
-            AsrDataError: 没有可评测内容或显式 source 不存在。
+            按 prediction source 分组的转写评测结果。
 
         Examples:
-            >>> from tempfile import TemporaryDirectory
-            >>> from asr_data import AudioDB, Audio, AudioSource
-            >>> from asr_data.annotation import Transcription
-            >>> directory = TemporaryDirectory()
-            >>> db = AudioDB.create(f"{directory.name}/dataset.db")
-            >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
-            >>> timeline = doc.timeline("mono")
-            >>> _ = timeline.annotate_span(
-            ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
-            ... )
-            >>> _ = timeline.annotate_span(
-            ...     0, timeline.duration_ms, Transcription("你好"),
-            ...     is_reference=False, source="asr"
-            ... )
-            >>> db.insert(doc)
-            >>> result = db.eval(transcription="asr")
+            在已填充数据库上调用 ``db.eval_transcription("qwen-asr")``。
+        """
+    def eval_activity(
+        self,
+        source: str | list[str] | None = None,
+        *,
+        batch_size: int = 100,
+        after: str | None = None,
+        min_duration_ms: int | None = None,
+        max_duration_ms: int | None = None,
+        created_from: datetime | None = None,
+        created_until: datetime | None = None,
+        updated_from: datetime | None = None,
+        updated_until: datetime | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, DatasetActivityEvaluation]:
+        """评测 AudioActivity，并按 prediction source 返回结果。
+
+        Args:
+            source: Activity prediction 来源或来源列表；省略时自动发现。
+
+        Returns:
+            按 prediction source 分组的 Activity 评测结果。
+
+        Examples:
+            在已填充数据库上调用 ``db.eval_activity("silero-vad")``。
+        """
+    def eval_speaker(
+        self,
+        source: str | list[str] | None = None,
+        *,
+        batch_size: int = 100,
+        after: str | None = None,
+        min_duration_ms: int | None = None,
+        max_duration_ms: int | None = None,
+        created_from: datetime | None = None,
+        created_until: datetime | None = None,
+        updated_from: datetime | None = None,
+        updated_until: datetime | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, DatasetSpeakerEvaluation]:
+        """使用标签无关的最佳映射评测 Speaker DER。
+
+        Args:
+            source: Speaker prediction 来源或来源列表；省略时自动发现。
+
+        Returns:
+            按 prediction source 分组的说话人评测结果。
+
+        Examples:
+            在已填充数据库上调用 ``db.eval_speaker("diarizer")``。
         """
     def update(self, audio: Audio) -> bool:
         """更新已有 Audio。

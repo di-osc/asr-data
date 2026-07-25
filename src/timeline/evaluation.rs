@@ -4,7 +4,8 @@ use thiserror::Error;
 
 use super::{Annotation, TimeSpan, Timeline};
 use crate::metrics::{
-    CerStats, TextNormalizationError, compute_cer, normalize_for_cer, normalize_zh,
+    CerStats, ChineseTextNormalizationOptions, TextNormalizationError, compute_cer,
+    normalize_for_cer, normalize_zh_with_options, normalize_zh_without_tn,
 };
 use crate::utils::TimeRange;
 
@@ -15,7 +16,7 @@ pub enum TranscriptionNormalization {
     ChineseTn,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimelineEvalConfig {
     /// `None` disables this task when another task is explicitly selected.
     /// An empty vector selects every available source.
@@ -24,6 +25,26 @@ pub struct TimelineEvalConfig {
     /// An empty vector selects every available source.
     pub activity_sources: Option<Vec<String>>,
     pub transcription_normalization: TranscriptionNormalization,
+    pub traditional_to_simple: bool,
+    pub full_to_half: bool,
+    pub remove_erhua: bool,
+    pub remove_interjections: bool,
+    pub remove_puncts: bool,
+}
+
+impl Default for TimelineEvalConfig {
+    fn default() -> Self {
+        Self {
+            transcription_sources: None,
+            activity_sources: None,
+            transcription_normalization: TranscriptionNormalization::default(),
+            traditional_to_simple: true,
+            full_to_half: true,
+            remove_erhua: true,
+            remove_interjections: true,
+            remove_puncts: true,
+        }
+    }
 }
 
 impl TimelineEvalConfig {
@@ -75,6 +96,41 @@ impl TimelineEvalConfig {
     ) -> Self {
         self.transcription_normalization = normalization;
         self
+    }
+
+    pub fn with_remove_erhua(mut self, remove: bool) -> Self {
+        self.remove_erhua = remove;
+        self
+    }
+
+    pub fn with_traditional_to_simple(mut self, convert: bool) -> Self {
+        self.traditional_to_simple = convert;
+        self
+    }
+
+    pub fn with_full_to_half(mut self, convert: bool) -> Self {
+        self.full_to_half = convert;
+        self
+    }
+
+    pub fn with_remove_interjections(mut self, remove: bool) -> Self {
+        self.remove_interjections = remove;
+        self
+    }
+
+    pub fn with_remove_puncts(mut self, remove: bool) -> Self {
+        self.remove_puncts = remove;
+        self
+    }
+
+    pub(crate) fn chinese_tn_options(&self) -> ChineseTextNormalizationOptions {
+        ChineseTextNormalizationOptions {
+            traditional_to_simple: self.traditional_to_simple,
+            full_to_half: self.full_to_half,
+            remove_erhua: self.remove_erhua,
+            remove_interjections: self.remove_interjections,
+            remove_puncts: self.remove_puncts,
+        }
     }
 }
 
@@ -245,6 +301,7 @@ impl Timeline {
                     let evaluation = self.evaluate_transcription(
                         &source,
                         config.transcription_normalization,
+                        config.chinese_tn_options(),
                         normalization_cache,
                     )?;
                     transcription.insert(source, evaluation);
@@ -301,6 +358,7 @@ impl Timeline {
         &self,
         source: &str,
         normalization: TranscriptionNormalization,
+        options: ChineseTextNormalizationOptions,
         normalization_cache: &mut HashMap<String, String>,
     ) -> Result<TranscriptionEvaluation, TimelineEvalError> {
         if !self.reference.iter().any(is_final_text_annotation) {
@@ -320,9 +378,9 @@ impl Timeline {
         let reference = self.reference_transcript().text;
         let hypothesis = self.prediction_transcript(source).text;
         let normalized_reference =
-            normalize_transcription(&reference, normalization, normalization_cache)?;
+            normalize_transcription(&reference, normalization, options, normalization_cache)?;
         let normalized_hypothesis =
-            normalize_transcription(&hypothesis, normalization, normalization_cache)?;
+            normalize_transcription(&hypothesis, normalization, options, normalization_cache)?;
         let stats = compute_cer(&normalized_reference, &normalized_hypothesis);
         let hypothesis_chars = normalized_hypothesis.chars().count();
         Ok(TranscriptionEvaluation {
@@ -403,21 +461,34 @@ impl Timeline {
 fn normalize_transcription(
     text: &str,
     normalization: TranscriptionNormalization,
+    options: ChineseTextNormalizationOptions,
     cache: &mut HashMap<String, String>,
 ) -> Result<String, TextNormalizationError> {
     normalize_transcription_with(text, normalization, cache, |text| {
-        normalize_transcription_text(text, normalization)
+        normalize_transcription_text(text, normalization, options)
     })
 }
 
 pub(crate) fn normalize_transcription_text(
     text: &str,
     normalization: TranscriptionNormalization,
+    options: ChineseTextNormalizationOptions,
 ) -> Result<String, TextNormalizationError> {
     match normalization {
         TranscriptionNormalization::None => Ok(text.to_owned()),
-        TranscriptionNormalization::ChineseTn if requires_chinese_tn(text) => {
-            normalize_zh(text).map(|text| normalize_for_cer(&text, true))
+        TranscriptionNormalization::ChineseTn
+            if requires_chinese_tn(text)
+                || (options.remove_erhua && (text.contains('儿') || text.contains('兒'))) =>
+        {
+            normalize_zh_with_options(text, options).map(|text| normalize_for_cer(&text, true))
+        }
+        TranscriptionNormalization::ChineseTn
+            if options.traditional_to_simple
+                || options.full_to_half
+                || options.remove_interjections
+                || options.remove_puncts =>
+        {
+            normalize_zh_without_tn(text, options).map(|text| normalize_for_cer(&text, true))
         }
         TranscriptionNormalization::ChineseTn => Ok(normalize_for_cer(text, true)),
     }
@@ -689,6 +760,7 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+    use crate::metrics::normalize_zh;
     use crate::timeline::TimeSpan;
     use crate::utils::DurationMs;
 
@@ -890,7 +962,11 @@ mod tests {
             assert!(!requires_chinese_tn(text));
             let expected = normalize_for_cer(&normalize_zh(text).unwrap(), true);
             assert_eq!(
-                normalize_transcription_text(text, TranscriptionNormalization::ChineseTn),
+                normalize_transcription_text(
+                    text,
+                    TranscriptionNormalization::ChineseTn,
+                    ChineseTextNormalizationOptions::default(),
+                ),
                 Ok(expected),
             );
         }
@@ -902,8 +978,38 @@ mod tests {
             assert!(requires_chinese_tn(text), "{text:?} must use Chinese TN");
         }
         assert_eq!(
-            normalize_transcription_text("2024年", TranscriptionNormalization::ChineseTn),
+            normalize_transcription_text(
+                "2024年",
+                TranscriptionNormalization::ChineseTn,
+                ChineseTextNormalizationOptions::default(),
+            ),
             Ok("二零二四年".to_owned()),
+        );
+    }
+
+    #[test]
+    fn optional_speech_cleanups_bypass_the_plain_text_fast_path() {
+        assert_eq!(
+            normalize_transcription_text(
+                "花儿",
+                TranscriptionNormalization::ChineseTn,
+                ChineseTextNormalizationOptions {
+                    remove_erhua: true,
+                    ..ChineseTextNormalizationOptions::default()
+                },
+            ),
+            Ok("花".to_owned()),
+        );
+        assert_eq!(
+            normalize_transcription_text(
+                "嗯啊呃你好",
+                TranscriptionNormalization::ChineseTn,
+                ChineseTextNormalizationOptions {
+                    remove_interjections: true,
+                    ..ChineseTextNormalizationOptions::default()
+                },
+            ),
+            Ok("你好".to_owned()),
         );
     }
 }

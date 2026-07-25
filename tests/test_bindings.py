@@ -173,6 +173,11 @@ def test_normalize_zh_is_public():
 
     assert normalize_zh("2024年") == "二零二四年"
     assert normalize_zh("") == ""
+    assert normalize_zh("花儿") == "花"
+    assert normalize_zh("嗯啊呃你好") == "你好"
+    assert normalize_zh("這是Ａ！") == "这是A"
+    assert normalize_zh("花儿", remove_erhua=False) == "花儿"
+    assert normalize_zh("嗯啊呃你好", remove_interjections=False) == "嗯啊呃你好"
     with pytest.raises(TypeError):
         normalize_zh(2024)
 
@@ -1584,6 +1589,37 @@ def test_timeline_eval_uses_embedded_chinese_tn_by_default():
     assert result.exact_match is True
 
 
+def test_timeline_eval_applies_default_text_normalization_policies():
+    audio = Audio(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000),
+        id="eval-cleanup",
+    )
+    timeline = audio.ensure_timeline("mono", duration_ms=1000)
+    timeline.annotate_span(
+        0, 1000, Transcription("嗯這朵花兒"), is_reference=True
+    )
+    timeline.annotate_span(
+        0,
+        1000,
+        Transcription("这朵花"),
+        source="asr",
+        is_reference=False,
+    )
+
+    cleaned = timeline.eval(transcription="asr").transcription["asr"]
+    uncleaned = timeline.eval(
+        transcription="asr",
+        traditional_to_simple=False,
+        remove_erhua=False,
+        remove_interjections=False,
+    ).transcription["asr"]
+
+    assert uncleaned.cer > 0.0
+    assert cleaned.normalized_reference == "这朵花"
+    assert cleaned.normalized_hypothesis == "这朵花"
+    assert cleaned.cer == 0.0
+
+
 def test_timeline_eval_reports_activity_duration_confusion_matrix():
     audio = Audio(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-vad")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
@@ -1696,14 +1732,15 @@ def test_dataset_eval_aggregates_corpus_metrics_and_coverage(tmp_path):
     for doc in docs:
         doc.metadata["split"] = "test"
         db.insert(doc)
-    db_result = db.eval(
-        transcription=["qwen", "whisper"],
+    assert not hasattr(db, "eval")
+    transcription = db.eval_transcription(
+        ["qwen", "whisper"],
         normalize=False,
         batch_size=1,
         metadata={"split": "test"},
     )
-    assert db_result.documents == 3
-    assert db_result.transcription["qwen"].cer == 0.4
+    assert transcription["qwen"].cer == 0.4
+    assert transcription["whisper"].coverage == 0.5
 
 
 def test_dataset_eval_aggregates_activity_and_event_metrics():
@@ -1729,6 +1766,52 @@ def test_dataset_eval_aggregates_activity_and_event_metrics():
     assert activity.events["speech"].true_positive_ms == 400
     assert activity.events["speech"].false_negative_ms == 400
     assert activity.events["music"].false_positive_ms == 400
+
+
+def test_audio_db_eval_activity_returns_task_specific_results(tmp_path):
+    doc = Audio(
+        AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000),
+        id="activity",
+    )
+    timeline = doc.timeline("mono")
+    timeline.annotate_span(0, 500, AudioActivity(event="speech"), is_reference=True)
+    timeline.annotate_span(
+        0,
+        500,
+        AudioActivity(event="speech"),
+        source="vad",
+        is_reference=False,
+    )
+    timeline.annotate_span(0, 500, Speaker("alice"), is_reference=True)
+    timeline.annotate_span(500, 1000, Speaker("bob"), is_reference=True)
+    timeline.annotate_span(
+        0,
+        500,
+        Speaker("speaker_1"),
+        source="diarizer",
+        is_reference=False,
+    )
+    timeline.annotate_span(
+        500,
+        1000,
+        Speaker("speaker_0"),
+        source="diarizer",
+        is_reference=False,
+    )
+    db = AudioDB.create(str(tmp_path / "activity-eval.db"))
+    db.insert(doc)
+
+    result = db.eval_activity("vad")
+
+    assert list(result) == ["vad"]
+    assert result["vad"].f1 == 1.0
+
+    speaker = db.eval_speaker("diarizer")
+    assert list(speaker) == ["diarizer"]
+    assert speaker["diarizer"].reference_speaker_ms == 1000
+    assert speaker["diarizer"].correct_speaker_ms == 1000
+    assert speaker["diarizer"].speaker_confusion_ms == 0
+    assert speaker["diarizer"].der == 0.0
 
 
 def test_database_update_detects_changes(tmp_path):

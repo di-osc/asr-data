@@ -5,13 +5,14 @@ use asr_data::{
     ActivityEvaluation, ActivityEventEvaluation, Annotation, Audio, AudioActivity, AudioChannel,
     AudioChunk, AudioChunks, AudioDataset, AudioDatasetError, AudioDb, AudioDbError, AudioDbInfo,
     AudioDbMode, AudioEncoding, AudioError, AudioFormat, AudioInfo, AudioQuery, AudioSource,
-    AudioStream, CerStats, DEFAULT_QUERY_LIMIT, DatasetActivityEvaluation,
-    DatasetActivityEventEvaluation, DatasetEvalError, DatasetEvaluation, DatasetEvaluator,
-    DatasetTranscriptionEvaluation, DurationMs, MAX_QUERY_LIMIT, SampleIndex, Sentence,
-    SpeakerPayload, TextNormalizationError, TimeRange, TimeSpan, Timeline, TimelineEvalConfig,
-    TimelineEvalError, TimelineEvaluation, Token, Transcript, Transcription,
-    TranscriptionEvaluation, TranscriptionNormalization, Waveform, compute_cer, evaluate_dataset,
-    normalize_for_cer, normalize_zh, read_audio_db_info,
+    AudioStream, CerStats, ChineseTextNormalizationOptions, DEFAULT_QUERY_LIMIT,
+    DatasetActivityEvaluation, DatasetActivityEventEvaluation, DatasetEvalError, DatasetEvaluation,
+    DatasetEvaluator, DatasetSpeakerEvaluation, DatasetTranscriptionEvaluation, DurationMs,
+    MAX_QUERY_LIMIT, SampleIndex, Sentence, SpeakerPayload, TextNormalizationError, TimeRange,
+    TimeSpan, Timeline, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation, Token,
+    Transcript, Transcription, TranscriptionEvaluation, TranscriptionNormalization, Waveform,
+    compute_cer, evaluate_dataset, normalize_for_cer, normalize_zh, normalize_zh_with_options,
+    read_audio_db_info,
 };
 
 #[test]
@@ -59,12 +60,15 @@ fn stable_public_paths_compile() {
     let _: Option<DatasetEvaluation> = None;
     let _: Option<DatasetEvaluator> = None;
     let _: Option<DatasetTranscriptionEvaluation> = None;
+    let _: Option<DatasetSpeakerEvaluation> = None;
     let _: Option<DatasetActivityEvaluation> = None;
     let _: Option<DatasetActivityEventEvaluation> = None;
     let _: Option<TextNormalizationError> = None;
+    let _: Option<ChineseTextNormalizationOptions> = None;
     let _: fn(&str, &str) -> CerStats = compute_cer;
     let _: fn(&str, bool) -> String = normalize_for_cer;
     let _ = normalize_zh("2026");
+    let _ = normalize_zh_with_options("花儿", ChineseTextNormalizationOptions::default());
     let _ = evaluate_dataset([], &TimelineEvalConfig::new());
     let timeline = Timeline::new("mono", DurationMs(1_000));
     let _ = timeline.eval(&TimelineEvalConfig::new().with_transcription("asr"));

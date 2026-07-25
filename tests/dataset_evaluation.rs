@@ -1,7 +1,7 @@
 use asr_data::{
     Annotation, AudioActivity, AudioDb, AudioFormat, AudioInfo, AudioQuery, AudioSource,
-    DatasetEvaluator, DurationMs, TimeRange, TimeSpan, TimelineEvalConfig, Transcription,
-    TranscriptionNormalization, evaluate_dataset,
+    DatasetEvaluator, DurationMs, SpeakerPayload, TimeRange, TimeSpan, TimelineEvalConfig,
+    Transcription, TranscriptionNormalization, evaluate_dataset,
 };
 
 fn doc(id: &str) -> asr_data::Audio {
@@ -34,6 +34,14 @@ fn activity(start: u64, end: u64, event: Option<&str>, source: Option<&str>) -> 
             event: event.map(str::to_owned),
             confidence: None,
         }),
+        source.map(str::to_owned),
+    )
+}
+
+fn speaker(start: u64, end: u64, name: &str, source: Option<&str>) -> TimeSpan {
+    TimeSpan::new(
+        TimeRange::new(DurationMs(start), DurationMs(end)),
+        Annotation::Speaker(SpeakerPayload::new(name)),
         source.map(str::to_owned),
     )
 }
@@ -137,6 +145,42 @@ fn audio_db_evaluation_pages_through_every_matching_document() {
     assert_eq!(result.documents, 101);
     assert_eq!(result.transcription["asr"].evaluated_timelines, 101);
     assert_eq!(result.transcription["asr"].cer(), 0.0);
+
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn audio_db_speaker_evaluation_is_label_invariant() {
+    let path = std::env::temp_dir().join(format!(
+        "asr-data-speaker-eval-{}.db",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let db = AudioDb::create(&path).unwrap();
+    let mut audio = doc("speakers");
+    let timeline = audio.mono_timeline_mut().unwrap();
+    timeline
+        .annotate_span(true, speaker(0, 500, "alice", None))
+        .unwrap();
+    timeline
+        .annotate_span(true, speaker(500, 1_000, "bob", None))
+        .unwrap();
+    timeline
+        .annotate_span(false, speaker(0, 500, "speaker_1", Some("diarizer")))
+        .unwrap();
+    timeline
+        .annotate_span(false, speaker(500, 1_000, "speaker_0", Some("diarizer")))
+        .unwrap();
+    db.insert(&audio).unwrap();
+
+    let result = db
+        .eval_speaker(&AudioQuery::default(), &["diarizer".to_owned()])
+        .unwrap();
+    let diarizer = &result["diarizer"];
+    assert_eq!(diarizer.reference_speaker_ms, 1_000);
+    assert_eq!(diarizer.correct_speaker_ms, 1_000);
+    assert_eq!(diarizer.speaker_confusion_ms, 0);
+    assert_eq!(diarizer.der(), 0.0);
 
     drop(db);
     std::fs::remove_file(path).unwrap();
