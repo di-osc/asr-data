@@ -12,47 +12,28 @@
     display: flex
     justify-content: space-between
     flex-flow: row nowrap
-    padding: 0 0 0 1rem
+    gap: var(--spacing-sm)
+    padding: 0 2.5rem
     z-index: 30
     width: 100%
     box-shadow: var(--box-shadow)
 
-.logo
-    min-width: 95px
-    width: 95px
-    height: 30px
-    color: var(--color-theme-dark) !important
-    vertical-align: middle
-
 .title
     display: flex
     align-items: center
-    gap: 0.65rem
     color: var(--color-theme-dark)
     white-space: nowrap
-
-.title-name
-    font: 700 1.7rem/1 var(--font-secondary)
+    font: 700 2.1rem/1 var(--font-secondary)
     letter-spacing: -0.035em
-
-.title-divider
-    width: 1px
-    height: 1.5rem
-    background: var(--color-subtle-dark)
-    opacity: 0.45
-
-.title-product
-    color: var(--color-subtle-dark)
-    font: 700 1rem/1 var(--font-secondary)
-    letter-spacing: 0.13em
-    text-transform: uppercase
 
 .list
     display: flex
     flex-flow: row nowrap
     border-color: inherit
     justify-content: flex-end
-    margin-bottom: 0.25rem
+    align-items: center
+    gap: 2.2rem
+    margin: 0
 
 .item
     display: inline-flex
@@ -60,39 +41,37 @@
     height: 100%
     text-transform: uppercase
     font-family: var(--font-secondary)
-    font-size: 1.6rem
+    font-size: 1.35rem
     font-weight: bold
     color: var(--color-theme-dark)
-
-    &:not(:first-child)
-        margin-left: 2em
-
-    &:last-child
-        padding-right: 2rem
-
-    &:first-child
-        padding-left: 2rem
 
 .menu
     display: flex
     flex-flow: row nowrap
     margin-left: auto
-    margin-right: var(--spacing-xs)
+    min-width: 0
 
 .root > button
-    margin-right: 2rem
+    margin-left: 0.25rem
 
 .is-active
     color: var(--color-dark)
     pointer-events: none
 
 .github
-    text-transform: initial
-    margin-top: 0.25rem
-    margin-left: 1.5em !important
+    align-items: center
+    border: 1px solid var(--color-subtle)
+    border-radius: 0.5rem
+    color: var(--color-dark)
+    display: inline-flex
+    flex: 0 0 auto
+    font: 600 1.25rem/1 var(--font-secondary)
+    gap: 0.55rem
+    padding: 0.7rem 1rem
 
-    & > span
-        min-width: 100px
+    &:hover
+        background: var(--color-theme-light)
+        color: var(--color-theme-dark)
 
 .dropdown
     --dropdown-text-color: var(--color-theme-dark)
@@ -127,6 +106,16 @@
     text-align: center
 
 @include breakpoint(max, md)
+    .root
+        gap: var(--spacing-xs)
+        padding: 0 var(--spacing-xs)
+
+    .list
+        gap: 1.2rem
+
+    .item
+        font-size: 1.15rem
+
     .alert
         display: none
 
@@ -136,6 +125,15 @@
 
     .has-alert
         display: inline
+
+    .github span
+        display: none
+
+    .github
+        padding: 0.75rem
+
+    .title
+        font-size: 1.8rem
 
 @include breakpoint(min, sm)
     .dropdown
