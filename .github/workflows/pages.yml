@@ -6,8 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to deploy, for example v0.1.1"
-        required: true
+        description: "Branch or release tag to deploy; use main for the latest code"
+        required: false
+        default: main
         type: string
 
 permissions:
