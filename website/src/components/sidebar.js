@@ -1,7 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React from 'react'
 import PropTypes from 'prop-types'
 import classNames from 'classnames'
-import { window } from 'browser-monads'
 
 import Link from './link'
 import Tag from './tag'
@@ -36,18 +35,8 @@ const DropdownNavigation = ({ items, defaultValue }) => {
     )
 }
 
-export default function Sidebar({ items = [], pageMenu = [], slug }) {
-    const [activeSection, setActiveSection] = useState(null)
-    const activeRef = useRef()
+export default function Sidebar({ items = [], slug }) {
     const activeHeading = getActiveHeading(items, slug)
-
-    useEffect(() => {
-        const handleInView = ({ detail }) => setActiveSection(detail)
-        window.addEventListener('DOCS_SCROLL_HANDLER', handleInView, { passive: true })
-        return () => {
-            window.removeEventListener('DOCS_SCROLL_HANDLER', handleInView)
-        }
-    })
 
     return (
         <menu className={classNames('sidebar', classes['root'])}>
@@ -58,8 +47,7 @@ export default function Sidebar({ items = [], pageMenu = [], slug }) {
             {items.map((section, i) => (
                 <ul className={classes['section']} key={i}>
                     <li className={classes['label']}>{section.label}</li>
-                    {section.items.map(({ text, url, tag, onClick, menu, isActive }, j) => {
-                        const currentMenu = menu || pageMenu || []
+                    {section.items.map(({ text, url, tag, onClick, isActive }, j) => {
                         const active = isActive || slug === url
                         const itemClassNames = classNames(classes['link'], {
                             [classes['is-active']]: active,
@@ -67,7 +55,7 @@ export default function Sidebar({ items = [], pageMenu = [], slug }) {
                         })
 
                         return (
-                            <li key={j} ref={active ? activeRef : null}>
+                            <li key={j}>
                                 <Link
                                     to={url}
                                     onClick={onClick}
@@ -77,22 +65,6 @@ export default function Sidebar({ items = [], pageMenu = [], slug }) {
                                     {text}
                                     {tag && <Tag spaced>{tag}</Tag>}
                                 </Link>
-                                {active && !!currentMenu.length && (
-                                    <ul className={classes['crumbs']}>
-                                        {currentMenu.map((crumb) => {
-                                            const currentActive = activeSection || currentMenu[0].id
-                                            const crumbClassNames = classNames(classes['crumb'], {
-                                                [classes['crumb-active']]:
-                                                    currentActive === crumb.id,
-                                            })
-                                            return (
-                                                <li className={crumbClassNames} key={crumb.id}>
-                                                    <a href={`#${crumb.id}`}>{crumb.text}</a>
-                                                </li>
-                                            )
-                                        })}
-                                    </ul>
-                                )}
                             </li>
                         )
                     })}
