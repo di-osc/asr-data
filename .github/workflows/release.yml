@@ -178,6 +178,7 @@ jobs:
     if: github.event_name == 'release' || inputs.publish_crates
     needs: [prepare, upload-release-assets]
     runs-on: ubuntu-latest
+    environment: crates-io
     permissions:
       contents: read
     steps:
