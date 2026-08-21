@@ -23,7 +23,7 @@ Timeline、TimeSpan 或 AudioChunk 的波形视图取得所需样本。
 读取文件、不发起网络请求，也不执行解码；真正的 I/O 发生在 `probe()`、`load()`
 或 `stream()` 时。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > from asr_data import AudioSource
@@ -32,6 +32,20 @@ Timeline、TimeSpan 或 AudioChunk 的波形视图取得所需样本。
 > source = AudioSource.from_url(URL)
 >
 > print(source.kind, source.url)
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::AudioSource;
+>
+> const URL: &str =
+>     "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav";
+>
+> fn main() {
+>     let source = AudioSource::from_url(URL);
+>     println!("{source:?}");
+> }
 > ```
 
 将“来源”和“解码结果”分开有三个目的：
@@ -60,7 +74,7 @@ Timeline、TimeSpan 或 AudioChunk 的波形视图取得所需样本。
 [`AudioInfo`](/asr-data/api#audio-info)，但不会把采样解码为浮点数组。它适合在创建
 标注文档前取得原始采样率、声道数、帧数和时长。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > info = source.probe()
@@ -68,6 +82,23 @@ Timeline、TimeSpan 或 AudioChunk 的波形视图取得所需样本。
 > print(info.sample_rate, info.channels)
 > print(info.frame_count, info.duration_ms)
 > print(info.source_format)
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::AudioSource;
+>
+> const URL: &str =
+>     "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav";
+>
+> fn main() -> anyhow::Result<()> {
+>     let info = AudioSource::from_url(URL).probe()?;
+>     println!("{} {}", info.sample_rate, info.channels);
+>     println!("{} {:.1} ms", info.frame_count, info.duration_ms());
+>     println!("{:?}", info.source_format);
+>     Ok(())
+> }
 > ```
 
 | 属性            | 含义                               |
@@ -88,7 +119,7 @@ Timeline、TimeSpan 或 AudioChunk 的波形视图取得所需样本。
 AudioSource，也可以直接使用 `Audio.from_path()`、`from_url()`、`from_bytes()`、
 `from_base64()` 或 `from_pcm()`。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > from asr_data import Audio
@@ -99,6 +130,24 @@ AudioSource，也可以直接使用 `Audio.from_path()`、`from_url()`、`from_b
 > print(audio.info.duration_ms, audio.timeline("mono").duration_ms)
 > print(waveform.sample_rate, waveform.channels)
 > print(waveform.samples.dtype, waveform.source_format)
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::Audio;
+>
+> const URL: &str =
+>     "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav";
+>
+> fn main() -> anyhow::Result<()> {
+>     let mut audio = Audio::from_url(URL)?;
+>     let waveform = audio.as_waveform()?.to_mono()?.resample(16_000)?;
+>     println!("{} {}", audio.info.duration_ms(), audio.info.channels);
+>     println!("{} {}", waveform.sample_rate, waveform.channels);
+>     println!("{}", waveform.samples.len());
+>     Ok(())
+> }
 > ```
 
 | 对象 | 保存内容 | 典型操作 |
@@ -126,7 +175,7 @@ timeline 或 annotation 时，才需要按相应 API 的规则转换为毫秒整
 `Waveform` 的转换方法不会原地修改已有对象，而是返回新的 `Waveform`。这种设计可以保留原
 始解码结果，并安全地从同一份音频产生不同采样率、声道或时间范围的版本。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > processed = audio.as_waveform().to_mono().resample(16_000)
@@ -136,6 +185,26 @@ timeline 或 annotation 时，才需要按相应 API 的规则转换为毫秒整
 > print("processed:", processed.sample_rate, processed.channels)
 > print("clip:", clip.duration_ms)
 > print("parts:", [part.duration_ms for part in parts])
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::Audio;
+>
+> const URL: &str =
+>     "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav";
+>
+> fn main() -> anyhow::Result<()> {
+>     let mut audio = Audio::from_url(URL)?;
+>     let processed = audio.as_waveform()?.to_mono()?.resample(16_000)?;
+>     let clip = processed.slice_ms(0, 2_000);
+>     let parts = processed.split_at_low_energy(asr_data::DurationMs(1_000))?;
+>     println!("processed: {} {}", processed.sample_rate, processed.channels);
+>     println!("clip: {:.1} ms", clip.duration_ms());
+>     println!("parts: {}", parts.len());
+>     Ok(())
+> }
 > ```
 
 常用操作包括：
@@ -160,6 +229,14 @@ audio.display(end_ms=2_000)
 timeline.display(start_ms=500, end_ms=1_500)
 ```
 
+Rust 中可直接取得相同时间范围的波形；播放由调用侧的音频输出工具负责：
+
+```rust
+let clip = audio.as_waveform()?.slice_ms(0, 2_000);
+let timeline_clip = timeline.as_waveform()?.slice_ms(500, 1_500);
+println!("{} {}", clip.frame_count(), timeline_clip.frame_count());
+```
+
 多声道样本按 frame 交错保存，`frame_count` 表示每个声道的帧数，而不是 `samples`
 数组的元素总数。`slice_ms()` 和低能量切分会保留声道布局；需要单声道时应显式调用
 `to_mono()`。
@@ -169,7 +246,7 @@ timeline.display(start_ms=500, end_ms=1_500)
 完整加载适合需要随机切片、全局分析或反复处理的音频；流式加载适合边接收边推理、控
 制单次处理粒度或尽快得到首个结果的场景。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > from asr_data import AudioStream
@@ -184,6 +261,27 @@ timeline.display(start_ms=500, end_ms=1_500)
 >     print(chunk.end_ms, timeline.duration_ms, model_input.frame_count)
 >
 > streamed_audio = stream.to_audio()
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{AudioChannel, AudioStream};
+>
+> const URL: &str =
+>     "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav";
+>
+> fn main() -> anyhow::Result<()> {
+>     let mut stream = AudioStream::from_url(URL, 500)?;
+>     while let Some(chunk) = stream.next() {
+>         let chunk = chunk?;
+>         let timeline = stream.timeline(AudioChannel::Mono)?.unwrap();
+>         println!("{} {} {}", chunk.end_ms(), timeline.duration.0, chunk.frame_count());
+>     }
+>     let streamed_audio = stream.into_audio()?;
+>     println!("{}", streamed_audio.info.frame_count);
+>     Ok(())
+> }
 > ```
 
 `source.stream(chunk_size_ms=...)` 与 `AudioStream.from_*()` 都返回

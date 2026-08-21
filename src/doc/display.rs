@@ -4,13 +4,14 @@ use std::io::{self, IsTerminal};
 
 use crate::audio::{AudioChannel, AudioEncoding, AudioSource};
 use crate::timeline::{Annotation, TimeSpan};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::Audio;
 
 const DEFAULT_WIDTH: usize = 80;
 const MIN_WIDTH: usize = 56;
 const MAX_WIDTH: usize = 120;
-const LABEL_WIDTH: usize = 11;
+const LABEL_WIDTH: usize = 28;
 const WAVE_LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
 const RESET: &str = "\x1b[0m";
@@ -34,6 +35,19 @@ impl<'a> AudioTerminalView<'a> {
             .unwrap_or(DEFAULT_WIDTH)
             .clamp(MIN_WIDTH, MAX_WIDTH);
         let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
+        Self {
+            audio,
+            width,
+            color,
+        }
+    }
+
+    pub(super) fn with_color(audio: &'a Audio, color: bool) -> Self {
+        let width = env::var("COLUMNS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(DEFAULT_WIDTH)
+            .clamp(MIN_WIDTH, MAX_WIDTH);
         Self {
             audio,
             width,
@@ -74,7 +88,10 @@ impl<'a> AudioTerminalView<'a> {
         );
         self.write_card_line(formatter, &self.audio.id)?;
         self.write_card_line(formatter, &info)?;
-        self.write_card_line(formatter, &source_name(&self.audio.source))?;
+        self.write_card_line(
+            formatter,
+            &format!("source: {}", source_name(&self.audio.source)),
+        )?;
 
         let bottom = format!("╰{}╯", "─".repeat(self.width.saturating_sub(2)));
         writeln!(formatter, "{}", self.paint(BOLD_CYAN, &bottom))
@@ -83,7 +100,7 @@ impl<'a> AudioTerminalView<'a> {
     fn write_card_line(&self, formatter: &mut fmt::Formatter<'_>, value: &str) -> fmt::Result {
         let content_width = self.width.saturating_sub(4);
         let value = truncate(value, content_width);
-        let padding = content_width.saturating_sub(value.chars().count());
+        let padding = content_width.saturating_sub(display_width(&value));
         writeln!(formatter, "│ {value}{} │", " ".repeat(padding))
     }
 
@@ -123,34 +140,39 @@ impl<'a> AudioTerminalView<'a> {
             )?;
 
             if !timeline.reference.is_empty() {
-                let track = annotation_track(&timeline.reference, duration_ms, plot_width, true);
-                writeln!(
+                write_annotation_groups(
                     formatter,
-                    "{:<LABEL_WIDTH$}{}",
                     "Reference",
-                    self.paint(BLUE, &track),
+                    &timeline.reference,
+                    duration_ms,
+                    plot_width,
+                    self.width,
+                    BLUE,
+                    self.color,
                 )?;
             }
             if !timeline.prediction.is_empty() {
-                let track = annotation_track(&timeline.prediction, duration_ms, plot_width, false);
-                writeln!(
+                write_annotation_groups(
                     formatter,
-                    "{:<LABEL_WIDTH$}{}",
                     "Prediction",
-                    self.paint(YELLOW, &track),
+                    &timeline.prediction,
+                    duration_ms,
+                    plot_width,
+                    self.width,
+                    YELLOW,
+                    self.color,
                 )?;
             }
         }
 
-        let sample_count = self
+        let footer_label = self
             .audio
             .waveform
             .as_ref()
-            .map_or(0, |waveform| waveform.samples.len());
-        let footer = centered_rule(
-            &format!("{} samples", grouped_number(sample_count as u64)),
-            plot_width,
-        );
+            .map_or("waveform unavailable".to_owned(), |waveform| {
+                format!("{} samples", grouped_number(waveform.samples.len() as u64))
+            });
+        let footer = centered_rule(&footer_label, plot_width);
         write!(
             formatter,
             "{}{}",
@@ -201,7 +223,19 @@ fn channel_count_name(channels: u16) -> String {
 fn source_name(source: &AudioSource) -> String {
     match source {
         AudioSource::Path(path) => path.display().to_string(),
-        AudioSource::Url(url) => url.clone(),
+        AudioSource::Url(url) => {
+            let without_query = url.split(['?', '#']).next().unwrap_or(url);
+            let filename = without_query
+                .rsplit('/')
+                .next()
+                .filter(|value| !value.is_empty());
+            match (reqwest::Url::parse(without_query).ok(), filename) {
+                (Some(parsed), Some(filename)) => {
+                    format!("{}…/{}", parsed.host_str().unwrap_or("url"), filename)
+                }
+                _ => without_query.to_owned(),
+            }
+        }
         AudioSource::Base64(data) => format!("[base64 audio · {} characters]", data.len()),
         AudioSource::EncodedBytes(bytes) => {
             format!(
@@ -326,7 +360,7 @@ fn format_time(time_ms: u64) -> String {
 }
 
 fn annotation_track(
-    annotations: &[TimeSpan],
+    annotations: &[&TimeSpan],
     duration_ms: u64,
     width: usize,
     reference: bool,
@@ -348,15 +382,96 @@ fn annotation_track(
         if end > start + 1 {
             track[end - 1] = '╯';
         }
-
-        let available = end.saturating_sub(start + 2);
-        if available >= 3 {
-            let label = truncate(&annotation_label(span), available);
-            let label_start = start + 1 + available.saturating_sub(label.chars().count()) / 2;
-            overlay(&mut track, label_start, &label);
-        }
     }
     track.into_iter().collect()
+}
+
+fn write_annotation_groups(
+    formatter: &mut fmt::Formatter<'_>,
+    role: &str,
+    annotations: &[TimeSpan],
+    duration_ms: u64,
+    plot_width: usize,
+    width: usize,
+    color: &str,
+    colored: bool,
+) -> fmt::Result {
+    for (title, group) in annotation_groups(role, annotations) {
+        let track = annotation_track(&group, duration_ms, plot_width, role == "Reference");
+        let track_label = truncate(&title, LABEL_WIDTH);
+        writeln!(
+            formatter,
+            "{track_label:<LABEL_WIDTH$}{}",
+            paint(color, &track, colored),
+        )?;
+        write_annotation_box(formatter, &title, &group, width)?;
+    }
+    Ok(())
+}
+
+fn annotation_groups<'a>(
+    role: &str,
+    annotations: &'a [TimeSpan],
+) -> Vec<(String, Vec<&'a TimeSpan>)> {
+    let mut groups: Vec<(String, Vec<&TimeSpan>)> = Vec::new();
+    for annotation in annotations {
+        let source = annotation.source.as_deref().unwrap_or("reference");
+        let title = if role == "Reference" {
+            format!("{role} · {}", annotation_type_name(&annotation.annotation))
+        } else {
+            format!(
+                "{role} · {} · {source}",
+                annotation_type_name(&annotation.annotation)
+            )
+        };
+        if let Some((_, values)) = groups.iter_mut().find(|(key, _)| key == &title) {
+            values.push(annotation);
+        } else {
+            groups.push((title, vec![annotation]));
+        }
+    }
+    groups
+}
+
+fn annotation_type_name(annotation: &Annotation) -> &'static str {
+    match annotation {
+        Annotation::Activity(_) => "Activity",
+        Annotation::Token(_) => "Token",
+        Annotation::Transcription(_) => "Transcription",
+        Annotation::Sentence(_) => "Sentence",
+        Annotation::Speaker(_) => "Speaker",
+        Annotation::Language(_) => "Language",
+    }
+}
+
+fn write_annotation_box(
+    formatter: &mut fmt::Formatter<'_>,
+    name: &str,
+    annotations: &[&TimeSpan],
+    width: usize,
+) -> fmt::Result {
+    let content_width = width.saturating_sub(4);
+    let title = format!(" {name} ");
+    let title_width = display_width(&title);
+    writeln!(
+        formatter,
+        "╭─{}{}╮",
+        title,
+        "─".repeat(width.saturating_sub(3 + title_width))
+    )?;
+    for span in annotations {
+        let label = format!(
+            "{}–{}  {}",
+            format_time(span.range.start.0),
+            format_time(span.range.end.0),
+            annotation_label(span),
+        );
+        let value = truncate(&label, content_width);
+        let padding = content_width.saturating_sub(display_width(&value));
+        writeln!(formatter, "│ {value}{} │", " ".repeat(padding))?;
+    }
+    writeln!(formatter, "╰{}╯", "─".repeat(width.saturating_sub(2)))?;
+    Ok(())
 }
 
 fn annotation_label(span: &TimeSpan) -> String {
@@ -405,7 +520,7 @@ fn grouped_number(value: u64) -> String {
 }
 
 fn truncate(value: &str, width: usize) -> String {
-    if value.chars().count() <= width {
+    if display_width(value) <= width {
         return value.to_owned();
     }
     if width == 0 {
@@ -414,9 +529,28 @@ fn truncate(value: &str, width: usize) -> String {
     if width == 1 {
         return "…".to_owned();
     }
-    let mut result: String = value.chars().take(width - 1).collect();
+    let mut result = String::new();
+    for character in value.chars() {
+        let character_width = character.width().unwrap_or(0);
+        if display_width(&result) + character_width + 1 > width {
+            break;
+        }
+        result.push(character);
+    }
     result.push('…');
     result
+}
+
+fn display_width(value: &str) -> usize {
+    UnicodeWidthStr::width(value)
+}
+
+fn paint(style: &str, value: &str, color: bool) -> String {
+    if color {
+        format!("{style}{value}{RESET}")
+    } else {
+        value.to_owned()
+    }
 }
 
 fn overlay(target: &mut [char], start: usize, value: &str) {
@@ -476,7 +610,7 @@ mod tests {
 
         let output = format!("{}", AudioTerminalView::new(&audio, 64, false));
 
-        assert!(output.contains("Reference  "));
+        assert!(output.contains("Reference · Activity"));
         assert!(output.contains("speech"));
         assert!(output.contains('═'));
     }

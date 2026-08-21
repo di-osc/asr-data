@@ -14,11 +14,25 @@ menu:
 
 ## 音频 {id="document"}
 
+Rust 示例：
+
+```rust
+use asr_data::Audio;
+
+fn main() -> anyhow::Result<()> {
+    let audio = Audio::from_url(
+        "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav",
+    )?;
+    println!("{}", audio.info.duration_ms());
+    Ok(())
+}
+```
+
 [`Audio`](/asr-data/api#audio) 是音频、时间轴与标注的共同所有者。它把原始
 [`AudioSource`](/asr-data/api#audio-source)、`info`、文档 ID、业务元数据、运行时
 波形和多个声道 timeline 组织为一个对象。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > from asr_data import AudioSource
@@ -27,6 +41,21 @@ menu:
 > audio = AudioSource.from_url(URL).load(id="example-001")
 > audio.metadata["split"] = "train"
 > print(audio.info.duration_ms, audio.timelines.keys())
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{Audio, AudioSource};
+>
+> fn main() -> anyhow::Result<()> {
+>     let audio = Audio::with_id(
+>         "example-001",
+>         AudioSource::from_url("https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"),
+>     )?;
+>     println!("{}", audio.info.duration_ms());
+>     Ok(())
+> }
 > ```
 
 数据库只保存 Audio 的可重建状态，不保存大块浮点样本。从数据库读取后，第一次访问
@@ -48,11 +77,27 @@ menu:
 每个 [`Timeline`](/asr-data/api#timeline) 对应一个声道，并共享整条文档的
 duration。 annotation 的所有时间范围都相对于所属 timeline 的起点。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > timeline = audio.timeline("mono")
 > print(timeline.duration_ms, audio.timelines.keys())
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{Audio, AudioChannel, AudioSource};
+>
+> fn main() -> anyhow::Result<()> {
+>     let audio = Audio::with_id(
+>         "example-001",
+>         AudioSource::from_url("https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"),
+>     )?;
+>     let timeline = audio.timeline(AudioChannel::Mono)?.unwrap();
+>     println!("{}", timeline.duration.0);
+>     Ok(())
+> }
 > ```
 
 创建 `Audio` 时会调用 `source.probe()`，保存 `info`，并根据声道自动创建
@@ -82,7 +127,7 @@ AudioActivity、Token、Transcription 或 Speaker，分别表达声音事件、�
 Transcription 和 Token 分别保存各自语义下的 `confidence`。因此说话人识别、
 整句转写和 token 可以同时保留彼此独立的置信度。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > from asr_data.annotation import AudioActivity, Speaker, Transcription
@@ -100,6 +145,26 @@ Transcription 和 Token 分别保存各自语义下的 `confidence`。因此说�
 > prediction = timeline.annotate_span(
 >     0, end_ms, transcription, is_reference=False, source="qwen-asr"
 > )
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{Annotation, AudioActivity, DurationMs, TimeRange, TimeSpan, Timeline, Transcription};
+>
+> fn main() -> anyhow::Result<()> {
+>     let mut timeline = Timeline::new("example-001", DurationMs(1_000));
+>     timeline.annotate_span(true, TimeSpan::new(
+>         TimeRange::new(DurationMs(0), DurationMs(1_000)),
+>         Annotation::Activity(AudioActivity::new().with_event("speech")), None,
+>     ))?;
+>     timeline.annotate_span(false, TimeSpan::new(
+>         TimeRange::new(DurationMs(0), DurationMs(1_000)),
+>         Annotation::Transcription(Transcription::new("甚至出现交易几乎停滞的情况")),
+>         Some("qwen-asr".to_owned()),
+>     ))?;
+>     Ok(())
+> }
 > ```
 
 ### 参考标注与预测标注 {id="groups"}
@@ -147,6 +212,11 @@ Timeline 将 annotation 分成两个集合，避免真值与模型结果混在�
 ```python
 speaker_waveform = speaker_annotation.as_waveform()
 timeline_waveform = timeline.as_waveform()
+```
+
+```rust
+let speaker_waveform = speaker_annotation.as_waveform()?;
+let timeline_waveform = timeline.as_waveform()?;
 ```
 
 ### 完整校验规范 {id="validation"}
@@ -237,7 +307,7 @@ Rust 的 `reference` 和 `prediction` 是公开 `Vec`，可以绕过 `annotate_s
 不传参数时会自动发现所有可评测 source；也可以分别通过 `transcription` 和
 `activity` 限定一个或多个来源。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > timeline.annotate_span(
@@ -252,6 +322,19 @@ Rust 的 `reference` 和 `prediction` 是公开 `Vec`，可以绕过 `annotate_s
 > print(evaluation.activity["silero-vad"].events["speech"].f1)
 > ```
 
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{DurationMs, Timeline, TimelineEvalConfig};
+>
+> fn main() -> anyhow::Result<()> {
+>     let timeline = Timeline::new("example-001", DurationMs(1_000));
+>     let evaluation = timeline.eval(&TimelineEvalConfig::new())?;
+>     println!("{}", evaluation.transcription.len());
+>     Ok(())
+> }
+> ```
+
 自动发现转写来源时会检查 Transcription、Sentence，以及带 transcription 的
 Speaker；Activity 来源只来自 AudioActivity prediction。显式参数接受字符串或字符
 串列表：
@@ -261,6 +344,14 @@ selected = timeline.eval(
     transcription=["qwen-asr", "whisper"],
     activity="silero-vad",
 )
+```
+
+```rust
+let selected = timeline.eval(
+    &TimelineEvalConfig::new()
+        .with_transcriptions(["qwen-asr", "whisper"])
+        .with_activity("silero-vad"),
+)?;
 ```
 
 只传入其中一个参数时只评测该任务。显式来源不存在时抛出错误；完全没有可评测的
@@ -297,6 +388,20 @@ raw = timeline.eval(transcription="qwen-asr", normalize=False)
 print(raw.transcription["qwen-asr"].cer)
 ```
 
+```rust
+let raw = timeline.eval(
+    &TimelineEvalConfig::new()
+        .with_transcription("qwen-asr")
+        .with_transcription_normalization(TranscriptionNormalization::None)
+        .with_traditional_to_simple(false)
+        .with_full_to_half(false)
+        .with_remove_erhua(false)
+        .with_remove_interjections(false)
+        .with_remove_puncts(false),
+)?;
+println!("{}", raw.transcription["qwen-asr"].cer());
+```
+
 这些中文清理选项会同时作用于 reference 和 prediction，且默认均为 `True`。如果
 某个数据集需要保留对应现象，可以单独关闭：
 
@@ -306,6 +411,15 @@ cleaned = timeline.eval(
     remove_erhua=False,
     remove_interjections=False,
 )
+```
+
+```rust
+let cleaned = timeline.eval(
+    &TimelineEvalConfig::new()
+        .with_transcription("qwen-asr")
+        .with_remove_erhua(false)
+        .with_remove_interjections(false),
+)?;
 ```
 
 处理顺序为繁转简、中文 TN、去儿化、全角转半角、去语气词、去标点。去语气词覆盖
@@ -373,6 +487,11 @@ print(activity["silero-vad"].f1)
 print(activity["silero-vad"].events["speech"].f1)
 ```
 
+```rust
+let memory_result = evaluate_dataset(&docs, &TimelineEvalConfig::new())?;
+println!("{}", memory_result.transcription["qwen-asr"].cer());
+```
+
 数据集 CER 累加每条 timeline 的替换、删除、插入和参考字符数后计算，不会平均单条
 CER，也不会把不同文档的文本拼接后对齐。Activity 的整体指标与各 event 指标都先累
 加各 timeline 的 TP、TN、FP、FN 毫秒数，再计算总体 precision、recall、F1 和 IoU。
@@ -386,7 +505,7 @@ CER，也不会把不同文档的文本拼接后对齐。Activity 的整体指�
 Timeline 提供组合转写、按来源查询和批量维护等便捷方法，不需要使用者手动遍历全部
 annotation。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > reference_text = timeline.reference.transcript()
@@ -400,6 +519,24 @@ annotation。
 > print(predicted_text.text)
 > print(timeline.prediction.sources["transcription"], len(items))
 > audio.validate()
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{Audio, AudioSource};
+>
+> fn main() -> anyhow::Result<()> {
+>     let audio = Audio::with_id(
+>         "example-001",
+>         AudioSource::from_url("https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"),
+>     )?;
+>     for timeline in audio.timelines().values() {
+>         println!("{} annotations", timeline.span_count());
+>     }
+>     audio.validate()?;
+>     Ok(())
+> }
 > ```
 
 | 方法                                  | 作用                             |

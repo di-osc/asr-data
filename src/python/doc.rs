@@ -511,6 +511,36 @@ impl PyAudio {
         let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
         Ok(audio.terminal_view().to_string())
     }
+
+    fn _repr_html_(&self) -> PyResult<String> {
+        let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
+        let rendered = audio.terminal_view_with_color(true).to_string();
+        Ok(format!(
+            "<pre style=\"margin:0; color:#d4d4d4; background:#1e1e1e; padding:1em; border-radius:8px; overflow-x:auto;\">{}</pre>",
+            ansi_to_html(&rendered)
+        ))
+    }
+}
+
+fn ansi_to_html(value: &str) -> String {
+    html_escape(value)
+        .replace(
+            "\u{1b}[1;36m",
+            "<span style=\"color:#67e8f9;font-weight:700\">",
+        )
+        .replace("\u{1b}[2m", "<span style=\"color:#94a3b8\">")
+        .replace("\u{1b}[32m", "<span style=\"color:#86efac\">")
+        .replace("\u{1b}[34m", "<span style=\"color:#93c5fd\">")
+        .replace("\u{1b}[33m", "<span style=\"color:#fde68a\">")
+        .replace("\u{1b}[0m", "</span>")
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {

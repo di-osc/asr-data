@@ -30,6 +30,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "unicode-general-category",
+ "unicode-width",
  "urlencoding",
  "uuid",
 ]

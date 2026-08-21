@@ -31,6 +31,10 @@ impl Audio {
         display::AudioTerminalView::auto(self)
     }
 
+    pub fn terminal_view_with_color(&self, color: bool) -> impl std::fmt::Display + '_ {
+        display::AudioTerminalView::with_color(self, color)
+    }
+
     pub fn from_path(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
         AudioSource::from_path(path).load()
     }
@@ -344,6 +348,12 @@ impl Audio {
             })?;
         }
         Ok(())
+    }
+}
+
+impl std::fmt::Display for Audio {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.terminal_view().fmt(formatter)
     }
 }
 

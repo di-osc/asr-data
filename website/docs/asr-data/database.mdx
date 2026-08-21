@@ -19,10 +19,23 @@ timeline、annotation 和业务元数据，不复制解码后的浮点样本。
 
 ## 打开数据库 {id="open"}
 
+Rust 示例：
+
+```rust
+use asr_data::{AudioDb, AudioDbMode};
+
+fn main() -> anyhow::Result<()> {
+    let db = AudioDb::create("dataset.vasr")?;
+    drop(db);
+    let _db = AudioDb::open("dataset.vasr", AudioDbMode::ReadOnly)?;
+    Ok(())
+}
+```
+
 使用 `AudioDB.create(path)` 创建新数据库，使用 `AudioDB.open(path)` 打开已有
 数据库。两个入口不会互相兜底，因此路径写错时不会意外创建空数据库。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > from tempfile import TemporaryDirectory
@@ -33,6 +46,20 @@ timeline、annotation 和业务元数据，不复制解码后的浮点样本。
 > path = f"{directory.name}/dataset.db"
 > db = AudioDB.create(path)
 > opened = AudioDB.open(path)
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{AudioDb, AudioDbMode};
+>
+> fn main() -> anyhow::Result<()> {
+>     let path = "dataset.vasr";
+>     let db = AudioDb::create(path)?;
+>     drop(db);
+>     let _db = AudioDb::open(path, AudioDbMode::ReadOnly)?;
+>     Ok(())
+> }
 > ```
 
 `create()` 在文件已经存在时抛出 `FileExistsError`；`open()` 在文件不存在时抛出
@@ -52,7 +79,7 @@ URL；即使原始来源暂时不可用，仍然可以读取采样率、声道�
 [`AudioDB`](/asr-data/api#audio-db) 同时提供显式方法和类似字典的读取协议。插入、
 更新和删除都以 [`Audio`](/asr-data/api#audio) ID 为记录主键。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > from asr_data import Audio, AudioSource
@@ -74,6 +101,25 @@ URL；即使原始来源暂时不可用，仍然可以读取采样率、声道�
 >
 > print(changed, deleted)
 > db.insert(loaded)  # 供后续示例继续使用
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{Audio, AudioDb, AudioSource};
+>
+> fn main() -> anyhow::Result<()> {
+>     let db = AudioDb::create("dataset.vasr")?;
+>     let audio = Audio::with_id(
+>         "call-001",
+>         AudioSource::from_url("https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"),
+>     )?;
+>     db.insert(&audio)?;
+>     let loaded = db.get("call-001")?.unwrap();
+>     println!("{}", loaded.id);
+>     db.delete("call-001")?;
+>     Ok(())
+> }
 > ```
 
 | 操作                | 行为                                           |
@@ -103,7 +149,7 @@ URL；即使原始来源暂时不可用，仍然可以读取采样率、声道�
 Audio ID 游标分页。时间参数只接受带时区的 Python `datetime`，内部统一转换为
 UTC Unix 毫秒。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > from datetime import datetime, timedelta, timezone
@@ -117,6 +163,21 @@ UTC Unix 毫秒。
 >     metadata={"split": "train"},
 > )
 > print([item.id for item in page])
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{AudioDb, AudioQuery};
+>
+> fn main() -> anyhow::Result<()> {
+>     let db = AudioDb::open("dataset.vasr", asr_data::AudioDbMode::ReadOnly)?;
+>     let mut query = AudioQuery::default();
+>     query.limit = 10;
+>     let page = db.query(&query)?;
+>     for audio in page { println!("{}", audio.id); }
+>     Ok(())
+> }
 > ```
 
 时间范围统一使用半开区间：
@@ -136,6 +197,13 @@ from <= timestamp < until
 next_page = db.query(limit=10, after=page[-1].id)
 ```
 
+```rust
+let mut next_query = AudioQuery::default();
+next_query.limit = 10;
+next_query.after = page.last().map(|audio| audio.id.clone());
+let next_page = db.query(&next_query)?;
+```
+
 `after` 是游标而不是数字页码，因此即使数据库较大，也不需要跳过前面所有记录。
 metadata 过滤要求存储值与查询值匹配，适合数据集 split、语言、来源和审核状态等结
 构化字段。
@@ -146,7 +214,7 @@ metadata 过滤要求存储值与查询值匹配，适合数据集 split、语�
 或 `eval_speaker()`。三个方法都使用与 `query()` 相同的筛选条件，通过 Audio ID
 游标自动读取全部匹配记录；`batch_size` 只控制单批读取量。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > transcription = db.eval_transcription(
@@ -165,6 +233,19 @@ metadata 过滤要求存储值与查询值匹配，适合数据集 split、语�
 > print(activity["silero-vad"].events["speech"].f1)
 > ```
 
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{AudioDb, AudioQuery, TimelineEvalConfig};
+>
+> fn main() -> anyhow::Result<()> {
+>     let db = AudioDb::open("dataset.vasr", asr_data::AudioDbMode::ReadOnly)?;
+>     let result = db.eval(&AudioQuery::default(), &TimelineEvalConfig::new())?;
+>     println!("{}", result.transcription.len());
+>     Ok(())
+> }
+> ```
+
 不传 source 时自动发现该任务全部可评测来源。结果按 source 分组，并记录缺少
 reference、缺少 prediction 和实际参与聚合的 timeline 数量。只读数据库同样可以
 执行评测。
@@ -179,6 +260,12 @@ transcription = db.eval_transcription(
     metadata={"split": "test"},
 )
 print(transcription["qwen-asr"].cer)
+```
+
+```rust
+let config = TimelineEvalConfig::new().with_transcription("qwen-asr");
+let result = db.eval(&AudioQuery::default(), &config)?;
+println!("{}", result.transcription["qwen-asr"].cer());
 ```
 
 处理顺序为繁体转简体、TN tagger、普通或去儿化 verbalizer、全角转半角、去语气词、
@@ -196,6 +283,16 @@ print(activity["silero-vad"].f1)
 print(speaker["diarizer"].der)
 ```
 
+```rust
+let activity = db.eval(
+    &AudioQuery::default(),
+    &TimelineEvalConfig::new().with_activity("silero-vad"),
+)?;
+let speaker = db.eval_speaker(&AudioQuery::default(), &["diarizer".to_owned()])?;
+println!("{}", activity.activity["silero-vad"].f1());
+println!("{}", speaker["diarizer"].der());
+```
+
 Speaker 评测在每条 timeline 内使用最佳一一映射消除 speaker label 命名差异，再累计
 漏检、误检和说话人混淆的 speaker-time。DER 为三类错误时长之和除以 reference
 speaker-time，不使用 collar；重叠说话按同时活跃的 speaker 数量计数。
@@ -205,12 +302,25 @@ speaker-time，不使用 collar；重叠说话按同时活跃的 speaker 数量�
 数据库级 metadata 描述整个数据集，不属于任何一条 Audio，适合保存数据集版本、
 标注批次或模型配置。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > db.set_metadata("dataset_version", "2026-07")
 > print(db.metadata_value("dataset_version"))
 > print(db.metadata)
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{AudioDb, AudioDbMode};
+>
+> fn main() -> anyhow::Result<()> {
+>     let db = AudioDb::open("dataset.vasr", AudioDbMode::ReadWrite)?;
+>     db.set_metadata("dataset_version", &serde_json::json!("2026-07"))?;
+>     println!("{:?}", db.metadata("dataset_version")?);
+>     Ok(())
+> }
 > ```
 
 `set_metadata(key, value)` 新增或覆盖一个值，`metadata_value(key)` 查询单个值，
@@ -234,7 +344,7 @@ speaker-time，不使用 collar；重叠说话按同时活跃的 speaker 数量�
 未提供的切分返回 `None`。本地低层构造不推断仓库身份，因此三个身份字段为空
 字符串。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > from pathlib import Path
@@ -249,6 +359,21 @@ speaker-time，不使用 collar；重叠说话按同时活跃的 speaker 数量�
 > print(len(local_dataset.train), local_dataset.val, len(local_dataset.test))
 > ```
 
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{AudioDataset, AudioDb};
+>
+> fn main() -> anyhow::Result<()> {
+>     let train = AudioDb::create("train.vasr")?;
+>     let test = AudioDb::create("test.vasr")?;
+>     let dataset = AudioDataset::new(Some(("train.vasr".into(), train)), None,
+>         Some(("test.vasr".into(), test)));
+>     println!("{}", dataset.train().unwrap().len()?);
+>     Ok(())
+> }
+> ```
+
 每个切分都是完整的 AudioDB，因此在目标切分上直接使用查询、评测、索引和迭代
 接口：
 
@@ -259,13 +384,20 @@ for audio in local_dataset.val:
     print(audio.id)
 ```
 
+```rust
+let page = dataset.train().unwrap().query(&Default::default())?;
+for audio in page {
+    println!("{}", audio.id);
+}
+```
+
 ### 从 ModelScope 加载 {id="audio-dataset-modelscope"}
 
 ModelScope 仓库通过 Rust [`modelhub`](https://crates.io/crates/modelhub) crate
 完整下载和缓存。快照中的 `train.db`、`val.db`、`test.db` 都是可选文件：存在时
 只读打开，不存在时对应属性返回 `None`。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > from asr_data import AudioDataset
@@ -282,6 +414,21 @@ ModelScope 仓库通过 Rust [`modelhub`](https://crates.io/crates/modelhub) cra
 > if dataset.test is not None:
 >     for audio in dataset.test:
 >         print(audio.id)
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::AudioDataset;
+>
+> #[tokio::main]
+> async fn main() -> anyhow::Result<()> {
+>     let dataset = AudioDataset::from_modelscope("di-osc/aishell-1", None, None).await?;
+>     if let Some(test) = dataset.test() {
+>         for audio in test { println!("{}", audio?.id); }
+>     }
+>     Ok(())
+> }
 > ```
 
 `name` 直接使用 `repo_id`，`version` 使用实际加载的 revision，`license` 读取
@@ -315,11 +462,25 @@ ModelScope 仓库通过 Rust [`modelhub`](https://crates.io/crates/modelhub) cra
 
 评测集、发布快照或其他不应被修改的数据库，可以使用 `read_only=True` 打开。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > read_only = AudioDB.open(path, read_only=True)
 > print(read_only["call-001"].id)
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::{AudioDb, AudioDbMode};
+>
+> fn main() -> anyhow::Result<()> {
+>     let db = AudioDb::open("dataset.vasr", AudioDbMode::ReadOnly)?;
+>     if let Some(audio) = db.get("call-001")? {
+>         println!("{}", audio.id);
+>     }
+>     Ok(())
+> }
 > ```
 
 只读模式要求文件已经存在且格式有效，读取、查询和迭代仍然可用；插入、更新、删除以

@@ -29,6 +29,20 @@ Rust 项目可以直接添加 crate：
 cargo add asr-data
 ```
 
+Rust 快速开始：
+
+```rust
+use asr_data::Audio;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let audio = Audio::from_url(
+        "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav",
+    )?;
+    println!("{audio}");
+    Ok(())
+}
+```
+
 ## 核心概念 {id="concepts"}
 
 下图展示了从音频来源、运行时波形到时间轴标注和数据库持久化的完整关系：
@@ -126,6 +140,57 @@ loaded = db[audio.id]
 loaded_timeline = loaded.timeline("mono")
 print(loaded_timeline.reference.transcript().text)
 print(loaded_timeline.prediction.transcript("qwen-asr").text)
+```
+
+Rust 对照：
+
+```rust
+use asr_data::{Audio, AudioChannel, AudioDb, AudioSource};
+
+fn main() -> anyhow::Result<()> {
+    let audio = Audio::with_id(
+        "example-001",
+        AudioSource::from_url("https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"),
+    )?;
+    let db = AudioDb::create("dataset.db")?;
+    db.insert(&audio)?;
+    let loaded = db.get("example-001")?.unwrap();
+    let timeline = loaded.timeline(AudioChannel::Mono)?.unwrap();
+    println!("{}", timeline.duration.0);
+    Ok(())
+}
+```
+
+Rust 版本：
+
+```rust
+use asr_data::{
+    Annotation, Audio, AudioActivity, AudioChannel, AudioDb, AudioSource, DurationMs,
+    TimeRange, TimeSpan, Transcription,
+};
+
+fn main() -> anyhow::Result<()> {
+    let source = AudioSource::from_url(
+        "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav",
+    );
+    let mut audio = Audio::with_id("example-001", source)?;
+    let end = audio.info.timeline_duration_ms();
+    let timeline = audio.timeline_mut(AudioChannel::Mono)?.unwrap();
+    timeline.annotate_span(true, TimeSpan::new(
+        TimeRange::new(DurationMs(0), DurationMs(end)),
+        Annotation::Activity(AudioActivity::new().with_event("speech")), None,
+    ))?;
+    timeline.annotate_span(false, TimeSpan::new(
+        TimeRange::new(DurationMs(0), DurationMs(end)),
+        Annotation::Transcription(Transcription::new("甚至出现交易几乎停滞的情况")),
+        Some("qwen-asr".to_owned()),
+    ))?;
+
+    let db = AudioDb::create("dataset.db")?;
+    db.insert(&audio)?;
+    println!("{}", audio.id);
+    Ok(())
+}
 ```
 
 <Infobox title="时间单位">
