@@ -1,3 +1,5 @@
+mod display;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,6 +26,11 @@ pub struct Audio {
 }
 
 impl Audio {
+    /// Renders a compact, terminal-friendly audio summary and timeline.
+    pub fn terminal_view(&self) -> impl std::fmt::Display + '_ {
+        display::AudioTerminalView::auto(self)
+    }
+
     pub fn from_path(path: impl Into<PathBuf>) -> anyhow::Result<Self> {
         AudioSource::from_path(path).load()
     }

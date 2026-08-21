@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -25,13 +27,25 @@ pub enum AudioError {
     IncompleteFrame { samples: usize, channels: u16 },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Waveform {
     pub samples: Vec<f32>,
     pub sample_rate: u32,
     pub channels: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_format: Option<AudioFormat>,
+}
+
+impl fmt::Debug for Waveform {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Waveform")
+            .field("sample_count", &self.samples.len())
+            .field("sample_rate", &self.sample_rate)
+            .field("channels", &self.channels)
+            .field("source_format", &self.source_format)
+            .finish()
+    }
 }
 
 /// A frame-aligned piece of streamed audio with its position in the source.

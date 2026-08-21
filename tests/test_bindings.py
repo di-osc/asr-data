@@ -1141,7 +1141,14 @@ def test_public_types_have_informative_repr(tmp_path):
         'Audio(id="call-1", pcm_bytes=104000, sample_rate=8000, channels=2, '
         'duration="3.25s", annotations=1)'
     )
-    assert str(audio) == 'Audio "call-1" (3.25s)'
+    rendered_audio = str(audio)
+    assert "╭─ Audio " in rendered_audio
+    assert "call-1" in rendered_audio
+    assert "PCM S16LE  ·  8 kHz  ·  Stereo  ·  3.250 s" in rendered_audio
+    assert "Left" in rendered_audio
+    assert "Right" in rendered_audio
+    assert "Reference" in rendered_audio
+    assert "“hello" in rendered_audio
     assert "duration=3.25s" in repr(waveform)
     assert 'text="hello world"' in repr(annotation)
     assert str(annotation) == 'transcription [100..800ms]: "hello world"'
@@ -1433,9 +1440,7 @@ def test_timeline_exposes_all_top_level_annotations_by_type():
     audio = Audio(AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="types")
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
 
-    timeline.annotate_span(
-        0, 500, Transcription("reference"), is_reference=True
-    )
+    timeline.annotate_span(0, 500, Transcription("reference"), is_reference=True)
     timeline.annotate_span(
         0,
         500,
@@ -1443,9 +1448,7 @@ def test_timeline_exposes_all_top_level_annotations_by_type():
         is_reference=False,
         source="asr",
     )
-    timeline.annotate_span(
-        0, 500, AudioActivity(event="speech"), is_reference=True
-    )
+    timeline.annotate_span(0, 500, AudioActivity(event="speech"), is_reference=True)
     timeline.annotate_span(
         0,
         500,
@@ -1453,9 +1456,7 @@ def test_timeline_exposes_all_top_level_annotations_by_type():
         is_reference=False,
         source="vad",
     )
-    timeline.annotate_span(
-        0, 500, Speaker("caller"), is_reference=True
-    )
+    timeline.annotate_span(0, 500, Speaker("caller"), is_reference=True)
     timeline.annotate_span(
         0, 500, Speaker("caller"), is_reference=False, source="diarization"
     )
@@ -1534,9 +1535,7 @@ def test_timeline_eval_reports_transcription_metrics_without_normalization():
         AudioSource.from_pcm(b"\0\0" * 1000, sample_rate=1000), id="eval-text"
     )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    timeline.annotate_span(
-        0, 1000, Transcription("交易停滞"), is_reference=True
-    )
+    timeline.annotate_span(0, 1000, Transcription("交易停滞"), is_reference=True)
     timeline.annotate_span(
         0,
         1000,
@@ -1595,9 +1594,7 @@ def test_timeline_eval_applies_default_text_normalization_policies():
         id="eval-cleanup",
     )
     timeline = audio.ensure_timeline("mono", duration_ms=1000)
-    timeline.annotate_span(
-        0, 1000, Transcription("嗯這朵花兒"), is_reference=True
-    )
+    timeline.annotate_span(0, 1000, Transcription("嗯這朵花兒"), is_reference=True)
     timeline.annotate_span(
         0,
         1000,
@@ -1927,8 +1924,7 @@ def test_audio_and_audio_stream_convenience_factories(tmp_path):
     assert isinstance(from_file.source, AudioSource)
     assert isinstance(from_bytes.source, AudioSource)
     assert {
-        audio.id
-        for audio in (from_file, from_url, from_bytes, from_base64, from_pcm)
+        audio.id for audio in (from_file, from_url, from_bytes, from_base64, from_pcm)
     } == {"file", "url", "bytes", "base64", "pcm"}
     assert all(
         audio.as_waveform().channels == 1
@@ -1961,7 +1957,10 @@ def test_audio_and_audio_stream_convenience_factories(tmp_path):
     assert not hasattr(from_file.source.load().as_waveform(), "num_channels")
     assert repr(from_file).startswith('Audio(id="file", file="')
     assert 'duration="1ms"' in repr(from_file)
-    assert str(from_file) == 'Audio "file" (1ms)'
+    rendered_file = str(from_file)
+    assert "╭─ Audio " in rendered_file
+    assert "WAV  ·  8 kHz  ·  Mono  ·  0.001 s" in rendered_file
+    assert str(wav_path)[:40] in rendered_file
 
 
 def test_timeline_has_one_annotation_write_api():
@@ -1991,9 +1990,7 @@ def test_timeline_has_one_annotation_write_api():
             source="manual",
         )
     with pytest.raises(ValueError, match="is required"):
-        timeline.annotate_span(
-            0, 100, AudioActivity(event="music"), is_reference=False
-        )
+        timeline.annotate_span(0, 100, AudioActivity(event="music"), is_reference=False)
 
 
 def test_audiodb_restores_audio_info_without_reopening_source(tmp_path):

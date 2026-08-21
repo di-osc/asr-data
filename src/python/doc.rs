@@ -509,13 +509,7 @@ impl PyAudio {
 
     fn __str__(&self) -> PyResult<String> {
         let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
-        let id = truncate(&audio.id, 40);
-        Ok(match audio.timeline_duration() {
-            Some(duration) => {
-                format!("Audio {:?} ({})", id, format_duration_ms(duration.0 as f64))
-            }
-            None => format!("Audio {id:?}"),
-        })
+        Ok(audio.terminal_view().to_string())
     }
 }
 
