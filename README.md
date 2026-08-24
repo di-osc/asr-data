@@ -7,19 +7,20 @@
 <p align="center">
   <a href="https://crates.io/crates/asr-data"><img src="https://img.shields.io/crates/v/asr-data?label=crates.io" alt="crates.io" /></a>
   <a href="https://pypi.org/project/asr-data/"><img src="https://img.shields.io/pypi/v/asr-data?label=PyPI" alt="PyPI" /></a>
-  <a href="https://di-osc.github.io/asr-data/"><img src="https://img.shields.io/badge/docs-latest-blue" alt="docs" /></a>
+  <a href="https://di-osc.github.io/asr-data/"><img src="https://img.shields.io/badge/docs-latest-blue" alt="documentation" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license" /></a>
 </p>
 
-`asr-data` 是一个面向 ASR（Automatic Speech Recognition，自动语音识别）数据管理的 Rust / Python 库。它提供统一的音频与标注数据模型，并使用 SQLite 持久化，适合构建语音数据集、标注流水线和模型评测工具。
+`asr-data` 是一个面向 ASR（Automatic Speech Recognition，自动语音识别）工作流的 Rust / Python 库，提供统一的音频、时间轴、标注和评测数据模型，并支持使用 SQLite 持久化语音数据。
 
-## 特点
+## 特性
 
-- **统一数据模型**：集中管理音频、转写、说话人、语言和模型预测等信息。
-- **SQLite 本地存储**：数据保存为易于管理的 `.db` 文件。
-- **音频处理**：支持从文件、URL、字节流和 PCM 加载音频，并提供声道与重采样等操作。
-- **Rust 核心，Python 易用**：兼顾 Rust 性能与 Python 脚本、Notebook 的使用体验。
-- **面向 ASR 工作流**：适用于数据集构建、人工标注、模型输出和评测结果管理。
-- **专项数据集评测**：分别评测转写、声音活动和说话人分离，并提供可选中文文本清洗策略。
+- Rust 核心实现，提供 Python 绑定和类型支持
+- 支持本地文件、URL、编码字节、Base64 和 PCM 音频
+- 支持音频解码、波形处理和流式读取
+- 支持转写、Token、活动事件和说话人标注
+- 支持 SQLite 数据库、数据集管理和 ModelScope 数据集加载
+- 支持转写 CER、活动检测和说话人分离等评测
 
 ## 安装
 
@@ -35,50 +36,17 @@ pip install asr-data
 cargo add asr-data
 ```
 
-## 快速开始
-
-```python
-from asr_data import AudioDB, AudioSource
-from asr_data.annotation import AudioActivity, Speaker, Token, Transcription
-
-audio = AudioSource.from_path("audio.wav").load(id="call-001")
-timeline = audio.timeline("mono")
-end_ms = timeline.duration_ms
-timeline.annotate_span(
-    0, end_ms, AudioActivity(event="speech"), is_reference=True
-)
-timeline.annotate_span(
-    0,
-    end_ms,
-    Speaker(
-        "speaker_1",
-        transcription=Transcription(
-            "hello world",
-            language="en",
-            tokens=[
-                Token("hello", start_ms=0, end_ms=600),
-                Token("world", start_ms=600, end_ms=1_200),
-            ],
-        ),
-    ),
-    is_reference=True,
-)
-
-db = AudioDB.create("dataset.db")
-db.insert(audio)
-```
-
-## 数据集
-
-`AudioDataset` 是带名称、版本和许可证的数据集抽象，可通过 modelhub 下载完整
-ModelScope 仓库，并将其中可选的 `train.db`、`val.db`、`test.db` 作为只读
-`AudioDB` 暴露。
-完整用法、缓存约定和 API 请查看[在线文档](https://di-osc.github.io/asr-data/database#audio-dataset)。
-
 ## 文档
 
-音频探测、标注、评测、数据库以及完整 API 请查看
-[在线文档](https://di-osc.github.io/asr-data/)。
+完整的使用指南、API 参考、数据模型、评测说明和示例请查看在线文档：
+
+**[https://di-osc.github.io/asr-data/](https://di-osc.github.io/asr-data/)**
+
+其他资源：
+
+- [crates.io](https://crates.io/crates/asr-data)
+- [PyPI](https://pypi.org/project/asr-data/)
+- [GitHub Repository](https://github.com/di-osc/asr-data)
 
 ## 许可证
 
