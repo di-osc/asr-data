@@ -218,24 +218,26 @@ timeline 或 annotation 时，才需要按相应 API 的规则转换为毫秒整
 | `split_at_low_energy(max_duration_ms)` | 将长音频优先拆在低能量位置                |
 | `display(...)`                         | 在 IPython 或 Notebook 中播放指定时间范围 |
 
-所有能够调用 `as_waveform()` 的对象都直接提供相同签名的 `display()`：
+Python 中所有能够调用 `as_waveform()` 的对象也提供相同签名的 `display()`：
 [`Audio`](/asr-data/api#audio)、[`AudioStream`](/asr-data/api#audio-stream)、
 [`AudioChunk`](/asr-data/api#audio-chunk)、[`Timeline`](/asr-data/api#timeline) 和
-[`TimeSpan`](/asr-data/api#time-span)。因此在 Notebook 中不需要先手动取出
-`Waveform`：
+[`TimeSpan`](/asr-data/api#time-span)。Rust 中可直接取得相同时间范围的波形；播放由
+调用侧的音频输出工具负责。
 
-```python
-audio.display(end_ms=2_000)
-timeline.display(start_ms=500, end_ms=1_500)
-```
+> #### Python Example
+>
+> ```python
+> audio.display(end_ms=2_000)
+> timeline.display(start_ms=500, end_ms=1_500)
+> ```
 
-Rust 中可直接取得相同时间范围的波形；播放由调用侧的音频输出工具负责：
-
-```rust
-let clip = audio.as_waveform()?.slice_ms(0, 2_000);
-let timeline_clip = timeline.as_waveform()?.slice_ms(500, 1_500);
-println!("{} {}", clip.frame_count(), timeline_clip.frame_count());
-```
+> #### Rust Example
+>
+> ```rust
+> let clip = audio.as_waveform()?.slice_ms(0, 2_000);
+> let timeline_clip = timeline.as_waveform()?.slice_ms(500, 1_500);
+> println!("{} {}", clip.frame_count(), timeline_clip.frame_count());
+> ```
 
 多声道样本按 frame 交错保存，`frame_count` 表示每个声道的帧数，而不是 `samples`
 数组的元素总数。`slice_ms()` 和低能量切分会保留声道布局；需要单声道时应显式调用
@@ -298,21 +300,20 @@ AudioStream 创建时 timeline 时长为 `0`。每次迭代会先追加样本、
 不会重新读取来源。提前 `close()` 会令 `is_closed` 为 `True`，且不能调用
 `to_audio()`。
 
-每个 `AudioChunk` 包含：
+Python 和 Rust 的 `AudioChunk` 都表示一段具有 `index`、`offset_ms` 和 `is_final`
+状态的局部音频，但公开接口略有不同：
 
-- `id`、`source`、`metadata` 和 `timelines`：与父 `AudioStream` 共享的文档上下文。
-- `index`：本块在流中从 `0` 开始的顺序。
-- `info`：只描述当前块的采样率、声道、帧数、时长和来源格式。
-- `offset_ms`：本块相对整段音频起点的偏移。
-- `end_ms`：本块在整段音频中的全局结束位置。
-- `duration_ms`：本块的实际时长。
-- `is_final`：是否为该来源的最后一块。
+| 能力 | Python | Rust |
+| --- | --- | --- |
+| 局部波形 | `chunk.as_waveform()` | `AudioChunk` 自身保存 `samples`、采样率和声道 |
+| 文档上下文 | 通过 chunk 访问父流的 `id`、`source`、`metadata` 和 timelines | 保留在 `AudioStream` 上 |
+| 全局 timeline | `chunk.timeline(channel)` | `stream.timeline(AudioChannel)` |
+| 局部范围换算 | `chunk.to_timeline_range()` | 使用 `chunk.offset_ms` 加上局部范围 |
 
-chunk 本身不重复提供 `samples`、`resample()`、`slice_ms()` 等 Waveform API。
-需要当前块样本或音频变换时，先调用 `chunk.as_waveform()`。
+Python chunk 不重复提供 `samples`、`resample()`、`slice_ms()` 等 Waveform API，需要先
+调用 `chunk.as_waveform()`。Rust chunk 本身是局部波形数据块，但全局 timeline 和
+metadata 仍由父 `AudioStream` 管理。
 
-`AudioChunk.to_timeline_range()` 可以把模型返回的 chunk 内相对范围换算为全局范围；
-`chunk.timeline(channel)` 与父 AudioStream 返回同一个正在增长的 timeline，而不是
-只覆盖当前 chunk 的临时时间轴。已返回 chunk 的波形和 `info` 始终固定，但它持有的
-metadata 和 timeline 是共享的，因此之后的迭代与标注仍然对旧 chunk 可见。这样流式
-模型可以为过去的一段时间补写标注。
+Python 中已返回 chunk 的波形和 `info` 始终固定，但它持有的 metadata 和 timeline
+上下文是共享的，因此后续迭代和标注仍然对旧 chunk 可见。两种语言都可以为已经接收的
+历史范围补写标注，尚未到达的未来范围会被校验拒绝。

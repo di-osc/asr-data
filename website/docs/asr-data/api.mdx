@@ -487,7 +487,7 @@ timeline。通常优先使用 [`AudioSource.load()`](#audio-source-load)。
 | `duration_ms` | 可选校验时长；省略时使用 `info`。~~Optional[Union[int, float]]~~ |
 | **RETURNS**   | 已存在或新创建的 timeline。~~Timeline~~                                 |
 
-如果显式 duration 与其他声道不一致，会抛出 `AsrDataError`。
+如果显式 duration 无效、与文档时长不一致，或 channel 参数无效，会抛出 `ValueError`。
 
 ## Audio.remove_timeline {id="audio-remove-timeline",tag="method"}
 
@@ -1187,7 +1187,7 @@ AudioActivity、Transcription 或 Speaker 时会重新校验 event、token 时�
 存在的 `train.db`、`val.db`、`test.db` 以只读 AudioDB 打开。缺失切分返回
 `None`。
 
-> #### Example
+> #### Python Example
 >
 > ```python
 > from asr_data import AudioDataset
@@ -1197,7 +1197,19 @@ AudioActivity、Transcription 或 Speaker 时会重新校验 event、token 时�
 >     revision="v1.0.0",
 > )
 > print(dataset.name, dataset.version, dataset.license)
-> print(len(dataset.train), len(dataset.val), len(dataset.test))
+> print(dataset.train, dataset.val, dataset.test)
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> let dataset = AudioDataset::from_modelscope(
+>     "di-osc/aishell-1",
+>     Some("v1.0.0"),
+>     None,
+> ).await?;
+> println!("{} {} {}", dataset.name(), dataset.version(), dataset.license());
+> println!("{:?}", dataset.test_database_path());
 > ```
 
 | Name            | Description                                             |
@@ -1225,7 +1237,8 @@ AudioActivity、Transcription 或 Speaker 时会重新校验 event、token 时�
 | `test`    | 测试集 AudioDB，文件缺失时为 None。~~Optional[AudioDB]~~       |
 
 切分存在时，索引、包含判断、长度、迭代、查询和评测均在对应 AudioDB 上调用，例如
-`dataset.train[audio_id]` 和 `dataset.test.eval(...)`。
+`dataset.train[audio_id]` 和 `dataset.test.eval_transcription("qwen-asr")`。访问前应先
+判断可选切分是否为 `None`。
 
 ## AudioDB {id="audio-db",tag="class"}
 
@@ -1451,18 +1464,26 @@ Annotation = AudioActivity | Speaker | Token | Transcription
 
 `asr-data` 数据校验、音频处理和数据库操作使用的公共异常类型。
 
-> #### Example
+> #### Python Example
 >
 > ```python
-> from asr_data import AsrDataError, Audio, AudioSource
->
-> URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
-> doc = AudioSource.from_url(URL).load()
+> from asr_data import AsrDataError, AudioSource
 >
 > try:
->     doc.ensure_timeline("mono")
+>     AudioSource.from_bytes(b"not audio").load()
 > except AsrDataError as error:
 >     print(error)
+> ```
+
+> #### Rust Example
+>
+> ```rust
+> use asr_data::AudioSource;
+>
+> let result = AudioSource::from_encoded_bytes(b"not audio".to_vec()).load();
+> if let Err(error) = result {
+>     eprintln!("{error}");
+> }
 > ```
 
 按 ID 读取不存在的数据库记录时使用 Python 标准 `KeyError`。

@@ -982,12 +982,23 @@ test 分别持有可选 [`AudioDb`](#audio-db)。`from_modelscope()` 下载完�
 只读打开存在的切分；`new()` 可以接管调用方已经打开的零到三个 AudioDb，本地
 低层构造的身份字段为空字符串。
 
-> #### Example
+> #### Python Example
+>
+> ```python
+> from asr_data import AudioDB, AudioDataset
+>
+> train = AudioDB.create("train.db")
+> test = AudioDB.create("test.db")
+> dataset = AudioDataset(train=train, test=test)
+> print(len(dataset.train), dataset.val, len(dataset.test))
+> ```
+
+> #### Rust Example
 >
 > ```rust
 > use std::fs;
 >
-> use asr_data::{AudioDataset, AudioDb};
+> use asr_data::{read_audio_db_info, AudioDataset, AudioDb};
 >
 > fn main() -> Result<(), Box<dyn std::error::Error>> {
 >     let root = std::env::temp_dir();
@@ -1004,7 +1015,8 @@ test 分别持有可选 [`AudioDb`](#audio-db)。`from_modelscope()` 下载完�
 >         None,
 >         Some((test_path.clone(), test)),
 >     );
->     println!("{} train records", dataset.train().unwrap().len()?);
+>     let info = read_audio_db_info(dataset.train_database_path().unwrap())?;
+>     println!("{} train records", info.audios);
 >
 >     drop(dataset);
 >     for path in [train_path, test_path] {

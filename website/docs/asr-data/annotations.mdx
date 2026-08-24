@@ -14,20 +14,6 @@ menu:
 
 ## 音频 {id="document"}
 
-Rust 示例：
-
-```rust
-use asr_data::Audio;
-
-fn main() -> anyhow::Result<()> {
-    let audio = Audio::from_url(
-        "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav",
-    )?;
-    println!("{}", audio.info.duration_ms());
-    Ok(())
-}
-```
-
 [`Audio`](/asr-data/api#audio) 是音频、时间轴与标注的共同所有者。它把原始
 [`AudioSource`](/asr-data/api#audio-source)、`info`、文档 ID、业务元数据、运行时
 波形和多个声道 timeline 组织为一个对象。
@@ -209,15 +195,19 @@ Timeline 将 annotation 分成两个集合，避免真值与模型结果混在�
 `.annotation` 访问。修改标注时应整体替换 annotation，例如把新的 `Speaker` 赋给
 `speaker_annotation.annotation`。
 
-```python
-speaker_waveform = speaker_annotation.as_waveform()
-timeline_waveform = timeline.as_waveform()
-```
+> #### Python Example
+>
+> ```python
+> speaker_waveform = speaker_annotation.as_waveform()
+> timeline_waveform = timeline.as_waveform()
+> ```
 
-```rust
-let speaker_waveform = speaker_annotation.as_waveform()?;
-let timeline_waveform = timeline.as_waveform()?;
-```
+> #### Rust Example
+>
+> ```rust
+> let speaker_waveform = speaker_annotation.as_waveform()?;
+> let timeline_waveform = timeline.as_waveform()?;
+> ```
 
 ### 完整校验规范 {id="validation"}
 
@@ -339,20 +329,24 @@ Rust 的 `reference` 和 `prediction` 是公开 `Vec`，可以绕过 `annotate_s
 Speaker；Activity 来源只来自 AudioActivity prediction。显式参数接受字符串或字符
 串列表：
 
-```python
-selected = timeline.eval(
-    transcription=["qwen-asr", "whisper"],
-    activity="silero-vad",
-)
-```
+> #### Python Example
+>
+> ```python
+> selected = timeline.eval(
+>     transcription=["qwen-asr", "whisper"],
+>     activity="silero-vad",
+> )
+> ```
 
-```rust
-let selected = timeline.eval(
-    &TimelineEvalConfig::new()
-        .with_transcriptions(["qwen-asr", "whisper"])
-        .with_activity("silero-vad"),
-)?;
-```
+> #### Rust Example
+>
+> ```rust
+> let selected = timeline.eval(
+>     &TimelineEvalConfig::new()
+>         .with_transcriptions(["qwen-asr", "whisper"])
+>         .with_activity("silero-vad"),
+> )?;
+> ```
 
 只传入其中一个参数时只评测该任务。显式来源不存在时抛出错误；完全没有可评测的
 reference 和 prediction 时同样报错。
@@ -383,44 +377,52 @@ transcription，再计算字符错误率。默认启用内嵌中文 TN，将书�
 
 如需严格按原始字符评测，可以关闭标准化：
 
-```python
-raw = timeline.eval(transcription="qwen-asr", normalize=False)
-print(raw.transcription["qwen-asr"].cer)
-```
+> #### Python Example
+>
+> ```python
+> raw = timeline.eval(transcription="qwen-asr", normalize=False)
+> print(raw.transcription["qwen-asr"].cer)
+> ```
 
-```rust
-let raw = timeline.eval(
-    &TimelineEvalConfig::new()
-        .with_transcription("qwen-asr")
-        .with_transcription_normalization(TranscriptionNormalization::None)
-        .with_traditional_to_simple(false)
-        .with_full_to_half(false)
-        .with_remove_erhua(false)
-        .with_remove_interjections(false)
-        .with_remove_puncts(false),
-)?;
-println!("{}", raw.transcription["qwen-asr"].cer());
-```
+> #### Rust Example
+>
+> ```rust
+> let raw = timeline.eval(
+>     &TimelineEvalConfig::new()
+>         .with_transcription("qwen-asr")
+>         .with_transcription_normalization(TranscriptionNormalization::None)
+>         .with_traditional_to_simple(false)
+>         .with_full_to_half(false)
+>         .with_remove_erhua(false)
+>         .with_remove_interjections(false)
+>         .with_remove_puncts(false),
+> )?;
+> println!("{}", raw.transcription["qwen-asr"].cer());
+> ```
 
 这些中文清理选项会同时作用于 reference 和 prediction，且默认均为 `True`。如果
 某个数据集需要保留对应现象，可以单独关闭：
 
-```python
-cleaned = timeline.eval(
-    transcription="qwen-asr",
-    remove_erhua=False,
-    remove_interjections=False,
-)
-```
+> #### Python Example
+>
+> ```python
+> cleaned = timeline.eval(
+>     transcription="qwen-asr",
+>     remove_erhua=False,
+>     remove_interjections=False,
+> )
+> ```
 
-```rust
-let cleaned = timeline.eval(
-    &TimelineEvalConfig::new()
-        .with_transcription("qwen-asr")
-        .with_remove_erhua(false)
-        .with_remove_interjections(false),
-)?;
-```
+> #### Rust Example
+>
+> ```rust
+> let cleaned = timeline.eval(
+>     &TimelineEvalConfig::new()
+>         .with_transcription("qwen-asr")
+>         .with_remove_erhua(false)
+>         .with_remove_interjections(false),
+> )?;
+> ```
 
 处理顺序为繁转简、中文 TN、去儿化、全角转半角、去语气词、去标点。去语气词覆盖
 常见的“嗯”“啊”“呃”。这些参数也可直接传给 `AudioDB.eval_transcription()`，
@@ -471,26 +473,30 @@ timeline 已完成活动标注；没有 reference Activity 的 timeline 不参�
 评测按任务使用 `AudioDB.eval_transcription()`、`AudioDB.eval_activity()` 和
 `AudioDB.eval_speaker()`，并自动分页读取所有匹配记录：
 
-```python
-from asr_data import evaluate_dataset
+> #### Python Example
+>
+> ```python
+> from asr_data import evaluate_dataset
+>
+> memory_result = evaluate_dataset(docs, normalize=False)
+> transcription = db.eval_transcription(
+>     ["qwen-asr", "whisper"],
+>     metadata={"split": "test"},
+> )
+> activity = db.eval_activity("silero-vad", metadata={"split": "test"})
+>
+> print(transcription["qwen-asr"].cer)
+> print(transcription["qwen-asr"].coverage)
+> print(activity["silero-vad"].f1)
+> print(activity["silero-vad"].events["speech"].f1)
+> ```
 
-memory_result = evaluate_dataset(docs, normalize=False)
-transcription = db.eval_transcription(
-    ["qwen-asr", "whisper"],
-    metadata={"split": "test"},
-)
-activity = db.eval_activity("silero-vad", metadata={"split": "test"})
-
-print(transcription["qwen-asr"].cer)
-print(transcription["qwen-asr"].coverage)
-print(activity["silero-vad"].f1)
-print(activity["silero-vad"].events["speech"].f1)
-```
-
-```rust
-let memory_result = evaluate_dataset(&docs, &TimelineEvalConfig::new())?;
-println!("{}", memory_result.transcription["qwen-asr"].cer());
-```
+> #### Rust Example
+>
+> ```rust
+> let memory_result = evaluate_dataset(&docs, &TimelineEvalConfig::new())?;
+> println!("{}", memory_result.transcription["qwen-asr"].cer());
+> ```
 
 数据集 CER 累加每条 timeline 的替换、删除、插入和参考字符数后计算，不会平均单条
 CER，也不会把不同文档的文本拼接后对齐。Activity 的整体指标与各 event 指标都先累

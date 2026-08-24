@@ -19,19 +19,6 @@ timeline、annotation 和业务元数据，不复制解码后的浮点样本。
 
 ## 打开数据库 {id="open"}
 
-Rust 示例：
-
-```rust
-use asr_data::{AudioDb, AudioDbMode};
-
-fn main() -> anyhow::Result<()> {
-    let db = AudioDb::create("dataset.vasr")?;
-    drop(db);
-    let _db = AudioDb::open("dataset.vasr", AudioDbMode::ReadOnly)?;
-    Ok(())
-}
-```
-
 使用 `AudioDB.create(path)` 创建新数据库，使用 `AudioDB.open(path)` 打开已有
 数据库。两个入口不会互相兜底，因此路径写错时不会意外创建空数据库。
 
@@ -193,16 +180,20 @@ from <= timestamp < until
 查询结果按 `audio_id` 排序。读取下一页时，将上一页最后一条记录的 ID 传给
 `after`：
 
-```python
-next_page = db.query(limit=10, after=page[-1].id)
-```
+> #### Python Example
+>
+> ```python
+> next_page = db.query(limit=10, after=page[-1].id)
+> ```
 
-```rust
-let mut next_query = AudioQuery::default();
-next_query.limit = 10;
-next_query.after = page.last().map(|audio| audio.id.clone());
-let next_page = db.query(&next_query)?;
-```
+> #### Rust Example
+>
+> ```rust
+> let mut next_query = AudioQuery::default();
+> next_query.limit = 10;
+> next_query.after = page.last().map(|audio| audio.id.clone());
+> let next_page = db.query(&next_query)?;
+> ```
 
 `after` 是游标而不是数字页码，因此即使数据库较大，也不需要跳过前面所有记录。
 metadata 过滤要求存储值与查询值匹配，适合数据集 split、语言、来源和审核状态等结
@@ -254,19 +245,23 @@ reference、缺少 prediction 和实际参与聚合的 timeline 数量。只读�
 
 `eval_transcription()` 接受完整的内嵌 WeText 标准化配置：
 
-```python
-transcription = db.eval_transcription(
-    "qwen-asr",
-    metadata={"split": "test"},
-)
-print(transcription["qwen-asr"].cer)
-```
+> #### Python Example
+>
+> ```python
+> transcription = db.eval_transcription(
+>     "qwen-asr",
+>     metadata={"split": "test"},
+> )
+> print(transcription["qwen-asr"].cer)
+> ```
 
-```rust
-let config = TimelineEvalConfig::new().with_transcription("qwen-asr");
-let result = db.eval(&AudioQuery::default(), &config)?;
-println!("{}", result.transcription["qwen-asr"].cer());
-```
+> #### Rust Example
+>
+> ```rust
+> let config = TimelineEvalConfig::new().with_transcription("qwen-asr");
+> let result = db.eval(&AudioQuery::default(), &config)?;
+> println!("{}", result.transcription["qwen-asr"].cer());
+> ```
 
 处理顺序为繁体转简体、TN tagger、普通或去儿化 verbalizer、全角转半角、去语气词、
 去标点，最后执行 CER 的空白和标点清洗。五个选项默认均为 `True`；
@@ -275,23 +270,27 @@ println!("{}", result.transcription["qwen-asr"].cer());
 
 ### Activity 与 Speaker
 
-```python
-activity = db.eval_activity("silero-vad", metadata={"split": "test"})
-speaker = db.eval_speaker("diarizer", metadata={"split": "test"})
+> #### Python Example
+>
+> ```python
+> activity = db.eval_activity("silero-vad", metadata={"split": "test"})
+> speaker = db.eval_speaker("diarizer", metadata={"split": "test"})
+>
+> print(activity["silero-vad"].f1)
+> print(speaker["diarizer"].der)
+> ```
 
-print(activity["silero-vad"].f1)
-print(speaker["diarizer"].der)
-```
-
-```rust
-let activity = db.eval(
-    &AudioQuery::default(),
-    &TimelineEvalConfig::new().with_activity("silero-vad"),
-)?;
-let speaker = db.eval_speaker(&AudioQuery::default(), &["diarizer".to_owned()])?;
-println!("{}", activity.activity["silero-vad"].f1());
-println!("{}", speaker["diarizer"].der());
-```
+> #### Rust Example
+>
+> ```rust
+> let activity = db.eval(
+>     &AudioQuery::default(),
+>     &TimelineEvalConfig::new().with_activity("silero-vad"),
+> )?;
+> let speaker = db.eval_speaker(&AudioQuery::default(), &["diarizer".to_owned()])?;
+> println!("{}", activity.activity["silero-vad"].f1());
+> println!("{}", speaker["diarizer"].der());
+> ```
 
 Speaker 评测在每条 timeline 内使用最佳一一映射消除 speaker label 命名差异，再累计
 漏检、误检和说话人混淆的 speaker-time。DER 为三类错误时长之和除以 reference
@@ -362,34 +361,44 @@ speaker-time，不使用 collar；重叠说话按同时活跃的 speaker 数量�
 > #### Rust Example
 >
 > ```rust
-> use asr_data::{AudioDataset, AudioDb};
+> use asr_data::{read_audio_db_info, AudioDataset, AudioDb};
 >
 > fn main() -> anyhow::Result<()> {
 >     let train = AudioDb::create("train.vasr")?;
 >     let test = AudioDb::create("test.vasr")?;
->     let dataset = AudioDataset::new(Some(("train.vasr".into(), train)), None,
->         Some(("test.vasr".into(), test)));
->     println!("{}", dataset.train().unwrap().len()?);
+>     let dataset = AudioDataset::new(
+>         Some(("train.vasr".into(), train)),
+>         None,
+>         Some(("test.vasr".into(), test)),
+>     );
+>     let info = read_audio_db_info(dataset.train_database_path().unwrap())?;
+>     println!("{}", info.audios);
 >     Ok(())
 > }
 > ```
 
-每个切分都是完整的 AudioDB，因此在目标切分上直接使用查询、评测、索引和迭代
-接口：
+每个切分都是完整的 AudioDB。Python 可以在目标切分上使用查询、专项评测、索引和
+迭代接口；Rust 使用 `AudioQuery` 分页查询：
 
-```python
-page = local_dataset.train.query(limit=100)
-result = local_dataset.test.eval(transcription="qwen-asr")
-for audio in local_dataset.val:
-    print(audio.id)
-```
+> #### Python Example
+>
+> ```python
+> if local_dataset.train is not None:
+>     page = local_dataset.train.query(limit=100)
+> if local_dataset.test is not None:
+>     result = local_dataset.test.eval_transcription("qwen-asr")
+> ```
 
-```rust
-let page = dataset.train().unwrap().query(&Default::default())?;
-for audio in page {
-    println!("{}", audio.id);
-}
-```
+> #### Rust Example
+>
+> ```rust
+> if let Some(train) = dataset.train() {
+>     let page = train.query(&Default::default())?;
+>     for audio in page {
+>         println!("{}", audio.id);
+>     }
+> }
+> ```
 
 ### 从 ModelScope 加载 {id="audio-dataset-modelscope"}
 
@@ -425,7 +434,10 @@ ModelScope 仓库通过 Rust [`modelhub`](https://crates.io/crates/modelhub) cra
 > async fn main() -> anyhow::Result<()> {
 >     let dataset = AudioDataset::from_modelscope("di-osc/aishell-1", None, None).await?;
 >     if let Some(test) = dataset.test() {
->         for audio in test { println!("{}", audio?.id); }
+>         let page = test.query(&Default::default())?;
+>         for audio in page {
+>             println!("{}", audio.id);
+>         }
 >     }
 >     Ok(())
 > }
@@ -448,7 +460,8 @@ ModelScope 仓库通过 Rust [`modelhub`](https://crates.io/crates/modelhub) cra
 ```
 
 快照中的其他仓库文件也会下载；文件已存在时由 modelhub 直接复用。远端切分允许
-读取、查询、评测和迭代，但插入、更新、删除或 metadata 写入会失败。
+读取、查询和评测；Python 还可以直接迭代 `AudioDB`，Rust 需要通过 `AudioQuery`
+分页遍历。插入、更新、删除或 metadata 写入都会失败。
 
 | 场景                                                 | 结果             |
 | ---------------------------------------------------- | ---------------- |
@@ -483,7 +496,8 @@ ModelScope 仓库通过 Rust [`modelhub`](https://crates.io/crates/modelhub) cra
 > }
 > ```
 
-只读模式要求文件已经存在且格式有效，读取、查询和迭代仍然可用；插入、更新、删除以
+只读模式要求文件已经存在且格式有效，读取和查询仍然可用；Python 也可以直接迭代。
+插入、更新、删除以
 及数据库 metadata 写操作会失败。只读连接不会自动创建缺失文件。
 
 需要删除记录时，应使用可写连接调用 `db.delete(audio_id)`。临时示例中的目录会在
