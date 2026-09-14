@@ -1036,8 +1036,8 @@ test 分别持有可选 [`AudioDb`](#audio-db)。`from_modelscope()` 下载完�
 
 ## AudioDataset::from_modelscope {id="audio-dataset-modelscope",tag="associated function"}
 
-异步调用 modelhub 下载完整仓库，复用默认缓存或显式缓存根目录，并只读打开快照
-中存在的 `train.db`、`val.db`、`test.db`；缺失切分为 `None`。name 使用 repo_id，
+调用 modelhub 下载完整仓库，复用默认缓存或显式缓存根目录，并只读打开快照中存在
+的 `train.db`、`val.db`、`test.db`；缺失切分为 `None`。name 使用 repo_id，
 version 使用 revision，license 读取可选 README front matter。
 
 > #### Example
@@ -1045,14 +1045,12 @@ version 使用 revision，license 读取可选 README front matter。
 > ```rust
 > use asr_data::AudioDataset;
 >
-> #[tokio::main]
-> async fn main() -> Result<(), Box<dyn std::error::Error>> {
+> fn main() -> Result<(), Box<dyn std::error::Error>> {
 >     let dataset = AudioDataset::from_modelscope(
 >         "di-osc/aishell-1",
 >         Some("v1.0.0"),
 >         None,
->     )
->     .await?;
+>     )?;
 >
 >     if let Some(test) = dataset.test() {
 >         let page = test.query(&Default::default())?;
@@ -1062,9 +1060,8 @@ version 使用 revision，license 读取可选 README front matter。
 > }
 > ```
 
-示例需要 `tokio` 的 `macros` 和 `rt-multi-thread` features。`revision` 为 `None`
-时使用 `master`，`cache_dir` 为 `None` 时调用 modelhub 默认缓存；显式目录可传
-`Some(path.as_path())`。
+`revision` 为 `None` 时使用 `master`，`cache_dir` 为 `None` 时调用 modelhub
+默认缓存；显式目录可传 `Some(path.as_path())`。
 
 | Name        | Description                                                                  |
 | ----------- | ---------------------------------------------------------------------------- |

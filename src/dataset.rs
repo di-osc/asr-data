@@ -1,5 +1,6 @@
 use std::fmt;
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -96,13 +97,12 @@ impl AudioDataset {
     /// databases are opened read-only. `cache_dir` defaults to
     /// [`modelhub::modelscope::cache_dir`], and `revision` defaults to
     /// `master`.
-    pub async fn from_modelscope(
+    pub fn from_modelscope(
         repo_id: &str,
         revision: Option<&str>,
         cache_dir: Option<&Path>,
     ) -> Result<Self, AudioDatasetError> {
         Self::from_modelscope_with_downloader(&ModelHubDownloader, repo_id, revision, cache_dir)
-            .await
     }
 
     pub fn name(&self) -> &str {
@@ -149,7 +149,7 @@ impl AudioDataset {
         (self.train, self.val, self.test)
     }
 
-    async fn from_modelscope_with_downloader<D: ModelScopeDownloader>(
+    fn from_modelscope_with_downloader<D: ModelScopeDownloader>(
         downloader: &D,
         repo_id: &str,
         revision: Option<&str>,
@@ -168,7 +168,6 @@ impl AudioDataset {
 
         let snapshot_path = downloader
             .download_dataset(repo_id, revision, &cache_dir)
-            .await
             .map_err(|source| AudioDatasetError::ModelScopeDownload {
                 repo_id: repo_id.to_owned(),
                 revision: revision.to_owned(),
@@ -308,7 +307,7 @@ fn parse_license_scalar(value: &str) -> Result<String, String> {
 }
 
 trait ModelScopeDownloader {
-    async fn download_dataset(
+    fn download_dataset(
         &self,
         repo_id: &str,
         revision: &str,
@@ -319,29 +318,53 @@ trait ModelScopeDownloader {
 struct ModelHubDownloader;
 
 impl ModelScopeDownloader for ModelHubDownloader {
-    async fn download_dataset(
+    fn download_dataset(
         &self,
         repo_id: &str,
         revision: &str,
         cache_dir: &Path,
     ) -> anyhow::Result<PathBuf> {
-        if let Err(error) =
-            modelhub::modelscope::download_dataset_revision(repo_id, revision, cache_dir).await
-        {
-            let error_chain = format!("{error:#}");
-            if !error_chain.contains("missing field `Success`") {
-                return Err(error);
+        block_on(async {
+            if let Err(error) =
+                modelhub::modelscope::download_dataset_revision(repo_id, revision, cache_dir).await
+            {
+                let error_chain = format!("{error:#}");
+                if !error_chain.contains("missing field `Success`") {
+                    return Err(error);
+                }
+                download_modelscope_snapshot_with_modelhub(repo_id, revision, cache_dir)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "modelhub whole-repository API was incompatible with the ModelScope response ({error_chain})"
+                        )
+                    })?;
             }
-            download_modelscope_snapshot_with_modelhub(repo_id, revision, cache_dir)
-                .await
-                .with_context(|| {
-                    format!(
-                        "modelhub whole-repository API was incompatible with the ModelScope response ({error_chain})"
-                    )
-                })?;
-        }
-        Ok(modelscope_snapshot_path(cache_dir, repo_id, revision))
+            Ok(modelscope_snapshot_path(cache_dir, repo_id, revision))
+        })
     }
+}
+
+fn block_on<F>(future: F) -> F::Output
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    tokio::runtime::Runtime::new()
+                        .expect("create tokio runtime")
+                        .block_on(future)
+                })
+                .join()
+                .expect("join download thread")
+        });
+    }
+    tokio::runtime::Runtime::new()
+        .expect("create tokio runtime")
+        .block_on(future)
 }
 
 fn modelscope_snapshot_path(cache_dir: &Path, repo_id: &str, revision: &str) -> PathBuf {
@@ -457,7 +480,7 @@ mod tests {
     }
 
     impl ModelScopeDownloader for FakeDownloader {
-        async fn download_dataset(
+        fn download_dataset(
             &self,
             repo_id: &str,
             revision: &str,
@@ -475,7 +498,7 @@ mod tests {
     struct FailingDownloader;
 
     impl ModelScopeDownloader for FailingDownloader {
-        async fn download_dataset(
+        fn download_dataset(
             &self,
             _repo_id: &str,
             _revision: &str,
@@ -510,15 +533,13 @@ mod tests {
             request: Mutex::new(None),
         };
         let cache_dir = std::env::temp_dir().join("asr-data-modelscope-cache");
-        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
-        let dataset = runtime
-            .block_on(AudioDataset::from_modelscope_with_downloader(
-                &downloader,
-                "di-osc/calls",
-                Some("v1"),
-                Some(&cache_dir),
-            ))
-            .expect("open dataset");
+        let dataset = AudioDataset::from_modelscope_with_downloader(
+            &downloader,
+            "di-osc/calls",
+            Some("v1"),
+            Some(&cache_dir),
+        )
+        .expect("open dataset");
 
         assert_eq!(dataset.name(), "di-osc/calls");
         assert_eq!(dataset.version(), "v1");
@@ -558,15 +579,9 @@ mod tests {
             snapshot_path: snapshot_path.clone(),
             request: Mutex::new(None),
         };
-        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
-        let dataset = runtime
-            .block_on(AudioDataset::from_modelscope_with_downloader(
-                &downloader,
-                "di-osc/empty",
-                None,
-                None,
-            ))
-            .expect("empty snapshot is valid");
+        let dataset =
+            AudioDataset::from_modelscope_with_downloader(&downloader, "di-osc/empty", None, None)
+                .expect("empty snapshot is valid");
 
         assert_eq!(dataset.license(), "");
         assert!(dataset.train().is_none());
@@ -611,15 +626,9 @@ mod tests {
             snapshot_path: snapshot_path.clone(),
             request: Mutex::new(None),
         };
-        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
-        let error = runtime
-            .block_on(AudioDataset::from_modelscope_with_downloader(
-                &downloader,
-                "di-osc/broken",
-                None,
-                None,
-            ))
-            .expect_err("invalid database should fail");
+        let error =
+            AudioDataset::from_modelscope_with_downloader(&downloader, "di-osc/broken", None, None)
+                .expect_err("invalid database should fail");
 
         assert!(matches!(
             &error,
@@ -632,15 +641,13 @@ mod tests {
 
     #[test]
     fn modelscope_download_failure_has_repository_context() {
-        let runtime = tokio::runtime::Runtime::new().expect("create runtime");
-        let error = runtime
-            .block_on(AudioDataset::from_modelscope_with_downloader(
-                &FailingDownloader,
-                "di-osc/missing",
-                Some("v2"),
-                None,
-            ))
-            .expect_err("download should fail");
+        let error = AudioDataset::from_modelscope_with_downloader(
+            &FailingDownloader,
+            "di-osc/missing",
+            Some("v2"),
+            None,
+        )
+        .expect_err("download should fail");
 
         assert!(matches!(
             &error,

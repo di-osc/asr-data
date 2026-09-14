@@ -430,9 +430,8 @@ ModelScope 仓库通过 Rust [`modelhub`](https://crates.io/crates/modelhub) cra
 > ```rust
 > use asr_data::AudioDataset;
 >
-> #[tokio::main]
-> async fn main() -> anyhow::Result<()> {
->     let dataset = AudioDataset::from_modelscope("di-osc/aishell-1", None, None).await?;
+> fn main() -> anyhow::Result<()> {
+>     let dataset = AudioDataset::from_modelscope("di-osc/aishell-1", None, None)?;
 >     if let Some(test) = dataset.test() {
 >         let page = test.query(&Default::default())?;
 >         for audio in page {

@@ -11,7 +11,6 @@ use pyo3::exceptions::{PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDateTime, PyDict};
 
-use super::audio::async_runtime;
 use super::common::{format_duration_ms, poisoned, py_db_error, py_error, truncate};
 use super::doc::PyAudio;
 use super::evaluation::{
@@ -114,11 +113,11 @@ impl PyAudioDataset {
     ) -> PyResult<Self> {
         let dataset = py
             .detach(move || {
-                async_runtime().block_on(RustAudioDataset::from_modelscope(
+                RustAudioDataset::from_modelscope(
                     &repo_id,
                     revision.as_deref(),
                     cache_dir.as_deref(),
-                ))
+                )
             })
             .map_err(py_dataset_error)?;
         let name = dataset.name().to_owned();
