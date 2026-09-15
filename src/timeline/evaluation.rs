@@ -9,13 +9,17 @@ use crate::metrics::{
 };
 use crate::utils::TimeRange;
 
+/// 转写评估前的文本归一化策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TranscriptionNormalization {
+    /// 不做中文 TN，只按 CER 规则去标点和空白。
     None,
+    /// 使用内嵌 WeText FST 做中文书面语到口语的转换。
     #[default]
     ChineseTn,
 }
 
+/// 单条时间轴上要评估哪些任务、哪些 source，以及中文 TN 开关。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimelineEvalConfig {
     /// `None` disables this task when another task is explicitly selected.
@@ -48,15 +52,18 @@ impl Default for TimelineEvalConfig {
 }
 
 impl TimelineEvalConfig {
+    /// 默认配置：未显式选择任务时，评估所有同时有参考和预测的 source。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 只评估这一个转写 source。
     pub fn with_transcription(mut self, source: impl Into<String>) -> Self {
         self.transcription_sources = Some(vec![source.into()]);
         self
     }
 
+    /// 评估给出的多个转写 source。
     pub fn with_transcriptions<I, S>(mut self, sources: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -66,16 +73,19 @@ impl TimelineEvalConfig {
         self
     }
 
+    /// 评估所有转写 source（空列表表示全选）。
     pub fn with_all_transcriptions(mut self) -> Self {
         self.transcription_sources = Some(Vec::new());
         self
     }
 
+    /// 只评估这一个活动检测 source。
     pub fn with_activity(mut self, source: impl Into<String>) -> Self {
         self.activity_sources = Some(vec![source.into()]);
         self
     }
 
+    /// 评估给出的多个活动检测 source。
     pub fn with_activity_sources<I, S>(mut self, sources: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -85,11 +95,13 @@ impl TimelineEvalConfig {
         self
     }
 
+    /// 评估所有活动检测 source。
     pub fn with_all_activity(mut self) -> Self {
         self.activity_sources = Some(Vec::new());
         self
     }
 
+    /// 设置转写文本归一化策略。
     pub fn with_transcription_normalization(
         mut self,
         normalization: TranscriptionNormalization,
@@ -98,31 +110,37 @@ impl TimelineEvalConfig {
         self
     }
 
+    /// 是否去掉儿化。
     pub fn with_remove_erhua(mut self, remove: bool) -> Self {
         self.remove_erhua = remove;
         self
     }
 
+    /// 是否繁体转简体。
     pub fn with_traditional_to_simple(mut self, convert: bool) -> Self {
         self.traditional_to_simple = convert;
         self
     }
 
+    /// 是否全角转半角。
     pub fn with_full_to_half(mut self, convert: bool) -> Self {
         self.full_to_half = convert;
         self
     }
 
+    /// 是否删除语气词。
     pub fn with_remove_interjections(mut self, remove: bool) -> Self {
         self.remove_interjections = remove;
         self
     }
 
+    /// 是否删除标点。
     pub fn with_remove_puncts(mut self, remove: bool) -> Self {
         self.remove_puncts = remove;
         self
     }
 
+    /// 把评估开关转换成 [`ChineseTextNormalizationOptions`]。
     pub(crate) fn chinese_tn_options(&self) -> ChineseTextNormalizationOptions {
         ChineseTextNormalizationOptions {
             traditional_to_simple: self.traditional_to_simple,
@@ -135,6 +153,7 @@ impl TimelineEvalConfig {
 }
 
 #[derive(Debug, Error)]
+/// 单条时间轴评估失败。
 pub enum TimelineEvalError {
     #[error("the timeline has no reference annotations with matching prediction sources")]
     NoEvaluableAnnotations,
@@ -150,12 +169,14 @@ pub enum TimelineEvalError {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// 一条时间轴上各 source 的转写和活动评估。
 pub struct TimelineEvaluation {
     pub transcription: BTreeMap<String, TranscriptionEvaluation>,
     pub activity: BTreeMap<String, ActivityEvaluation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// 一个转写 source 相对参考的 CER 结果。
 pub struct TranscriptionEvaluation {
     pub source: String,
     pub reference: String,
@@ -189,12 +210,14 @@ impl TranscriptionEvaluation {
         harmonic_mean(self.precision(), self.recall())
     }
 
+    /// 归一化后的参考和假设是否完全相同。
     pub fn exact_match(&self) -> bool {
         self.normalized_reference == self.normalized_hypothesis
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 一个活动事件的区间检测指标。
 pub struct ActivityEventEvaluation {
     pub event: String,
     pub reference_ms: u64,
@@ -228,6 +251,7 @@ impl ActivityEventEvaluation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// 一个活动 source 的合并区间指标。
 pub struct ActivityEvaluation {
     pub source: String,
     pub reference_ms: u64,
@@ -262,6 +286,7 @@ impl ActivityEvaluation {
 }
 
 impl Timeline {
+    /// 用默认配置评估时间轴。
     pub fn eval(
         &self,
         config: &TimelineEvalConfig,
@@ -269,6 +294,7 @@ impl Timeline {
         self.evaluate(config)
     }
 
+    /// 按配置评估时间轴上的转写和活动。
     pub fn evaluate(
         &self,
         config: &TimelineEvalConfig,
@@ -276,6 +302,7 @@ impl Timeline {
         self.evaluate_with_normalization_cache(config, &mut HashMap::new())
     }
 
+    /// 带共享归一化缓存的时间轴评估。
     pub(crate) fn evaluate_with_normalization_cache(
         &self,
         config: &TimelineEvalConfig,
@@ -338,6 +365,7 @@ impl Timeline {
         })
     }
 
+    /// 这条时间轴上出现过的转写预测 source。
     pub fn transcription_sources(&self) -> BTreeSet<String> {
         self.prediction
             .iter()
@@ -346,6 +374,7 @@ impl Timeline {
             .collect()
     }
 
+    /// 这条时间轴上出现过的活动预测 source。
     pub fn activity_sources(&self) -> BTreeSet<String> {
         self.prediction
             .iter()
@@ -354,6 +383,7 @@ impl Timeline {
             .collect()
     }
 
+    /// 计算一个转写 source 的 CER。
     fn evaluate_transcription(
         &self,
         source: &str,
@@ -395,6 +425,7 @@ impl Timeline {
         })
     }
 
+    /// 计算一个活动 source 的区间指标。
     fn evaluate_activity(&self, source: &str) -> Result<ActivityEvaluation, TimelineEvalError> {
         let reference = merged_activity_ranges(self.reference.iter(), None);
         if reference.is_empty() {
@@ -458,6 +489,7 @@ impl Timeline {
     }
 }
 
+/// 按配置归一化转写文本。
 fn normalize_transcription(
     text: &str,
     normalization: TranscriptionNormalization,
@@ -469,6 +501,7 @@ fn normalize_transcription(
     })
 }
 
+/// 公开的转写归一化入口，供数据集评估复用。
 pub(crate) fn normalize_transcription_text(
     text: &str,
     normalization: TranscriptionNormalization,
@@ -494,6 +527,7 @@ pub(crate) fn normalize_transcription_text(
     }
 }
 
+/// 文本是否含数字或符号，从而需要跑 FST。
 fn requires_chinese_tn(text: &str) -> bool {
     use unicode_general_category::{GeneralCategory, get_general_category};
 
@@ -511,6 +545,7 @@ fn requires_chinese_tn(text: &str) -> bool {
     })
 }
 
+/// 在给定缓存里归一化文本。
 fn normalize_transcription_with(
     text: &str,
     normalization: TranscriptionNormalization,
@@ -528,6 +563,7 @@ fn normalize_transcription_with(
     Ok(normalized)
 }
 
+/// 空选择表示使用全部 available source。
 fn selected_sources(selection: &[String], available: BTreeSet<String>) -> BTreeSet<String> {
     if selection.is_empty() {
         available
@@ -536,6 +572,7 @@ fn selected_sources(selection: &[String], available: BTreeSet<String>) -> BTreeS
     }
 }
 
+/// 转写或句子标注才参与整段 CER。
 fn is_final_text_annotation(annotation: &TimeSpan) -> bool {
     match &annotation.annotation {
         Annotation::Transcription(_) | Annotation::Sentence(_) => true,
@@ -544,6 +581,7 @@ fn is_final_text_annotation(annotation: &TimeSpan) -> bool {
     }
 }
 
+/// 合并指定 source 的活动区间。
 fn merged_activity_ranges<'a>(
     annotations: impl Iterator<Item = &'a TimeSpan>,
     event: Option<&str>,
@@ -573,6 +611,7 @@ fn merged_activity_ranges<'a>(
     merged
 }
 
+/// 合并未命名事件的参考活动，用作评估掩码。
 fn merged_unknown_activity_ranges<'a>(
     annotations: impl Iterator<Item = &'a TimeSpan>,
 ) -> Vec<TimeRange> {
@@ -594,6 +633,7 @@ fn merged_unknown_activity_ranges<'a>(
     subtract_ranges(&merge_ranges(&mut unknown), &merge_ranges(&mut labeled))
 }
 
+/// 收集活动事件名集合。
 fn activity_events<'a>(annotations: impl Iterator<Item = &'a TimeSpan>) -> BTreeSet<String> {
     annotations
         .filter_map(|annotation| match &annotation.annotation {
@@ -603,6 +643,7 @@ fn activity_events<'a>(annotations: impl Iterator<Item = &'a TimeSpan>) -> BTree
         .collect()
 }
 
+/// 把相交或相邻的区间合并。
 fn merge_ranges(ranges: &mut Vec<TimeRange>) -> Vec<TimeRange> {
     ranges.retain(|range| range.end > range.start);
     ranges.sort_by_key(|range| (range.start, range.end));
@@ -620,6 +661,7 @@ fn merge_ranges(ranges: &mut Vec<TimeRange>) -> Vec<TimeRange> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 区间检测的 TP/TN/FP/FN 毫秒计数。
 struct IntervalCounts {
     reference_ms: u64,
     predicted_ms: u64,
@@ -629,6 +671,7 @@ struct IntervalCounts {
     false_negative_ms: u64,
 }
 
+/// 比较参考和预测区间，统计毫秒计数。
 fn interval_counts(
     reference: &[TimeRange],
     prediction: &[TimeRange],
@@ -651,6 +694,7 @@ fn interval_counts(
     }
 }
 
+/// 先去掉掩码区间再统计。
 fn masked_interval_counts(
     reference: &[TimeRange],
     prediction: &[TimeRange],
@@ -666,6 +710,7 @@ fn masked_interval_counts(
     )
 }
 
+/// 从区间中减去掩码覆盖的部分。
 fn subtract_ranges(ranges: &[TimeRange], masks: &[TimeRange]) -> Vec<TimeRange> {
     let mut result = Vec::new();
     for range in ranges {
@@ -694,6 +739,7 @@ fn subtract_ranges(ranges: &[TimeRange], masks: &[TimeRange]) -> Vec<TimeRange> 
     result
 }
 
+/// 区间总时长（毫秒）。
 fn ranges_duration(ranges: &[TimeRange]) -> u64 {
     ranges
         .iter()
@@ -701,6 +747,7 @@ fn ranges_duration(ranges: &[TimeRange]) -> u64 {
         .sum()
 }
 
+/// 两组区间交集的总时长。
 fn intersection_duration(left: &[TimeRange], right: &[TimeRange]) -> u64 {
     let mut left_index = 0;
     let mut right_index = 0;
@@ -718,6 +765,7 @@ fn intersection_duration(left: &[TimeRange], right: &[TimeRange]) -> u64 {
     duration
 }
 
+/// numerator/denominator；分母为 0 时返回 0。
 fn ratio(numerator: usize, denominator: usize) -> f64 {
     if denominator == 0 {
         if numerator == 0 { 1.0 } else { 0.0 }
@@ -726,6 +774,7 @@ fn ratio(numerator: usize, denominator: usize) -> f64 {
     }
 }
 
+/// 两个比率的调和平均；任一为 0 则返回 0。
 fn harmonic_mean(left: f64, right: f64) -> f64 {
     if left + right == 0.0 {
         0.0
@@ -734,6 +783,7 @@ fn harmonic_mean(left: f64, right: f64) -> f64 {
     }
 }
 
+/// TP / (TP + FP)。
 fn interval_precision(true_positive_ms: u64, false_positive_ms: u64) -> f64 {
     ratio(
         true_positive_ms as usize,
@@ -741,6 +791,7 @@ fn interval_precision(true_positive_ms: u64, false_positive_ms: u64) -> f64 {
     )
 }
 
+/// TP / (TP + FN)。
 fn interval_recall(true_positive_ms: u64, false_negative_ms: u64) -> f64 {
     ratio(
         true_positive_ms as usize,
@@ -748,6 +799,7 @@ fn interval_recall(true_positive_ms: u64, false_negative_ms: u64) -> f64 {
     )
 }
 
+/// TP / (TP + FP + FN)。
 fn interval_iou(true_positive_ms: u64, false_positive_ms: u64, false_negative_ms: u64) -> f64 {
     ratio(
         true_positive_ms as usize,

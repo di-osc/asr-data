@@ -73,6 +73,7 @@ pub(super) struct PyAudioInfo {
     inner: RustAudioInfo,
 }
 
+/// 从 Rust [`AudioInfo`](RustAudioInfo) 构造 Python `AudioInfo`。
 pub(super) fn py_audio_info_from_rust(info: &RustAudioInfo) -> PyAudioInfo {
     PyAudioInfo {
         inner: info.clone(),
@@ -564,6 +565,25 @@ impl PyWaveform {
             .map_err(py_error)
     }
 
+    /// 按峰值缩放到 ``[-1, 1]``。
+    ///
+    /// 非有限值先置 0。若剩余峰值大于 1，整段除以该峰值后再钳位。
+    /// 峰值不超过 1 时波形不变。这与加载时的 clip 不同：clip 会削平尖峰。
+    ///
+    /// Returns:
+    ///     不修改原对象的新 Waveform。
+    ///
+    /// Examples:
+    ///     >>> import numpy as np
+    ///     >>> from asr_data import Waveform
+    ///     >>> Waveform(np.array([0.0, 2.0, -2.0], dtype=np.float32), 16000).peak_normalize().samples.tolist()
+    ///     [0.0, 1.0, -1.0]
+    fn peak_normalize(&self, py: Python<'_>) -> PyResult<Self> {
+        let mut waveform = self.materialize(py)?;
+        waveform.peak_normalize();
+        Ok(Self::from_rust(waveform))
+    }
+
     /// 按半开毫秒范围截取并返回新的 Waveform。
     ///
     /// Args:
@@ -643,6 +663,7 @@ impl PyWaveform {
 type AsyncLoadResult = Arc<Mutex<Option<Result<RustWaveform, String>>>>;
 type AsyncProbeResult = Arc<Mutex<Option<Result<RustAudioInfo, String>>>>;
 
+/// Python 绑定共用的多线程 tokio runtime。
 pub(super) fn async_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -1975,6 +1996,7 @@ pub(super) fn py_source_from_rust(py: Python<'_>, source: &RustAudioSource) -> P
     .into_any())
 }
 
+/// 把本模块的 Python 类型和函数注册进 `_native`。
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAudioFormat>()?;
     module.add_class::<PyAudioInfo>()?;

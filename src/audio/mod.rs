@@ -11,6 +11,11 @@ pub(crate) mod stream;
 pub use data::{AudioChunk, AudioChunks, AudioError, Waveform};
 pub use source::{AudioChannel, AudioEncoding, AudioFormat, AudioInfo, AudioSource};
 
+/// Python 加载路径上的可选重采样与转单声道。
+///
+/// # Errors
+///
+/// 声道数为 0、目标采样率为 0 或变换失败时返回错误。
 #[cfg(feature = "python-bindings")]
 pub(crate) fn transform_loaded_audio(
     mut waveform: Waveform,
@@ -35,6 +40,7 @@ pub(crate) fn transform_loaded_audio(
     Ok(waveform)
 }
 
+/// 把 `file://` URL 或普通本地路径转成 [`PathBuf`]；HTTP(S) 返回 `None`。
 fn local_path_from_urlish(value: &str) -> Option<PathBuf> {
     if let Some(rest) = value.strip_prefix("file://") {
         return Some(PathBuf::from(percent_decode_path(rest)));
@@ -45,6 +51,7 @@ fn local_path_from_urlish(value: &str) -> Option<PathBuf> {
     Some(Path::new(value).to_path_buf())
 }
 
+/// 解码路径中的 `%HH` 转义，非法序列原样保留。
 fn percent_decode_path(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -64,6 +71,7 @@ fn percent_decode_path(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// 解析一位十六进制字符；非法字符返回 `None`。
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),

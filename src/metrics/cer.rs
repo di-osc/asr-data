@@ -9,17 +9,23 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CerStats {
+    /// 替换次数。
     pub substitutions: usize,
+    /// 删除次数。
     pub deletions: usize,
+    /// 插入次数。
     pub insertions: usize,
+    /// 参考文本字符数 N。
     pub reference_chars: usize,
 }
 
 impl CerStats {
+    /// S + D + I，即总编辑次数。
     pub fn edits(&self) -> usize {
         self.substitutions + self.deletions + self.insertions
     }
 
+    /// CER = edits / N；参考为空时，有编辑则返回 1.0，否则 0.0。
     pub fn cer(&self) -> f64 {
         if self.reference_chars == 0 {
             if self.edits() == 0 {
@@ -31,6 +37,7 @@ impl CerStats {
     }
 }
 
+/// 去掉标点；`remove_spaces` 为真时再去掉空白，供 CER 对齐使用。
 pub fn normalize_for_cer(text: &str, remove_spaces: bool) -> String {
     text.chars()
         .filter(|ch| {
@@ -42,6 +49,7 @@ pub fn normalize_for_cer(text: &str, remove_spaces: bool) -> String {
         .collect()
 }
 
+/// Unicode 标点类别判断，CER 归一化时会丢掉这些字符。
 fn is_punctuation(ch: char) -> bool {
     use unicode_general_category::{GeneralCategory, get_general_category};
 
@@ -57,6 +65,7 @@ fn is_punctuation(ch: char) -> bool {
     )
 }
 
+/// 按字符计算参考和假设之间的 Levenshtein 编辑统计。
 pub fn compute_cer(reference: &str, hypothesis: &str) -> CerStats {
     let reference_chars: Vec<char> = reference.chars().collect();
     let hypothesis_chars: Vec<char> = hypothesis.chars().collect();
@@ -70,6 +79,7 @@ pub fn compute_cer(reference: &str, hypothesis: &str) -> CerStats {
     }
 }
 
+/// 回溯 DP 表，分别统计替换、删除和插入次数。
 fn levenshtein_ops(reference: &[char], hypothesis: &[char]) -> (usize, usize, usize) {
     let n = reference.len();
     let m = hypothesis.len();

@@ -1023,6 +1023,7 @@ fn py_dataset_error(error: AudioDatasetError) -> PyErr {
     }
 }
 
+/// 把本模块的 Python 类型和函数注册进 `_native`。
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAudioDataset>()?;
     module.add_class::<PyAudioDb>()?;

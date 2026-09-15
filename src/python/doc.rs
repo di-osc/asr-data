@@ -543,6 +543,7 @@ fn html_escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// 把本模块的 Python 类型和函数注册进 `_native`。
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAudio>()?;
     module.add_class::<PyAudioTask>()?;

@@ -220,6 +220,7 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 | `to_mono()`                         | `Result<Waveform, AudioError>`      | 混合为单声道。        |
 | `channel(index)`                    | `Result<Waveform, AudioError>`      | 提取指定声道。        |
 | `resample(sample_rate)`             | `anyhow::Result<Waveform>`          | 重采样。              |
+| `peak_normalize()` / `with_peak_normalize()` | `()` / `Waveform`            | 峰值缩放到 `[-1, 1]`。 |
 | `slice_ms(start_ms, end_ms)`        | `Waveform`                          | 按毫秒截取。          |
 | `split_at_low_energy(max_duration)` | `Result<Vec<Waveform>, AudioError>` | 低能量拆分。          |
 | `to_i16_pcm()`                      | `Vec<i16>`                       | 转换为 PCM i16 样本。 |
@@ -279,6 +280,7 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 | `channel(index)`             | `Result<AudioChunk, _>`      | 提取指定声道。   |
 | `to_mono()`                  | `Result<AudioChunk, _>`      | 混合为单声道。   |
 | `resample(sample_rate)`      | `anyhow::Result<AudioChunk>` | 重采样。         |
+| `peak_normalize()` / `with_peak_normalize()` | `()` / `AudioChunk` | 峰值缩放到 `[-1, 1]`。 |
 | `slice_ms(start_ms, end_ms)` | `AudioChunk`                 | 按毫秒截取。     |
 
 ## 音频格式类型 {id="audio-types",tag="types"}

@@ -11,12 +11,15 @@ use pyo3::prelude::*;
 
 use super::AsrDataError;
 
+/// 绑定层共享的 `Audio` 句柄。
 pub(super) type SharedAudio = Arc<RwLock<crate::doc::Audio>>;
 
+/// 把任意错误转成 Python `AsrDataError`。
 pub(super) fn py_error(error: impl std::fmt::Display) -> PyErr {
     AsrDataError::new_err(error.to_string())
 }
 
+/// 把数据库错误映射成更具体的 Python 异常。
 pub(super) fn py_db_error(error: RustAudioDbError) -> PyErr {
     match error {
         RustAudioDbError::NotFound { audio_id } => PyKeyError::new_err(audio_id),
@@ -26,10 +29,12 @@ pub(super) fn py_db_error(error: RustAudioDbError) -> PyErr {
     }
 }
 
+/// RwLock 被毒化时的运行时错误。
 pub(super) fn poisoned(label: &str) -> PyErr {
     PyRuntimeError::new_err(format!("{label} lock is poisoned"))
 }
 
+/// 把 Python 的声道名或下标解析成 [`RustAudioChannel`]。
 pub(super) fn audio_channel(value: &Bound<'_, PyAny>) -> PyResult<RustAudioChannel> {
     if let Ok(name) = value.extract::<String>() {
         return match name.to_ascii_lowercase().as_str() {
@@ -54,10 +59,12 @@ pub(super) fn audio_channel(value: &Bound<'_, PyAny>) -> PyResult<RustAudioChann
     }
 }
 
+/// 声道的稳定英文名。
 pub(super) fn audio_channel_name(channel: RustAudioChannel) -> String {
     channel.name()
 }
 
+/// 编码枚举对应的 Python 字符串。
 pub(super) fn encoding_name(encoding: &AudioEncoding) -> String {
     match encoding {
         AudioEncoding::Wav => "wav".to_string(),
@@ -70,6 +77,7 @@ pub(super) fn encoding_name(encoding: &AudioEncoding) -> String {
     }
 }
 
+/// 截断过长字符串并加上省略号，用于 `__repr__`。
 pub(super) fn truncate(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
@@ -112,6 +120,7 @@ pub(super) fn summarize_url(value: &str, max_chars: usize) -> String {
     format!("{left}…{right}{suffix}")
 }
 
+/// 把毫秒格式化成紧凑的 `ms` / `s` / `m` / `h` 文本。
 pub(super) fn format_duration_ms(duration_ms: f64) -> String {
     if duration_ms < 1_000.0 {
         return format!("{duration_ms:.0}ms");
@@ -130,6 +139,7 @@ pub(super) fn format_duration_ms(duration_ms: f64) -> String {
     format!("{hours}h{remaining_minutes:02}m{remaining_seconds:04.1}s")
 }
 
+/// 把 [`RustAudioSource`] 收成 `__repr__` 用的短字段。
 pub(super) fn format_source_field(source: &RustAudioSource) -> String {
     match source {
         RustAudioSource::Path(path) => {

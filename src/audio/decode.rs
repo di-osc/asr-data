@@ -1,4 +1,8 @@
-//! Decoding audio bytes into a waveform.
+//! 把编码音频字节解码成波形，或按块流式解码。
+//!
+//! 一次性解码走 `decode_*` / `decode_*_audio`；流式切块走
+//! [`stream_source`] 和 [`DecodedAudioChunks`]。探测时长和声道不读样本时用
+//! `probe_*`。
 
 use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
@@ -9,21 +13,45 @@ use anyhow::{Context, Result, bail};
 
 use super::{AudioChunk, AudioEncoding, AudioFormat, AudioInfo, AudioSource, Waveform};
 
+/// 编码音频的流式解码器：边读 packet 边吐出固定时长的 PCM 块。
+///
+/// 它不是已经切好的 chunk 列表。内部握着 Symphonia 的容器读取器和解码器，
+/// 把解码出的交错 `f32` 放进 `buffered`，再按 `chunk_size_ms` 切成
+/// [`AudioChunk`]。原始 PCM（[`AudioSource::PcmS16Le`]）不会走这条路径，
+/// 而是由 [`AudioChunks`](super::AudioChunks) 直接切窗。
 pub struct DecodedAudioChunks {
+    /// 当前容器的 packet 读取器。
     format: Box<dyn symphonia::core::formats::FormatReader>,
+    /// 默认音轨对应的解码器。
     decoder: Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
+    /// 只消费该音轨的 packet，其它 track 直接跳过。
     track_id: u32,
     sample_rate: u32,
     channels: u16,
+    /// 源容器编码，原样写到每个输出块上。
     source_format: AudioFormat,
+    /// 一块输出需要的交错样本数（帧数 × 声道数）。
     samples_per_chunk: usize,
+    /// 已解码但还不够一块的样本队列。
     buffered: VecDeque<f32>,
+    /// 下一个输出块在源时间轴上的起始帧。
     offset_frames: usize,
+    /// 下一个输出块的从零开始序号。
     next_index: usize,
+    /// 容器已经读完，或解码出错后不再继续。
     finished: bool,
 }
 
 impl DecodedAudioChunks {
+    /// 探测容器、创建解码器，并按 `chunk_size_ms` 算出每块样本数。
+    ///
+    /// `hint` 用于帮助 Symphonia 识别格式（通常来自文件扩展名）。
+    /// `encoding` 只记录到 [`AudioFormat`]，不参与解码路径选择。
+    ///
+    /// # Errors
+    ///
+    /// `chunk_size_ms` 为 0、无法探测格式、没有音轨、缺少采样率，或无法创建
+    /// 解码器时返回错误。
     fn new(
         mss: symphonia::core::io::MediaSourceStream<'static>,
         hint: symphonia::core::formats::probe::Hint,
@@ -60,6 +88,7 @@ impl DecodedAudioChunks {
             .make_audio_decoder(params, &AudioDecoderOptions::default())
             .map_err(|e| anyhow::anyhow!("failed to create decoder: {e}"))?;
         let track_id = track.id;
+        // 向上取整，保证块时长至少为 chunk_size_ms，且至少 1 帧。
         let frames = (u128::from(chunk_size_ms) * u128::from(sample_rate))
             .div_ceil(1000)
             .max(1) as usize;
@@ -82,6 +111,14 @@ impl DecodedAudioChunks {
         })
     }
 
+    /// 解码下一个属于当前音轨的 packet，把样本追加进 `buffered`。
+    ///
+    /// 读到容器结尾时只把 `finished` 置位，不视为错误。损坏的单个 packet
+    /// （`DecodeError`）会被跳过，以便尽量恢复后续音频。
+    ///
+    /// # Errors
+    ///
+    /// 读取 packet 失败，或遇到不可恢复的解码错误时返回错误。
     fn decode_packet(&mut self) -> Result<()> {
         use symphonia::core::errors::Error as SymphoniaError;
         loop {
@@ -104,6 +141,7 @@ impl DecodedAudioChunks {
                     self.buffered.extend(samples);
                     return Ok(());
                 }
+                // 单包损坏时跳过，继续找下一个可解码 packet。
                 Err(SymphoniaError::DecodeError(_)) => continue,
                 Err(error) => {
                     return Err(anyhow::anyhow!("failed to decode audio packet: {error}"));
@@ -115,6 +153,11 @@ impl DecodedAudioChunks {
 
 impl Iterator for DecodedAudioChunks {
     type Item = Result<AudioChunk>;
+
+    /// 吐出下一块源采样率 PCM。
+    ///
+    /// 缓冲不够一块且容器未结束时会继续 `decode_packet`。最后一块不补零，
+    /// `is_final` 仅在容器耗尽且队列已空时为真。
     fn next(&mut self) -> Option<Self::Item> {
         while self.buffered.len() < self.samples_per_chunk && !self.finished {
             if let Err(error) = self.decode_packet() {
@@ -143,13 +186,20 @@ impl Iterator for DecodedAudioChunks {
     }
 }
 
+/// 把阻塞 HTTP 响应当成 Symphonia 的不可寻址媒体源。
+///
+/// 网络流不能 `seek`，因此只能顺序解码；`byte_len` 在服务端提供
+/// `Content-Length` 时可用。
 struct HttpMediaSource(reqwest::blocking::Response);
+
 impl Read for HttpMediaSource {
+    /// 从 HTTP 响应体顺序读取字节。
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.0.read(buf)
     }
 }
 impl Seek for HttpMediaSource {
+    /// HTTP 流不可寻址。
     fn seek(&mut self, _: SeekFrom) -> std::io::Result<u64> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -158,14 +208,24 @@ impl Seek for HttpMediaSource {
     }
 }
 impl symphonia::core::io::MediaSource for HttpMediaSource {
+    /// HTTP 响应体不能随机访问。
     fn is_seekable(&self) -> bool {
         false
     }
+    /// 若响应带 `Content-Length` 则返回总字节数。
     fn byte_len(&self) -> Option<u64> {
         self.0.content_length()
     }
 }
 
+/// 按 `chunk_size_ms` 对流式解码 `source`，返回 [`DecodedAudioChunks`] 迭代器。
+///
+/// 支持路径、HTTP(S) URL、`file://` URL、编码字节和 base64。原始 PCM 没有
+/// 容器可读，调用方应改走 [`Waveform::into_chunks_ms`](super::Waveform::into_chunks_ms)。
+///
+/// # Errors
+///
+/// 来源是 PCM、无法打开 / 下载 / 解码，或 `chunk_size_ms` 为 0 时返回错误。
 pub fn stream_source(source: &AudioSource, chunk_size_ms: u64) -> Result<DecodedAudioChunks> {
     use base64::Engine;
     use std::fs::File;
@@ -192,6 +252,7 @@ pub fn stream_source(source: &AudioSource, chunk_size_ms: u64) -> Result<Decoded
             )
         }
         AudioSource::Url(url) => {
+            // file:// 不走 HTTP，直接打开本地路径，以便保留扩展名 hint。
             if let Ok(parsed) = reqwest::Url::parse(url)
                 && parsed.scheme() == "file"
             {
@@ -255,12 +316,24 @@ pub fn stream_source(source: &AudioSource, chunk_size_ms: u64) -> Result<Decoded
     )
 }
 
+/// 解码本地文件并下混为单声道，返回 `(samples, sample_rate)`。
+///
+/// 需要保留多声道时请用 [`decode_path_audio`]。
+///
+/// # Errors
+///
+/// 打开、探测或解码失败，或无法下混时返回错误。
 pub fn decode_path(path: &Path) -> Result<(Vec<f32>, u32)> {
     let waveform = decode_path_audio(path)?;
     let mono = waveform.to_mono()?;
     Ok((mono.samples, mono.sample_rate))
 }
 
+/// 探测本地音频文件的采样率、声道数和帧数，不把波形读进内存。
+///
+/// # Errors
+///
+/// 打开文件或探测容器失败时返回错误。
 pub fn probe_path(path: &Path) -> Result<AudioInfo> {
     use std::fs::File;
     use symphonia::core::formats::probe::Hint;
@@ -283,6 +356,13 @@ pub fn probe_path(path: &Path) -> Result<AudioInfo> {
     )
 }
 
+/// 下载 URL 对应的音频并探测 [`AudioInfo`]。
+///
+/// 当前实现会把响应体完整读入内存后再探测。
+///
+/// # Errors
+///
+/// HTTP 失败或字节无法识别为音频时返回错误。
 pub fn probe_url(url: &str) -> Result<AudioInfo> {
     let response = reqwest::blocking::get(url)
         .with_context(|| format!("failed to fetch audio from URL {url:?}"))?;
@@ -296,6 +376,11 @@ pub fn probe_url(url: &str) -> Result<AudioInfo> {
     probe_bytes_with_encoding(bytes.clone(), encoding_from_url(url, &bytes))
 }
 
+/// 解码 base64（可带 `data:` 前缀）后探测 [`AudioInfo`]。
+///
+/// # Errors
+///
+/// base64 非法或字节无法识别为音频时返回错误。
 pub fn probe_base64(data: &str) -> Result<AudioInfo> {
     use base64::Engine;
     let raw = data
@@ -308,12 +393,18 @@ pub fn probe_base64(data: &str) -> Result<AudioInfo> {
     probe_bytes(bytes)
 }
 
+/// 探测编码音频字节的 [`AudioInfo`]，编码由魔数推断。
+///
+/// # Errors
+///
+/// 字节无法识别为音频容器时返回错误。
 pub fn probe_bytes(bytes: impl Into<Vec<u8>>) -> Result<AudioInfo> {
     let bytes = bytes.into();
     let encoding = detect_encoding(&bytes);
     probe_bytes_with_encoding(bytes, encoding)
 }
 
+/// 在已知 `encoding` 的前提下探测内存中的编码音频。
 fn probe_bytes_with_encoding(bytes: Vec<u8>, encoding: AudioEncoding) -> Result<AudioInfo> {
     use std::io::Cursor;
     use symphonia::core::formats::probe::Hint;
@@ -325,6 +416,13 @@ fn probe_bytes_with_encoding(bytes: Vec<u8>, encoding: AudioEncoding) -> Result<
     )
 }
 
+/// 打开 Symphonia 流并读取默认音轨的采样率、声道和帧数。
+///
+/// 容器若未声明时长，会扫描全部 packet 用 time base 推算 `frame_count`。
+///
+/// # Errors
+///
+/// 探测失败、没有音轨、缺少采样率，或无法推算时长时返回错误。
 fn probe_audio_stream(
     mss: symphonia::core::io::MediaSourceStream,
     hint: symphonia::core::formats::probe::Hint,
@@ -374,6 +472,7 @@ fn probe_audio_stream(
     let frame_count = match frame_count {
         Some(frame_count) => frame_count,
         None => {
+            // 容器没写时长时，累加本音轨 packet duration 再换算成帧数。
             let time_base =
                 time_base.ok_or_else(|| anyhow::anyhow!("audio duration is unavailable"))?;
             let mut ticks = 0_u64;
@@ -411,6 +510,11 @@ fn probe_audio_stream(
     })
 }
 
+/// 解码本地文件为多声道 [`Waveform`]，不自动下混。
+///
+/// # Errors
+///
+/// 打开文件或解码失败时返回错误。
 pub fn decode_path_audio(path: &Path) -> Result<Waveform> {
     use std::fs::File;
 
@@ -442,12 +546,26 @@ pub fn decode_path_audio(path: &Path) -> Result<Waveform> {
     )
 }
 
+/// 下载 URL 音频、解码并下混为单声道，返回 `(samples, sample_rate)`。
+///
+/// 需要保留多声道时请用 [`decode_url_audio`]。
+///
+/// # Errors
+///
+/// HTTP、解码或下混失败时返回错误。
 pub fn decode_url(url: &str) -> Result<(Vec<f32>, u32)> {
     let waveform = decode_url_audio(url)?;
     let mono = waveform.to_mono()?;
     Ok((mono.samples, mono.sample_rate))
 }
 
+/// 下载 URL 音频并解码为多声道 [`Waveform`]。
+///
+/// 响应体会完整读入内存。扩展名可识别时会传给 Symphonia 作为格式 hint。
+///
+/// # Errors
+///
+/// HTTP 或解码失败时返回错误。
 pub fn decode_url_audio(url: &str) -> Result<Waveform> {
     use std::io::Cursor;
 
@@ -488,12 +606,21 @@ pub fn decode_url_audio(url: &str) -> Result<Waveform> {
     )
 }
 
+/// 异步下载 HTTP(S) URL 的原始字节。
+///
+/// 本机地址（localhost / 127.0.0.1 / ::1）使用无代理客户端，避免开发环境
+/// 把本地请求打到代理。
+///
+/// # Errors
+///
+/// URL 非法、请求失败或读取响应体失败时返回错误。
 pub async fn download_url_bytes(url: &str) -> Result<Vec<u8>> {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     static NO_PROXY_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
     let parsed = reqwest::Url::parse(url).with_context(|| format!("invalid audio URL {url:?}"))?;
     let local = matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    // 本地地址绕过 HTTP_PROXY，否则 loopback 请求可能被代理吃掉。
     let client = if local {
         NO_PROXY_CLIENT.get_or_init(|| {
             reqwest::Client::builder()
@@ -519,12 +646,22 @@ pub async fn download_url_bytes(url: &str) -> Result<Vec<u8>> {
         .to_vec())
 }
 
+/// 解码 base64 音频并下混为单声道，返回 `(samples, sample_rate)`。
+///
+/// # Errors
+///
+/// base64、解码或下混失败时返回错误。
 pub fn decode_base64(b64: &str) -> Result<(Vec<f32>, u32)> {
     let waveform = decode_base64_audio(b64)?;
     let mono = waveform.to_mono()?;
     Ok((mono.samples, mono.sample_rate))
 }
 
+/// 解码 base64（可带 `data:` 前缀）为多声道 [`Waveform`]。
+///
+/// # Errors
+///
+/// base64 非法或字节无法解码为音频时返回错误。
 pub fn decode_base64_audio(b64: &str) -> Result<Waveform> {
     use base64::Engine;
 
@@ -543,6 +680,13 @@ pub fn decode_base64_audio(b64: &str) -> Result<Waveform> {
     decode_bytes_audio(bytes)
 }
 
+/// 解码带容器的音频字节为多声道 [`Waveform`]。
+///
+/// 编码由魔数推断。原始 PCM 请走 [`Waveform::from_i16_pcm_bytes_with_channels`]。
+///
+/// # Errors
+///
+/// 字节无法探测或解码时返回错误。
 pub fn decode_bytes_audio(bytes: impl Into<Vec<u8>>) -> Result<Waveform> {
     use std::io::Cursor;
 
@@ -565,6 +709,7 @@ pub fn decode_bytes_audio(bytes: impl Into<Vec<u8>>) -> Result<Waveform> {
     )
 }
 
+/// 优先用 URL 路径扩展名推断编码，无法识别时回退到字节魔数。
 fn encoding_from_url(url: &str, bytes: &[u8]) -> AudioEncoding {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let extension = path.rsplit_once('.').map(|(_, extension)| extension);
@@ -574,6 +719,7 @@ fn encoding_from_url(url: &str, bytes: &[u8]) -> AudioEncoding {
         .unwrap_or_else(|| detect_encoding(bytes))
 }
 
+/// 把文件扩展名映射为 [`AudioEncoding`]；未知扩展名返回 `Unknown`。
 fn encoding_from_extension(extension: &str) -> AudioEncoding {
     match extension.to_ascii_lowercase().as_str() {
         "wav" | "wave" => AudioEncoding::Wav,
@@ -584,6 +730,7 @@ fn encoding_from_extension(extension: &str) -> AudioEncoding {
     }
 }
 
+/// 用常见容器魔数推断编码；无法识别时返回 [`AudioEncoding::Unknown`]。
 fn detect_encoding(bytes: &[u8]) -> AudioEncoding {
     if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WAVE") {
         AudioEncoding::Wav
@@ -602,6 +749,14 @@ fn detect_encoding(bytes: &[u8]) -> AudioEncoding {
     }
 }
 
+/// 把整个 Symphonia 流解码成交织 `f32` PCM。
+///
+/// 返回 `(samples, sample_rate, channels)`。解码过程中声道数必须保持不变；
+/// 单个损坏 packet 会被跳过。结束前会清洗非有限样本并钳到 `[-1, 1]`。
+///
+/// # Errors
+///
+/// 探测、缺音轨、缺采样率、声道数中途变化或不可恢复的解码错误时返回错误。
 fn decode_audio_stream(
     mss: symphonia::core::io::MediaSourceStream,
     hint: symphonia::core::formats::probe::Hint,
@@ -660,6 +815,7 @@ fn decode_audio_stream(
 
         let decoded = match decoder.decode(&packet) {
             Ok(d) => d,
+            // 单包损坏时跳过，尽量保住后续可解码数据。
             Err(SymphoniaError::DecodeError(_)) => continue,
             Err(e) => return Err(anyhow::anyhow!("failed to decode audio packet: {e}")),
         };

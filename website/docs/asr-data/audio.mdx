@@ -213,6 +213,7 @@ timeline 或 annotation 时，才需要按相应 API 的规则转换为毫秒整
 | -------------------------------------- | ----------------------------------------- |
 | `resample(sample_rate)`                | 转换到目标采样率                          |
 | `to_mono()`                            | 将所有声道混合为单声道                    |
+| `peak_normalize()`                     | 按峰值缩放到 `[-1, 1]`（超过 1 才缩放）   |
 | `channel(index)`                       | 提取一个声道，索引从 `0` 开始             |
 | `slice_ms(start_ms, end_ms)`           | 按毫秒截取左闭右开的时间范围              |
 | `split_at_low_energy(max_duration_ms)` | 将长音频优先拆在低能量位置                |

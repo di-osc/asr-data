@@ -1,4 +1,4 @@
-//! ASR data model types shared by offline and realtime inference.
+//! ASR 数据模型：音频文档、时间轴标注、评估指标和 SQLite 存储。
 
 pub mod audio;
 mod dataset;

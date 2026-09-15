@@ -17,6 +17,7 @@ use rustfst::{EPS_LABEL, Label};
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+/// 中文 TN / FST 执行失败。
 pub enum TextNormalizationError {
     #[error("failed to load embedded Chinese TN resource {resource}: {message}")]
     FstLoad {
@@ -29,16 +30,23 @@ pub enum TextNormalizationError {
     TokenParse(String),
 }
 
+/// 单张 FST：把输入字节当成 label 跑 shortest path。
 struct FstTextNormalizer {
     fst: VectorFst<TropicalWeight>,
 }
 
+/// 中文 TN 各步骤开关。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChineseTextNormalizationOptions {
+    /// 繁体转简体。
     pub traditional_to_simple: bool,
+    /// 全角转半角。
     pub full_to_half: bool,
+    /// 去掉儿化。
     pub remove_erhua: bool,
+    /// 去掉语气词。
     pub remove_interjections: bool,
+    /// 去掉标点。
     pub remove_puncts: bool,
 }
 
@@ -55,6 +63,7 @@ impl Default for ChineseTextNormalizationOptions {
 }
 
 impl FstTextNormalizer {
+    /// 从嵌入的 FST 字节加载。
     fn from_bytes(resource: &'static str, bytes: &[u8]) -> Result<Self, TextNormalizationError> {
         let fst = VectorFst::<TropicalWeight>::load(bytes).map_err(|error| {
             TextNormalizationError::FstLoad {
@@ -65,6 +74,7 @@ impl FstTextNormalizer {
         Ok(Self { fst })
     }
 
+    /// 对输入跑 compose + shortest path；空图时原样返回。
     fn normalize(&self, input: &str) -> Result<String, TextNormalizationError> {
         if input.is_empty() {
             return Ok(String::new());
@@ -96,6 +106,7 @@ impl FstTextNormalizer {
     }
 }
 
+/// 把最短路径上的输出 label 还原成字符串（字节或码点）。
 fn fst_output(fst: &VectorFst<TropicalWeight>) -> Result<String, TextNormalizationError> {
     let path = decode_linear_fst(fst)
         .map_err(|error| TextNormalizationError::FstOperation(error.to_string()))?;
@@ -127,6 +138,7 @@ fn fst_output(fst: &VectorFst<TropicalWeight>) -> Result<String, TextNormalizati
         .map_err(|error| TextNormalizationError::FstOperation(error.to_string()))
 }
 
+/// 内嵌 WeText 中文 TN 流水线：tagger / verbalizer 以及前后处理 FST。
 struct ChineseTn {
     tagger: FstTextNormalizer,
     verbalizer: FstTextNormalizer,
@@ -138,6 +150,7 @@ struct ChineseTn {
 }
 
 impl ChineseTn {
+    /// 从 crate 内嵌的 FST 资源构造。
     fn embedded() -> Result<Self, TextNormalizationError> {
         let tagger = FstTextNormalizer::from_bytes(
             "zh/tn/tagger.fst",
@@ -199,6 +212,7 @@ impl ChineseTn {
         })
     }
 
+    /// 预处理 → tagger → 重排 token → verbalizer → 后处理。
     fn normalize(
         &self,
         text: &str,
@@ -218,6 +232,7 @@ impl ChineseTn {
         self.postprocess(&normalized, options)
     }
 
+    /// 可选的繁转简。
     fn preprocess(
         &self,
         text: &str,
@@ -230,6 +245,7 @@ impl ChineseTn {
         }
     }
 
+    /// 全角、语气词和标点等后处理。
     fn postprocess(
         &self,
         text: &str,
@@ -262,6 +278,11 @@ pub fn normalize_zh(text: &str) -> Result<String, TextNormalizationError> {
     normalize_zh_with_options(text, ChineseTextNormalizationOptions::default())
 }
 
+/// 按选项做中文 TN。
+///
+/// # Errors
+///
+/// 加载或执行嵌入 FST 失败时返回错误。
 pub fn normalize_zh_with_options(
     text: &str,
     options: ChineseTextNormalizationOptions,
@@ -274,6 +295,7 @@ fn remove_zh_interjections(text: &str) -> Result<String, TextNormalizationError>
     chinese_tn()?.remove_interjections(text)
 }
 
+/// 只做前后处理，跳过 tagger/verbalizer（评估快路径）。
 pub(crate) fn normalize_zh_without_tn(
     text: &str,
     options: ChineseTextNormalizationOptions,
@@ -283,6 +305,7 @@ pub(crate) fn normalize_zh_without_tn(
     normalizer.postprocess(&preprocessed, options)
 }
 
+/// 进程内懒加载嵌入的中文 TN 资源。
 fn chinese_tn() -> Result<&'static ChineseTn, TextNormalizationError> {
     static NORMALIZER: OnceLock<Result<ChineseTn, TextNormalizationError>> = OnceLock::new();
     match NORMALIZER.get_or_init(ChineseTn::embedded) {
@@ -291,6 +314,7 @@ fn chinese_tn() -> Result<&'static ChineseTn, TextNormalizationError> {
     }
 }
 
+/// tagger 输出的结构化 token，用于把字段重排成 verbalizer 期望的顺序。
 #[derive(Debug)]
 struct TaggedToken {
     name: String,
@@ -299,6 +323,7 @@ struct TaggedToken {
 }
 
 impl TaggedToken {
+    /// 按类别优先字段顺序渲染回 tagger 文本。
     fn render(&self) -> String {
         let preferred = preferred_order(&self.name);
         let order = preferred.as_deref().unwrap_or(&self.order);
@@ -313,6 +338,7 @@ impl TaggedToken {
     }
 }
 
+/// 日期、分数、金额等类别的字段顺序。
 fn preferred_order(name: &str) -> Option<Vec<String>> {
     let keys: &[&str] = match name {
         "date" => &["year", "month", "day"],
@@ -325,6 +351,7 @@ fn preferred_order(name: &str) -> Option<Vec<String>> {
     Some(keys.iter().map(|key| (*key).to_owned()).collect())
 }
 
+/// 解析 tagger 文本并把 token 字段重排成 verbalizer 偏好顺序。
 fn reorder_zh_tn_tokens(input: &str) -> Result<String, TextNormalizationError> {
     if !input.contains('{') {
         return Ok(input.to_owned());
@@ -338,6 +365,7 @@ fn reorder_zh_tn_tokens(input: &str) -> Result<String, TextNormalizationError> {
     })
 }
 
+/// 解析 `name { key: "value" ... }` 形式的 tagger 输出。
 fn parse_tagged_tokens(input: &str) -> Result<Vec<TaggedToken>, TextNormalizationError> {
     let chars = input.chars().collect::<Vec<_>>();
     let mut index = 0;
@@ -385,6 +413,7 @@ fn parse_tagged_tokens(input: &str) -> Result<Vec<TaggedToken>, TextNormalizatio
     Ok(tokens)
 }
 
+/// 跳过空白字符。
 fn skip_whitespace(chars: &[char], index: &mut usize) {
     while chars
         .get(*index)
@@ -394,6 +423,7 @@ fn skip_whitespace(chars: &[char], index: &mut usize) {
     }
 }
 
+/// 读取 ASCII 标识符。
 fn parse_identifier(chars: &[char], index: &mut usize) -> String {
     let start = *index;
     while chars
@@ -405,6 +435,7 @@ fn parse_identifier(chars: &[char], index: &mut usize) -> String {
     chars[start..*index].iter().collect()
 }
 
+/// 当前位置必须是 `expected`。
 fn expect(chars: &[char], index: &mut usize, expected: char) -> Result<(), TextNormalizationError> {
     if chars.get(*index) != Some(&expected) {
         return Err(TextNormalizationError::TokenParse(format!(
@@ -415,6 +446,7 @@ fn expect(chars: &[char], index: &mut usize, expected: char) -> Result<(), TextN
     Ok(())
 }
 
+/// 解析双引号字符串，支持反斜杠转义。
 fn parse_quoted_value(chars: &[char], index: &mut usize) -> Result<String, TextNormalizationError> {
     expect(chars, index, '"')?;
     let mut value = String::new();

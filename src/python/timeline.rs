@@ -1494,6 +1494,7 @@ fn validate_source(source: &str) -> PyResult<()> {
     Ok(())
 }
 
+/// 把本模块的 Python 类型和函数注册进 `_native`。
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyTimeSpan>()?;
     module.add_class::<PyTranscript>()?;

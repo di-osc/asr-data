@@ -1,3 +1,5 @@
+//! Python 绑定：把 Rust 核心类型导出为 `_native` 扩展模块。
+
 mod annotation;
 mod audio;
 mod common;
@@ -13,6 +15,7 @@ use pyo3::prelude::*;
 
 create_exception!(_native, AsrDataError, PyException);
 
+/// Python 扩展模块入口：注册类型、函数和 `AsrDataError`。
 #[pymodule]
 fn _native(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     let _ = audio::async_runtime();

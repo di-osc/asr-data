@@ -464,6 +464,21 @@ class Waveform:
             >>> Waveform(np.zeros(160), 16000).resample(8000).sample_rate
             8000
         """
+    def peak_normalize(self) -> Waveform:
+        """按峰值缩放到 ``[-1, 1]``。
+
+        非有限值先置 0。若剩余峰值大于 1，整段除以该峰值后再钳位。
+        峰值不超过 1 时波形不变。
+
+        Returns:
+            不修改原对象的新 Waveform。
+
+        Examples:
+            >>> import numpy as np
+            >>> from asr_data import Waveform
+            >>> Waveform(np.array([0.0, 2.0, -2.0], dtype=np.float32), 16000).peak_normalize().samples.tolist()
+            [0.0, 1.0, -1.0]
+        """
     def slice_ms(self, start_ms: int, end_ms: int) -> Waveform:
         """按半开毫秒范围截取音频。
 

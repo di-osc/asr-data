@@ -55,6 +55,7 @@ fn normalize_zh(
     .map_err(py_error)
 }
 
+/// 把本模块的 Python 类型和函数注册进 `_native`。
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(normalize_zh, module)?)?;
     Ok(())

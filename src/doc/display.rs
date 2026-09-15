@@ -21,6 +21,7 @@ const GREEN: &str = "\x1b[32m";
 const BLUE: &str = "\x1b[34m";
 const YELLOW: &str = "\x1b[33m";
 
+/// 终端里的紧凑 Audio 摘要：标题、波形和标注轨道。
 pub(super) struct AudioTerminalView<'a> {
     audio: &'a Audio,
     width: usize,
@@ -28,6 +29,7 @@ pub(super) struct AudioTerminalView<'a> {
 }
 
 impl<'a> AudioTerminalView<'a> {
+    /// 按 `COLUMNS` 和是否 TTY 自动选择宽度与颜色。
     pub(super) fn auto(audio: &'a Audio) -> Self {
         let width = env::var("COLUMNS")
             .ok()
@@ -42,6 +44,7 @@ impl<'a> AudioTerminalView<'a> {
         }
     }
 
+    /// 强制开关颜色，宽度仍随终端。
     pub(super) fn with_color(audio: &'a Audio, color: bool) -> Self {
         let width = env::var("COLUMNS")
             .ok()
@@ -55,6 +58,7 @@ impl<'a> AudioTerminalView<'a> {
         }
     }
 
+    /// 测试用固定宽度构造器。
     #[cfg(test)]
     fn new(audio: &'a Audio, width: usize, color: bool) -> Self {
         Self {
@@ -64,6 +68,7 @@ impl<'a> AudioTerminalView<'a> {
         }
     }
 
+    /// 颜色开启时包一层 ANSI，否则原样返回。
     fn paint(&self, style: &str, value: &str) -> String {
         if self.color {
             format!("{style}{value}{RESET}")
@@ -72,6 +77,7 @@ impl<'a> AudioTerminalView<'a> {
         }
     }
 
+    /// 画顶部标题栏。
     fn write_header(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let title = " Audio ";
         let rule_width = self.width.saturating_sub(2 + title.chars().count());
@@ -97,6 +103,7 @@ impl<'a> AudioTerminalView<'a> {
         writeln!(formatter, "{}", self.paint(BOLD_CYAN, &bottom))
     }
 
+    /// 输出一行标签+值的卡片。
     fn write_card_line(&self, formatter: &mut fmt::Formatter<'_>, value: &str) -> fmt::Result {
         let content_width = self.width.saturating_sub(4);
         let value = truncate(value, content_width);
@@ -104,6 +111,7 @@ impl<'a> AudioTerminalView<'a> {
         writeln!(formatter, "│ {value}{} │", " ".repeat(padding))
     }
 
+    /// 按声道画出波形和标注轨道。
     fn write_timeline(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let plot_width = self.width.saturating_sub(LABEL_WIDTH);
         let duration_ms = self.audio.info.timeline_duration_ms();
@@ -189,6 +197,7 @@ impl fmt::Display for AudioTerminalView<'_> {
     }
 }
 
+/// 编码的短名称。
 fn encoding_name(encoding: &AudioEncoding) -> String {
     match encoding {
         AudioEncoding::Wav => "WAV".to_owned(),
@@ -201,6 +210,7 @@ fn encoding_name(encoding: &AudioEncoding) -> String {
     }
 }
 
+/// 采样率的人类可读文本。
 fn sample_rate_name(sample_rate: u32) -> String {
     if sample_rate < 1_000 {
         return format!("{sample_rate} Hz");
@@ -212,6 +222,7 @@ fn sample_rate_name(sample_rate: u32) -> String {
     }
 }
 
+/// 声道数的展示名。
 fn channel_count_name(channels: u16) -> String {
     match channels {
         1 => "Mono".to_owned(),
@@ -220,6 +231,7 @@ fn channel_count_name(channels: u16) -> String {
     }
 }
 
+/// 来源路径或 URL 的截断展示。
 fn source_name(source: &AudioSource) -> String {
     match source {
         AudioSource::Path(path) => path.display().to_string(),
@@ -256,6 +268,7 @@ fn source_name(source: &AudioSource) -> String {
     }
 }
 
+/// 声道在终端中的标签。
 fn channel_label(channel: AudioChannel) -> String {
     match channel {
         AudioChannel::Mono => "Mono".to_owned(),
@@ -265,6 +278,7 @@ fn channel_label(channel: AudioChannel) -> String {
     }
 }
 
+/// 把峰值能量画成字符波形。
 fn waveform_line(waveform: &crate::audio::Waveform, channel: AudioChannel, width: usize) -> String {
     let channels = usize::from(waveform.channels.max(1));
     let channel_index = usize::from(channel.index().unwrap_or(0)).min(channels - 1);
@@ -296,6 +310,7 @@ fn waveform_line(waveform: &crate::audio::Waveform, channel: AudioChannel, width
         .collect()
 }
 
+/// 时间轴刻度。
 fn timeline_ticks(duration_ms: u64, width: usize) -> Vec<(usize, u64)> {
     if duration_ms == 0 {
         return vec![(0, 0), (width.saturating_sub(1), 0)];
@@ -322,6 +337,7 @@ fn timeline_ticks(duration_ms: u64, width: usize) -> Vec<(usize, u64)> {
     ticks
 }
 
+/// 毫秒时间轴标尺。
 fn time_axis(width: usize, ticks: &[(usize, u64)]) -> String {
     let mut axis = vec!['─'; width];
     for (index, (position, _)) in ticks.iter().copied().enumerate() {
@@ -334,6 +350,7 @@ fn time_axis(width: usize, ticks: &[(usize, u64)]) -> String {
     axis.into_iter().collect()
 }
 
+/// 刻度对应的时间文字。
 fn time_labels(width: usize, ticks: &[(usize, u64)]) -> String {
     let mut labels = vec![' '; width];
     for (index, (position, time_ms)) in ticks.iter().copied().enumerate() {
@@ -350,6 +367,7 @@ fn time_labels(width: usize, ticks: &[(usize, u64)]) -> String {
     labels.into_iter().collect()
 }
 
+/// 把毫秒格式化成 mm:ss 或 hh:mm:ss。
 fn format_time(time_ms: u64) -> String {
     if time_ms.is_multiple_of(1_000) {
         format!("{}s", time_ms / 1_000)
@@ -359,6 +377,7 @@ fn format_time(time_ms: u64) -> String {
     }
 }
 
+/// 把一类标注画成一行轨道。
 fn annotation_track(
     annotations: &[&TimeSpan],
     duration_ms: u64,
@@ -386,6 +405,7 @@ fn annotation_track(
     track.into_iter().collect()
 }
 
+/// 按类型分组输出标注方块。
 fn write_annotation_groups(
     formatter: &mut fmt::Formatter<'_>,
     role: &str,
@@ -409,6 +429,7 @@ fn write_annotation_groups(
     Ok(())
 }
 
+/// 按标注类型分组。
 fn annotation_groups<'a>(
     role: &str,
     annotations: &'a [TimeSpan],
@@ -433,6 +454,7 @@ fn annotation_groups<'a>(
     groups
 }
 
+/// 标注类型的短名。
 fn annotation_type_name(annotation: &Annotation) -> &'static str {
     match annotation {
         Annotation::Activity(_) => "Activity",
@@ -444,6 +466,7 @@ fn annotation_type_name(annotation: &Annotation) -> &'static str {
     }
 }
 
+/// 画一个标注详情方块。
 fn write_annotation_box(
     formatter: &mut fmt::Formatter<'_>,
     name: &str,
@@ -474,6 +497,7 @@ fn write_annotation_box(
     Ok(())
 }
 
+/// 标注在轨道上的短标签。
 fn annotation_label(span: &TimeSpan) -> String {
     let mut label = match &span.annotation {
         Annotation::Activity(activity) => activity
@@ -492,6 +516,7 @@ fn annotation_label(span: &TimeSpan) -> String {
     label
 }
 
+/// 居中分隔线。
 fn centered_rule(label: &str, width: usize) -> String {
     let label = format!(" {label} ");
     if label.chars().count() >= width {
@@ -507,6 +532,7 @@ fn centered_rule(label: &str, width: usize) -> String {
     )
 }
 
+/// 千分位数字。
 fn grouped_number(value: u64) -> String {
     let digits = value.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
@@ -519,6 +545,7 @@ fn grouped_number(value: u64) -> String {
     grouped
 }
 
+/// 按显示宽度截断。
 fn truncate(value: &str, width: usize) -> String {
     if display_width(value) <= width {
         return value.to_owned();
@@ -541,6 +568,7 @@ fn truncate(value: &str, width: usize) -> String {
     result
 }
 
+/// Unicode 显示宽度。
 fn display_width(value: &str) -> usize {
     UnicodeWidthStr::width(value)
 }
@@ -553,6 +581,7 @@ fn paint(style: &str, value: &str, color: bool) -> String {
     }
 }
 
+/// 把短字符串叠到背景字符上。
 fn overlay(target: &mut [char], start: usize, value: &str) {
     for (index, character) in value.chars().enumerate() {
         if let Some(cell) = target.get_mut(start + index) {

@@ -17,8 +17,14 @@ use super::{
 };
 
 impl AudioDb {
+    /// 当前 schema 版本，与文件里的 `user_version` 对应。
     pub const SCHEMA_VERSION: i64 = SCHEMA_VERSION;
 
+    /// 创建新数据库文件；路径已存在则失败。
+    ///
+    /// # Errors
+    ///
+    /// 文件已存在、无法创建或初始化 schema 失败时返回错误。
     pub fn create(path: impl AsRef<Path>) -> Result<Self, AudioDbError> {
         let path = path.as_ref();
         let file = std::fs::OpenOptions::new()
@@ -41,6 +47,11 @@ impl AudioDb {
         Ok(Self { connection })
     }
 
+    /// 打开已有数据库。
+    ///
+    /// # Errors
+    ///
+    /// 文件不存在、schema 不匹配或 SQLite 打开失败时返回错误。
     pub fn open(path: impl AsRef<Path>, mode: AudioDbMode) -> Result<Self, AudioDbError> {
         let path = path.as_ref();
         if !path.is_file() {
@@ -58,6 +69,11 @@ impl AudioDb {
         Ok(Self { connection })
     }
 
+    /// 插入一条已校验的音频文档。
+    ///
+    /// # Errors
+    ///
+    /// 校验失败、主键冲突或写入失败时返回错误。
     pub fn insert(&self, audio: &Audio) -> Result<(), AudioDbError> {
         insert_with(&self.connection, audio, now_unix_millis())
     }
@@ -68,14 +84,29 @@ impl AudioDb {
         update_with(&self.connection, audio, now_unix_millis())
     }
 
+    /// 按 [`AudioQuery`] 过滤并返回音频文档（不含波形）。
+    ///
+    /// # Errors
+    ///
+    /// 查询条件非法或 SQL 执行失败时返回错误。
     pub fn query(&self, query: &AudioQuery) -> Result<Vec<Audio>, AudioDbError> {
         query_with(&self.connection, query)
     }
 
+    /// 按 ID 读取一条文档；不存在返回 `None`。
+    ///
+    /// # Errors
+    ///
+    /// 解码或校验失败时返回错误。
     pub fn get(&self, audio_id: &str) -> Result<Option<Audio>, AudioDbError> {
         get_with(&self.connection, audio_id)
     }
 
+    /// 是否已有该 `audio_id`。
+    ///
+    /// # Errors
+    ///
+    /// SQL 执行失败时返回错误。
     pub fn contains(&self, audio_id: &str) -> Result<bool, AudioDbError> {
         Ok(self
             .connection
@@ -88,6 +119,11 @@ impl AudioDb {
             .is_some())
     }
 
+    /// 删除文档；返回是否确实删掉了一行。
+    ///
+    /// # Errors
+    ///
+    /// SQL 执行失败时返回错误。
     pub fn delete(&self, audio_id: &str) -> Result<bool, AudioDbError> {
         Ok(self
             .connection
@@ -95,6 +131,11 @@ impl AudioDb {
             != 0)
     }
 
+    /// 在同一事务里批量更新；返回实际发生变化的条数。
+    ///
+    /// # Errors
+    ///
+    /// 任一条校验或写入失败时整笔回滚。
     pub fn update_many(&mut self, audios: &[Audio]) -> Result<usize, AudioDbError> {
         let transaction = self.connection.transaction()?;
         let updated_at_ms = now_unix_millis();
@@ -106,6 +147,7 @@ impl AudioDb {
         Ok(updated)
     }
 
+    /// 当前存储的音频文档数量。
     pub(crate) fn len(&self) -> Result<usize, AudioDbError> {
         let count: i64 = self
             .connection
@@ -113,6 +155,7 @@ impl AudioDb {
         Ok(usize::try_from(count).unwrap_or(usize::MAX))
     }
 
+    /// 所有文档 `duration_ms` 之和。
     pub(crate) fn total_duration(&self) -> Result<DurationMs, AudioDbError> {
         let duration: i64 = self.connection.query_row(
             "SELECT COALESCE(SUM(duration_ms), 0) FROM audios",
@@ -122,6 +165,11 @@ impl AudioDb {
         Ok(DurationMs(u64::try_from(duration).unwrap_or_default()))
     }
 
+    /// 写入或覆盖一条库级 metadata。
+    ///
+    /// # Errors
+    ///
+    /// JSON 序列化或 SQL 失败时返回错误。
     pub fn set_metadata(&self, key: &str, value: &serde_json::Value) -> Result<(), AudioDbError> {
         let value = serde_json::to_string(value)?;
         self.connection.execute(
@@ -132,6 +180,11 @@ impl AudioDb {
         Ok(())
     }
 
+    /// 读取一条库级 metadata。
+    ///
+    /// # Errors
+    ///
+    /// JSON 反序列化或 SQL 失败时返回错误。
     pub fn metadata(&self, key: &str) -> Result<Option<serde_json::Value>, AudioDbError> {
         self.connection
             .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
@@ -142,6 +195,11 @@ impl AudioDb {
             .transpose()
     }
 
+    /// 按 key 排序返回全部库级 metadata。
+    ///
+    /// # Errors
+    ///
+    /// JSON 反序列化或 SQL 失败时返回错误。
     pub fn all_metadata(&self) -> Result<BTreeMap<String, serde_json::Value>, AudioDbError> {
         let mut statement = self
             .connection
@@ -157,6 +215,7 @@ impl AudioDb {
         Ok(metadata)
     }
 
+    /// 删除一条库级 metadata；返回是否删掉了键。
     pub fn delete_metadata(&self, key: &str) -> Result<bool, AudioDbError> {
         Ok(self
             .connection
@@ -165,6 +224,11 @@ impl AudioDb {
     }
 }
 
+/// 只读打开数据库并读取文档数与总时长。
+///
+/// # Errors
+///
+/// 打开或查询失败时返回错误。
 pub fn read_audio_db_info(path: impl AsRef<Path>) -> Result<AudioDbInfo, AudioDbError> {
     let db = AudioDb::open(path, AudioDbMode::ReadOnly)?;
     Ok(AudioDbInfo {
@@ -174,6 +238,7 @@ pub fn read_audio_db_info(path: impl AsRef<Path>) -> Result<AudioDbInfo, AudioDb
     })
 }
 
+/// 在 savepoint 中插入 audio / source / timeline 三张表。
 fn insert_with(
     connection: &Connection,
     audio: &Audio,
@@ -217,6 +282,7 @@ fn insert_with(
     }
 }
 
+/// 只更新实际变化的字段；无变化不碰 `updated_at_ms`。
 fn update_with(
     connection: &Connection,
     audio: &Audio,
@@ -292,6 +358,7 @@ fn update_with(
     }
 }
 
+/// 把 [`AudioQuery`] 编译成带绑定参数的 SELECT。
 fn query_with(connection: &Connection, query: &AudioQuery) -> Result<Vec<Audio>, AudioDbError> {
     if query.limit > MAX_QUERY_LIMIT {
         return Err(AudioDbError::QueryLimitExceeded {
@@ -410,11 +477,13 @@ fn query_with(connection: &Connection, query: &AudioQuery) -> Result<Vec<Audio>,
         .map_err(AudioDbError::from)
 }
 
+/// 把值推进参数列表，返回 `?n` 占位符。
 fn push_sql_parameter(parameters: &mut Vec<SqlValue>, value: SqlValue) -> String {
     parameters.push(value);
     format!("?{}", parameters.len())
 }
 
+/// 当前 UNIX 毫秒时间戳；早于 epoch 时返回 0。
 fn now_unix_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -422,6 +491,7 @@ fn now_unix_millis() -> i64 {
         .unwrap_or_default()
 }
 
+/// 把查询边界换成毫秒；有亚毫秒余数时向上取整，早于 epoch 为负数。
 fn system_time_to_query_boundary_millis(time: SystemTime) -> i64 {
     match time.duration_since(UNIX_EPOCH) {
         Ok(duration) => {
@@ -433,6 +503,7 @@ fn system_time_to_query_boundary_millis(time: SystemTime) -> i64 {
     }
 }
 
+/// 按主键读取一条音频并解码。
 fn get_with(connection: &Connection, audio_id: &str) -> Result<Option<Audio>, AudioDbError> {
     let sql = "SELECT audio_sources.source, audio_sources.info, timelines.timeline,
                       audios.metadata, audios.audio_id
@@ -446,6 +517,7 @@ fn get_with(connection: &Connection, audio_id: &str) -> Result<Option<Audio>, Au
         .map_err(AudioDbError::from)
 }
 
+/// 把一行 JOIN 结果还原成 [`Audio`]（不含波形）并校验。
 fn decode_audio_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Audio> {
     let source: Vec<u8> = row.get(0)?;
     let info: Vec<u8> = row.get(1)?;
@@ -469,14 +541,17 @@ fn decode_audio_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Audio> {
     Ok(audio)
 }
 
+/// MessagePack 编码，用于 source / info / timeline blob。
 pub(super) fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, rmp_serde::encode::Error> {
     rmp_serde::to_vec_named(value)
 }
 
+/// MessagePack 解码。
 pub(super) fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, rmp_serde::decode::Error> {
     rmp_serde::from_slice(bytes)
 }
 
+/// 把编解码错误包装成 rusqlite 行转换失败。
 fn sql_conversion_error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(error))
 }

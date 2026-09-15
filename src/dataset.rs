@@ -21,8 +21,7 @@ const MODELSCOPE_USER_AGENT: &str = "Mozilla/5.0 (compatible; asr-data/modelhub)
 
 type OptionalDatabase = Option<(PathBuf, AudioDb)>;
 
-/// A named, versioned dataset with optional train, validation, and test
-/// databases.
+/// 带名称、版本和可选 train/val/test 库的数据集。
 pub struct AudioDataset {
     name: String,
     version: String,
@@ -36,6 +35,7 @@ pub struct AudioDataset {
     test: Option<AudioDb>,
 }
 
+/// 从 ModelScope 下载或打开本地 split 库时的错误。
 #[derive(Debug, Error)]
 pub enum AudioDatasetError {
     #[error("ModelScope repository id must not be empty")]
@@ -105,50 +105,62 @@ impl AudioDataset {
         Self::from_modelscope_with_downloader(&ModelHubDownloader, repo_id, revision, cache_dir)
     }
 
+    /// 仓库 ID，例如 `org/name`。
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// 使用的 revision，默认 `master`。
     pub fn version(&self) -> &str {
         &self.version
     }
 
+    /// README front matter 里的 license；没有则为空串。
     pub fn license(&self) -> &str {
         &self.license
     }
 
+    /// 下载后的快照根目录。
     pub fn snapshot_path(&self) -> Option<&Path> {
         self.snapshot_path.as_deref()
     }
 
+    /// `train.db` 路径。
     pub fn train_database_path(&self) -> Option<&Path> {
         self.train_database_path.as_deref()
     }
 
+    /// `val.db` 路径。
     pub fn val_database_path(&self) -> Option<&Path> {
         self.val_database_path.as_deref()
     }
 
+    /// `test.db` 路径。
     pub fn test_database_path(&self) -> Option<&Path> {
         self.test_database_path.as_deref()
     }
 
+    /// 只读打开的训练集。
     pub fn train(&self) -> Option<&AudioDb> {
         self.train.as_ref()
     }
 
+    /// 只读打开的验证集。
     pub fn val(&self) -> Option<&AudioDb> {
         self.val.as_ref()
     }
 
+    /// 只读打开的测试集。
     pub fn test(&self) -> Option<&AudioDb> {
         self.test.as_ref()
     }
 
+    /// 拆出三个 split 数据库，丢掉路径元数据。
     pub fn into_databases(self) -> (Option<AudioDb>, Option<AudioDb>, Option<AudioDb>) {
         (self.train, self.val, self.test)
     }
 
+    /// 用可注入的 downloader 下载快照并打开存在的 split 库。
     fn from_modelscope_with_downloader<D: ModelScopeDownloader>(
         downloader: &D,
         repo_id: &str,
@@ -212,6 +224,7 @@ impl fmt::Debug for AudioDataset {
     }
 }
 
+/// 拆开可选的 `(path, db)`。
 fn split_database_parts(database: OptionalDatabase) -> (Option<PathBuf>, Option<AudioDb>) {
     match database {
         Some((path, db)) => (Some(path), Some(db)),
@@ -219,6 +232,7 @@ fn split_database_parts(database: OptionalDatabase) -> (Option<PathBuf>, Option<
     }
 }
 
+/// 文件存在则只读打开，不存在则返回 `None`。
 fn open_optional_database(
     split: &'static str,
     database_path: &Path,
@@ -236,6 +250,7 @@ fn open_optional_database(
     Ok((Some(database_path.to_path_buf()), Some(db)))
 }
 
+/// 从 README.md YAML front matter 读取 license；文件不存在则空串。
 fn read_optional_modelscope_license(readme_path: &Path) -> Result<String, AudioDatasetError> {
     if !readme_path.exists() {
         return Ok(String::new());
@@ -251,6 +266,7 @@ fn read_optional_modelscope_license(readme_path: &Path) -> Result<String, AudioD
     })
 }
 
+/// 解析 README 开头 `---` 包裹的 YAML 中的 `license` 字段。
 fn parse_modelscope_license(readme: &str) -> Result<String, String> {
     let readme = readme.strip_prefix('\u{feff}').unwrap_or(readme);
     let mut lines = readme.lines();
@@ -286,6 +302,7 @@ fn parse_modelscope_license(readme: &str) -> Result<String, String> {
     Ok(license.unwrap_or_default())
 }
 
+/// 解析 YAML 标量 license：支持裸字符串、单/双引号；拒绝列表和对象。
 fn parse_license_scalar(value: &str) -> Result<String, String> {
     if value.is_empty() || value == "null" || value == "~" {
         return Ok(String::new());
@@ -306,7 +323,9 @@ fn parse_license_scalar(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
+/// 下载 ModelScope 数据集快照的抽象，便于测试注入。
 trait ModelScopeDownloader {
+    /// 下载 `repo_id` 在 `revision` 的完整快照，返回本地目录。
     fn download_dataset(
         &self,
         repo_id: &str,
@@ -315,6 +334,7 @@ trait ModelScopeDownloader {
     ) -> anyhow::Result<PathBuf>;
 }
 
+/// 默认 downloader：先走 modelhub API，失败再按文件树拉取。
 struct ModelHubDownloader;
 
 impl ModelScopeDownloader for ModelHubDownloader {
@@ -345,6 +365,7 @@ impl ModelScopeDownloader for ModelHubDownloader {
     }
 }
 
+/// 若当前已在 tokio runtime 内，则到新线程里 `block_on`，避免嵌套 runtime。
 fn block_on<F>(future: F) -> F::Output
 where
     F: Future + Send,
@@ -367,6 +388,7 @@ where
         .block_on(future)
 }
 
+/// modelhub 约定的数据集快照目录：`cache/datasets/<repo--id>/snapshots/<rev>`。
 fn modelscope_snapshot_path(cache_dir: &Path, repo_id: &str, revision: &str) -> PathBuf {
     cache_dir
         .join("datasets")
@@ -375,6 +397,7 @@ fn modelscope_snapshot_path(cache_dir: &Path, repo_id: &str, revision: &str) -> 
         .join(revision)
 }
 
+/// ModelScope 仓库文件树 API 的响应。
 #[derive(Deserialize)]
 struct ModelScopeRepoTreeResponse {
     #[serde(rename = "Code")]
@@ -387,12 +410,14 @@ struct ModelScopeRepoTreeResponse {
     data: Option<ModelScopeRepoTreeData>,
 }
 
+/// 文件树分页数据。
 #[derive(Deserialize)]
 struct ModelScopeRepoTreeData {
     #[serde(rename = "Files")]
     files: Vec<ModelScopeRepoFile>,
 }
 
+/// 仓库中的一个文件或目录项。
 #[derive(Deserialize)]
 struct ModelScopeRepoFile {
     #[serde(rename = "Path")]
@@ -401,6 +426,7 @@ struct ModelScopeRepoFile {
     file_type: String,
 }
 
+/// 当 modelhub 整仓 API 不兼容时，按文件树逐个下载快照。
 async fn download_modelscope_snapshot_with_modelhub(
     repo_id: &str,
     revision: &str,

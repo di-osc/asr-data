@@ -11,6 +11,7 @@ use crate::timeline::{
     normalize_transcription_text,
 };
 
+/// 数据集评估失败：数据库、单条时间轴，或没有任何可评估标注。
 #[derive(Debug, Error)]
 pub enum DatasetEvalError {
     #[error(transparent)]
@@ -21,16 +22,23 @@ pub enum DatasetEvalError {
     NoEvaluableAnnotations,
 }
 
+/// 整个数据集上转写和活动检测的汇总结果。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DatasetEvaluation {
+    /// 参与评估的文档数。
     pub documents: usize,
+    /// 参与评估的时间轴数。
     pub timelines: usize,
+    /// 按预测 source 汇总的转写指标。
     pub transcription: BTreeMap<String, DatasetTranscriptionEvaluation>,
+    /// 按预测 source 汇总的活动检测指标。
     pub activity: BTreeMap<String, DatasetActivityEvaluation>,
 }
 
+/// 某个转写 source 在数据集上的 CER 与覆盖率。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DatasetTranscriptionEvaluation {
+    /// 预测来源名称。
     pub source: String,
     pub evaluated_documents: usize,
     pub evaluated_timelines: usize,
@@ -45,12 +53,14 @@ pub struct DatasetTranscriptionEvaluation {
 }
 
 impl DatasetTranscriptionEvaluation {
+    /// 正确字符数：N - S - D。
     pub fn matches(&self) -> usize {
         self.stats
             .reference_chars
             .saturating_sub(self.stats.substitutions + self.stats.deletions)
     }
 
+    /// 转写精确率：matches / (matches + S + I)。
     pub fn precision(&self) -> f64 {
         ratio(
             self.matches(),
@@ -58,22 +68,27 @@ impl DatasetTranscriptionEvaluation {
         )
     }
 
+    /// 转写召回率：matches / N。
     pub fn recall(&self) -> f64 {
         ratio(self.matches(), self.stats.reference_chars)
     }
 
+    /// 转写 F1。
     pub fn f1(&self) -> f64 {
         harmonic_mean(self.precision(), self.recall())
     }
 
+    /// 字符错误率。
     pub fn cer(&self) -> f64 {
         self.stats.cer()
     }
 
+    /// 整段完全匹配的时间轴比例。
     pub fn exact_match_rate(&self) -> f64 {
         ratio(self.exact_matches, self.evaluated_timelines)
     }
 
+    /// 有预测的时间轴占「有参考」时间轴的比例。
     pub fn coverage(&self) -> f64 {
         ratio(
             self.evaluated_timelines,
@@ -96,18 +111,22 @@ pub struct DatasetActivityEventEvaluation {
 }
 
 impl DatasetActivityEventEvaluation {
+    /// 事件区间精确率。
     pub fn precision(&self) -> f64 {
         interval_precision(self.true_positive_ms, self.false_positive_ms)
     }
 
+    /// 事件区间召回率。
     pub fn recall(&self) -> f64 {
         interval_recall(self.true_positive_ms, self.false_negative_ms)
     }
 
+    /// 事件区间 F1。
     pub fn f1(&self) -> f64 {
         harmonic_mean(self.precision(), self.recall())
     }
 
+    /// 事件区间 IoU。
     pub fn iou(&self) -> f64 {
         interval_iou(
             self.true_positive_ms,
@@ -117,6 +136,7 @@ impl DatasetActivityEventEvaluation {
     }
 }
 
+/// 某个活动检测 source 的合并区间指标，以及按事件拆分的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatasetActivityEvaluation {
     pub source: String,
@@ -135,6 +155,7 @@ pub struct DatasetActivityEvaluation {
     pub events: BTreeMap<String, DatasetActivityEventEvaluation>,
 }
 
+/// 某个说话人 source 的 DER 相关毫秒统计。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatasetSpeakerEvaluation {
     pub source: String,
@@ -153,6 +174,7 @@ pub struct DatasetSpeakerEvaluation {
 }
 
 impl DatasetSpeakerEvaluation {
+    /// 说话人错误率：(漏检 + 虚警 + 混淆) / 参考说话人时长。
     pub fn der(&self) -> f64 {
         ratio(
             self.missed_speaker_ms
@@ -162,6 +184,7 @@ impl DatasetSpeakerEvaluation {
         )
     }
 
+    /// 有预测的时间轴占「有参考」时间轴的比例。
     pub fn coverage(&self) -> f64 {
         ratio(
             self.evaluated_timelines,
@@ -171,18 +194,22 @@ impl DatasetSpeakerEvaluation {
 }
 
 impl DatasetActivityEvaluation {
+    /// 合并活动区间的精确率。
     pub fn precision(&self) -> f64 {
         interval_precision(self.true_positive_ms, self.false_positive_ms)
     }
 
+    /// 合并活动区间的召回率。
     pub fn recall(&self) -> f64 {
         interval_recall(self.true_positive_ms, self.false_negative_ms)
     }
 
+    /// 合并活动区间的 F1。
     pub fn f1(&self) -> f64 {
         harmonic_mean(self.precision(), self.recall())
     }
 
+    /// 合并活动区间的 IoU。
     pub fn iou(&self) -> f64 {
         interval_iou(
             self.true_positive_ms,
@@ -191,6 +218,7 @@ impl DatasetActivityEvaluation {
         )
     }
 
+    /// 有预测的时间轴占「有参考」时间轴的比例。
     pub fn coverage(&self) -> f64 {
         ratio(
             self.evaluated_timelines,
@@ -199,6 +227,7 @@ impl DatasetActivityEvaluation {
     }
 }
 
+/// 流式累加多条时间轴评估结果的计算器。
 #[derive(Debug)]
 pub struct DatasetEvaluator {
     config: TimelineEvalConfig,
@@ -216,6 +245,7 @@ pub struct DatasetEvaluator {
 }
 
 impl DatasetEvaluator {
+    /// 按配置创建累加器；未指定 source 时自动评估全部可对齐来源。
     pub fn new(config: TimelineEvalConfig) -> Self {
         let auto_all = config.transcription_sources.is_none() && config.activity_sources.is_none();
         let transcription_selection = if auto_all {
@@ -246,6 +276,7 @@ impl DatasetEvaluator {
         }
     }
 
+    /// 把一篇文档里的全部时间轴累加进评估。
     pub fn push(&mut self, doc: &Audio) -> Result<(), DatasetEvalError> {
         self.prewarm_normalization_cache([doc])?;
         let result = self.push_cached(doc);
@@ -253,6 +284,7 @@ impl DatasetEvaluator {
         result
     }
 
+    /// 使用共享归一化缓存评估一篇文档。
     fn push_cached(&mut self, doc: &Audio) -> Result<(), DatasetEvalError> {
         self.documents += 1;
         for (channel, timeline) in doc.timelines() {
@@ -264,6 +296,7 @@ impl DatasetEvaluator {
         Ok(())
     }
 
+    /// 并行预热转写归一化后再逐篇累加。
     fn push_batch(&mut self, docs: &[&Audio]) -> Result<(), DatasetEvalError> {
         self.prewarm_normalization_cache(docs.iter().copied())?;
         let result = docs.iter().try_for_each(|doc| self.push_cached(doc));
@@ -271,6 +304,7 @@ impl DatasetEvaluator {
         result
     }
 
+    /// 并行归一化本批文档里出现过的转写文本，写入缓存。
     fn prewarm_normalization_cache<'a>(
         &mut self,
         docs: impl IntoIterator<Item = &'a Audio>,
@@ -319,6 +353,7 @@ impl DatasetEvaluator {
         Ok(())
     }
 
+    /// 汇总累加器；没有任何可评估标注时返回错误。
     pub fn finish(self) -> Result<DatasetEvaluation, DatasetEvalError> {
         let transcription = finish_transcription(
             self.transcription,
@@ -342,6 +377,7 @@ impl DatasetEvaluator {
         })
     }
 
+    /// 把一条时间轴的转写结果累加到对应 source。
     fn push_transcription(
         &mut self,
         doc: &Audio,
@@ -384,6 +420,7 @@ impl DatasetEvaluator {
         Ok(())
     }
 
+    /// 把一条时间轴的活动检测结果累加到对应 source。
     fn push_activity(
         &mut self,
         doc: &Audio,
@@ -419,6 +456,7 @@ impl DatasetEvaluator {
     }
 }
 
+/// 按查询条件读取数据库并评估全部命中文档。
 pub fn evaluate_dataset<'a>(
     docs: impl IntoIterator<Item = &'a Audio>,
     config: &TimelineEvalConfig,
@@ -432,6 +470,7 @@ pub fn evaluate_dataset<'a>(
 }
 
 impl AudioDb {
+    /// 用默认配置评估时间轴。
     pub fn eval(
         &self,
         query: &AudioQuery,
@@ -455,6 +494,7 @@ impl AudioDb {
         evaluator.finish()
     }
 
+    /// 评估数据库中的说话人任务。
     pub fn eval_speaker(
         &self,
         query: &AudioQuery,
@@ -481,6 +521,7 @@ impl AudioDb {
 }
 
 #[derive(Debug, Default)]
+/// 单条时间轴上一个说话人 source 的毫秒统计。
 struct SpeakerStats {
     reference_speaker_ms: u64,
     predicted_speaker_ms: u64,
@@ -491,6 +532,7 @@ struct SpeakerStats {
 }
 
 #[derive(Debug, Default)]
+/// 跨文档累加说话人评估。
 struct SpeakerAccumulator {
     evaluated_documents: BTreeSet<String>,
     evaluated_timelines: BTreeSet<String>,
@@ -498,6 +540,7 @@ struct SpeakerAccumulator {
 }
 
 impl SpeakerAccumulator {
+    /// 累加一条时间轴的说话人统计。
     fn add(&mut self, audio_id: &str, timeline_id: &str, stats: SpeakerStats) {
         self.evaluated_documents.insert(audio_id.to_owned());
         self.evaluated_timelines.insert(timeline_id.to_owned());
@@ -528,6 +571,7 @@ impl SpeakerAccumulator {
     }
 }
 
+/// 按 source 收集说话人评估。
 struct SpeakerDatasetEvaluator {
     selection: Vec<String>,
     eligible: BTreeSet<String>,
@@ -549,6 +593,7 @@ impl SpeakerDatasetEvaluator {
         }
     }
 
+    /// 把一篇文档里的全部时间轴累加进评估。
     fn push(&mut self, doc: &Audio) {
         for (channel, timeline) in doc.timelines() {
             let timeline_id = format!("{}:{}", doc.id, channel.name());
@@ -574,6 +619,7 @@ impl SpeakerDatasetEvaluator {
         }
     }
 
+    /// 汇总累加器；没有任何可评估标注时返回错误。
     fn finish(self) -> Result<BTreeMap<String, DatasetSpeakerEvaluation>, DatasetEvalError> {
         if self.eligible.is_empty() || self.accumulators.is_empty() {
             return Err(DatasetEvalError::NoEvaluableAnnotations);
@@ -616,10 +662,12 @@ impl SpeakerDatasetEvaluator {
     }
 }
 
+/// 是否为说话人标注。
 fn is_speaker_annotation(span: &crate::timeline::TimeSpan) -> bool {
     matches!(span.annotation, Annotation::Speaker(_))
 }
 
+/// 用最大权匹配对齐参考/预测说话人区间，计算 DER 分量。
 fn evaluate_speakers(timeline: &Timeline, source: &str) -> SpeakerStats {
     let reference = timeline
         .reference
@@ -711,6 +759,7 @@ fn evaluate_speakers(timeline: &Timeline, source: &str) -> SpeakerStats {
     stats
 }
 
+/// 取出说话人姓名和起止毫秒。
 fn speaker_span(span: &crate::timeline::TimeSpan) -> Option<(&str, u64, u64)> {
     let Annotation::Speaker(speaker) = &span.annotation else {
         return None;
@@ -718,6 +767,7 @@ fn speaker_span(span: &crate::timeline::TimeSpan) -> Option<(&str, u64, u64)> {
     Some((speaker.name.as_str(), span.range.start.0, span.range.end.0))
 }
 
+/// 匈牙利算法求二分图最大权和，用于说话人对齐。
 fn maximum_weight_assignment(weights: &[Vec<u64>]) -> u64 {
     let rows = weights.len();
     let columns = weights.first().map_or(0, Vec::len);
@@ -789,6 +839,7 @@ fn maximum_weight_assignment(weights: &[Vec<u64>]) -> u64 {
         .sum()
 }
 
+/// 在线程池里并行做转写文本归一化。
 fn normalize_transcriptions_parallel(
     texts: &[String],
     normalization: TranscriptionNormalization,
@@ -824,6 +875,7 @@ fn normalize_transcriptions_parallel(
 }
 
 #[derive(Debug, Default)]
+/// 跨文档累加某个转写 source 的 CER。
 struct TranscriptionAccumulator {
     evaluated_documents: BTreeSet<String>,
     evaluated_timelines: BTreeSet<String>,
@@ -851,6 +903,7 @@ impl TranscriptionAccumulator {
 }
 
 #[derive(Debug, Default)]
+/// 跨文档累加某个活动事件的区间计数。
 struct ActivityEventAccumulator {
     evaluated_documents: BTreeSet<String>,
     evaluated_timelines: BTreeSet<String>,
@@ -889,6 +942,7 @@ impl ActivityEventAccumulator {
 }
 
 #[derive(Debug, Default)]
+/// 跨文档累加某个活动 source 的合并区间与事件。
 struct ActivityAccumulator {
     evaluated_documents: BTreeSet<String>,
     evaluated_timelines: BTreeSet<String>,
@@ -933,6 +987,7 @@ impl ActivityAccumulator {
     }
 }
 
+/// 按选择列表预创建累加器；空选择表示稍后按出现的 source 动态创建。
 fn selected_accumulators<T: Default>(selection: Option<&[String]>) -> BTreeMap<String, T> {
     selection
         .into_iter()
@@ -941,6 +996,7 @@ fn selected_accumulators<T: Default>(selection: Option<&[String]>) -> BTreeMap<S
         .collect()
 }
 
+/// 空选择表示使用时间轴上全部可用 source。
 fn sources_for_timeline(selection: &[String], available: &BTreeSet<String>) -> BTreeSet<String> {
     if selection.is_empty() {
         available.clone()
@@ -953,6 +1009,7 @@ fn sources_for_timeline(selection: &[String], available: &BTreeSet<String>) -> B
     }
 }
 
+/// 把转写累加器收成最终评估结果。
 fn finish_transcription(
     accumulators: BTreeMap<String, TranscriptionAccumulator>,
     eligible: &BTreeSet<String>,
@@ -994,6 +1051,7 @@ fn finish_transcription(
         .collect()
 }
 
+/// 把活动累加器收成最终评估结果。
 fn finish_activity(
     accumulators: BTreeMap<String, ActivityAccumulator>,
     eligible: &BTreeSet<String>,
@@ -1057,6 +1115,7 @@ fn finish_activity(
         .collect()
 }
 
+/// 是否为转写或句子类文本标注。
 fn is_text_annotation(annotation: &crate::timeline::TimeSpan) -> bool {
     match &annotation.annotation {
         Annotation::Transcription(_) | Annotation::Sentence(_) => true,
@@ -1065,6 +1124,7 @@ fn is_text_annotation(annotation: &crate::timeline::TimeSpan) -> bool {
     }
 }
 
+/// numerator/denominator；分母为 0 时返回 0。
 fn ratio(numerator: usize, denominator: usize) -> f64 {
     if denominator == 0 {
         if numerator == 0 { 1.0 } else { 0.0 }
@@ -1073,6 +1133,7 @@ fn ratio(numerator: usize, denominator: usize) -> f64 {
     }
 }
 
+/// 两个比率的调和平均；任一为 0 则返回 0。
 fn harmonic_mean(left: f64, right: f64) -> f64 {
     if left + right == 0.0 {
         0.0
@@ -1081,6 +1142,7 @@ fn harmonic_mean(left: f64, right: f64) -> f64 {
     }
 }
 
+/// TP / (TP + FP)。
 fn interval_precision(true_positive_ms: u64, false_positive_ms: u64) -> f64 {
     ratio(
         true_positive_ms as usize,
@@ -1088,6 +1150,7 @@ fn interval_precision(true_positive_ms: u64, false_positive_ms: u64) -> f64 {
     )
 }
 
+/// TP / (TP + FN)。
 fn interval_recall(true_positive_ms: u64, false_negative_ms: u64) -> f64 {
     ratio(
         true_positive_ms as usize,
@@ -1095,6 +1158,7 @@ fn interval_recall(true_positive_ms: u64, false_negative_ms: u64) -> f64 {
     )
 }
 
+/// TP / (TP + FP + FN)。
 fn interval_iou(true_positive_ms: u64, false_positive_ms: u64, false_negative_ms: u64) -> f64 {
     ratio(
         true_positive_ms as usize,

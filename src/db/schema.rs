@@ -2,6 +2,11 @@ use rusqlite::Connection;
 
 use super::{APPLICATION_ID, AudioDbError, SCHEMA_VERSION};
 
+/// 空库则创建 schema；已有库则校验 application_id 和版本。
+///
+/// # Errors
+///
+/// schema 不匹配或 SQLite 执行失败时返回错误。
 pub(super) fn initialize(connection: &Connection) -> Result<(), AudioDbError> {
     let current: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if current != 0 {
@@ -41,11 +46,17 @@ pub(super) fn initialize(connection: &Connection) -> Result<(), AudioDbError> {
     Ok(())
 }
 
+/// 打开已有连接后打开外键约束。
 pub(super) fn configure(connection: &Connection) -> Result<(), AudioDbError> {
     connection.pragma_update(None, "foreign_keys", true)?;
     Ok(())
 }
 
+/// 确认文件是本库 schema，且版本恰好等于 [`SCHEMA_VERSION`](super::SCHEMA_VERSION)。
+///
+/// # Errors
+///
+/// application_id 或 user_version 不匹配时返回错误。
 pub(super) fn validate(connection: &Connection) -> Result<(), AudioDbError> {
     let application_id: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;

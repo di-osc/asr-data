@@ -1,3 +1,5 @@
+//! 时间轴、标注和按来源评估转写 / 活动。
+
 mod annotation;
 mod data;
 mod evaluation;

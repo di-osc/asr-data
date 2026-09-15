@@ -1,3 +1,5 @@
+//! 时间轴容器：参考/预测 span，以及重叠校验。
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -7,22 +9,33 @@ use super::annotation::{Annotation, AudioId, TimeSpan, TimeSpanId, TimelineId};
 use super::segment::{Sentence, Transcript};
 use crate::utils::{DurationMs, TimeRange};
 
+/// 不允许重叠的标注类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeSpanConflictKind {
+    /// 相同事件的活动区间重叠。
     Activity,
+    /// 同一说话人的区间重叠。
     Speaker,
+    /// 转写区间重叠（含说话人自带转写）。
     Transcription,
 }
 
+/// 一条声道上的参考与预测标注集合。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Timeline {
+    /// 时间轴 ID。
     pub id: TimelineId,
+    /// 所属音频文档 ID。
     pub audio_id: AudioId,
+    /// 覆盖的音频时长。
     pub duration: DurationMs,
+    /// 人工 / 参考标注，`source` 必须为空。
     pub reference: Vec<TimeSpan>,
+    /// 模型预测，必须带非空 `source`。
     pub prediction: Vec<TimeSpan>,
 }
 
+/// 一次非法重叠的详细信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeSpanOverlap {
     pub kind: TimeSpanConflictKind,
@@ -50,6 +63,7 @@ impl fmt::Display for TimeSpanOverlap {
     }
 }
 
+/// 向时间轴写入或校验 span 时的错误。
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum TimelineSpanError {
     #[error("reference annotation {annotation_id:?} must not have a source")]
@@ -65,6 +79,7 @@ pub enum TimelineSpanError {
 }
 
 impl Timeline {
+    /// 构造空时间轴，生成随机 ID。
     pub fn new(audio_id: impl Into<AudioId>, duration: DurationMs) -> Self {
         Self {
             id: format!("tl_{}", Uuid::new_v4().simple()),
@@ -75,6 +90,13 @@ impl Timeline {
         }
     }
 
+    /// 写入一条标注。参考禁止 `source`，预测必须有非空 `source`。
+    ///
+    /// 内容完全相同的 span 会被去重并返回已有项。
+    ///
+    /// # Errors
+    ///
+    /// source 约束不满足或与已有 span 非法重叠时返回错误。
     pub fn annotate_span(
         &mut self,
         is_reference: bool,
@@ -100,14 +122,17 @@ impl Timeline {
         push_validated(&mut self.prediction, annotation, true)
     }
 
+    /// 先参考后预测地遍历全部 span。
     pub fn all_spans(&self) -> impl Iterator<Item = &TimeSpan> {
         self.reference.iter().chain(&self.prediction)
     }
 
+    /// 参考加预测的 span 总数。
     pub fn span_count(&self) -> usize {
         self.reference.len() + self.prediction.len()
     }
 
+    /// 筛出指定预测来源的 span。
     pub fn predictions_by_source<'a>(
         &'a self,
         source: &'a str,
@@ -117,6 +142,7 @@ impl Timeline {
             .filter(move |annotation| annotation.source.as_deref() == Some(source))
     }
 
+    /// 按标注类别汇总去重后的预测 source 列表。
     pub fn prediction_sources(&self) -> BTreeMap<&'static str, Vec<&str>> {
         let mut sources = [
             "activity",
@@ -144,14 +170,17 @@ impl Timeline {
         sources
     }
 
+    /// 从参考标注拼出转写文本。
     pub fn reference_transcript(&self) -> Transcript {
         transcript_from_annotations(self.reference.iter())
     }
 
+    /// 从指定预测来源拼出转写文本。
     pub fn prediction_transcript(&self, source: &str) -> Transcript {
         transcript_from_annotations(self.predictions_by_source(source))
     }
 
+    /// 删除某个 source 的全部预测，返回删除条数。
     pub fn remove_predictions_by_source(&mut self, source: &str) -> usize {
         let old_len = self.prediction.len();
         self.prediction
@@ -159,6 +188,11 @@ impl Timeline {
         old_len - self.prediction.len()
     }
 
+    /// 把预测 source 从 `from` 改成 `to`，并重新做重叠校验。
+    ///
+    /// # Errors
+    ///
+    /// `to` 为空或改名后出现非法重叠时返回错误。
     pub fn relabel_prediction_source(
         &mut self,
         from: &str,
@@ -180,11 +214,13 @@ impl Timeline {
         Ok(changed)
     }
 
+    /// 校验当前参考和预测是否满足 source 与重叠约束。
     pub fn validate_spans(&self) -> Result<(), TimelineSpanError> {
         validate_reference_slice(&self.reference)?;
         validate_prediction_slice(&self.prediction)
     }
 
+    /// 把时间轴时长延长到至少 `duration`；不会缩短。
     pub(crate) fn extend_to(&mut self, duration: DurationMs) {
         if duration > self.duration {
             self.duration = duration;
@@ -192,6 +228,7 @@ impl Timeline {
     }
 }
 
+/// 去重后写入；与已有同类标注重叠则报错。
 fn push_validated(
     annotations: &mut Vec<TimeSpan>,
     annotation: TimeSpan,
@@ -223,10 +260,12 @@ fn push_validated(
         .expect("the annotation was just inserted"))
 }
 
+/// 校验参考列表：禁止 source，并检查重叠。
 fn validate_reference_slice(annotations: &[TimeSpan]) -> Result<(), TimelineSpanError> {
     validate_slice(annotations, false)
 }
 
+/// 校验预测列表：必须有 source，并检查重叠。
 fn validate_prediction_slice(annotations: &[TimeSpan]) -> Result<(), TimelineSpanError> {
     for annotation in annotations {
         if annotation
@@ -242,6 +281,7 @@ fn validate_prediction_slice(annotations: &[TimeSpan]) -> Result<(), TimelineSpa
     validate_slice(annotations, true)
 }
 
+/// 两两检查活动事件以及同类标注是否非法重叠。
 fn validate_slice(annotations: &[TimeSpan], prediction: bool) -> Result<(), TimelineSpanError> {
     for annotation in annotations {
         validate_activity_event(annotation)?;
@@ -264,6 +304,7 @@ fn validate_slice(annotations: &[TimeSpan], prediction: bool) -> Result<(), Time
     Ok(())
 }
 
+/// 活动事件名若存在则不能是空白字符串。
 fn validate_activity_event(annotation: &TimeSpan) -> Result<(), TimelineSpanError> {
     if let Annotation::Activity(activity) = &annotation.annotation
         && activity
@@ -276,6 +317,10 @@ fn validate_activity_event(annotation: &TimeSpan) -> Result<(), TimelineSpanErro
     Ok(())
 }
 
+/// 判断两条 span 是否构成需要拒绝的重叠。
+///
+/// 预测只和相同 source 比较。活动要事件名相同，说话人要名字相同；
+/// 转写之间，以及转写与带转写的说话人之间也会冲突。
 fn overlap_conflict(
     first: &TimeSpan,
     second: &TimeSpan,
@@ -311,6 +356,7 @@ fn overlap_conflict(
     }
 }
 
+/// 按时间顺序把转写 / 句子 / 说话人转写拼成 [`Transcript`]。
 fn transcript_from_annotations<'a>(annotations: impl Iterator<Item = &'a TimeSpan>) -> Transcript {
     let mut segments = annotations
         .filter_map(|annotation| match &annotation.annotation {
