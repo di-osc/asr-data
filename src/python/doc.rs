@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::audio::{AudioChannel as RustAudioChannel, AudioSource as RustAudioSource};
@@ -129,7 +130,7 @@ impl PyAudio {
     /// 从本地文件完整加载 Audio。
     ///
     /// Args:
-    ///     path: 音频文件路径。
+    ///     path: 音频文件路径，可以是 `str` 或 `pathlib.Path`。
     ///     id: 可选的文档 ID。
     ///
     /// Returns:
@@ -142,7 +143,7 @@ impl PyAudio {
     ///     >>> audio = Audio.from_path("audio.wav", id="sample")
     #[staticmethod]
     #[pyo3(signature = (path, *, id=None))]
-    fn from_path(py: Python<'_>, path: String, id: Option<String>) -> PyResult<Self> {
+    fn from_path(py: Python<'_>, path: PathBuf, id: Option<String>) -> PyResult<Self> {
         Self::build(py, RustAudioSource::from_path(path), id)
     }
 

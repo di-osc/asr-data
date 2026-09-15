@@ -1142,8 +1142,8 @@ def test_public_types_have_informative_repr(tmp_path):
         'duration="3.25s", annotations=1)'
     )
     rendered_audio = str(audio)
-    assert "╭─ Audio " in rendered_audio
-    assert "call-1" in rendered_audio
+    assert " call-1 " in rendered_audio
+    assert "╭─ Audio " not in rendered_audio
     assert "PCM S16LE  ·  8 kHz  ·  Stereo  ·  3.250 s" in rendered_audio
     assert "Left" in rendered_audio
     assert "Right" in rendered_audio
@@ -1916,7 +1916,7 @@ def test_audio_and_audio_stream_convenience_factories(tmp_path):
 
     encoded = wav_path.read_bytes()
     encoded_base64 = base64.b64encode(encoded).decode()
-    from_file = Audio.from_path(str(wav_path), id="file")
+    from_file = Audio.from_path(wav_path, id="file")
     from_url = Audio.from_url(wav_path.as_uri(), id="url")
     from_bytes = Audio.from_bytes(encoded, id="bytes")
     from_base64 = Audio.from_base64(encoded_base64, id="base64")
@@ -1932,7 +1932,7 @@ def test_audio_and_audio_stream_convenience_factories(tmp_path):
     )
 
     streams = [
-        asr_data.AudioStream.from_path(str(wav_path), id="file-stream"),
+        asr_data.AudioStream.from_path(wav_path, id="file-stream"),
         asr_data.AudioStream.from_url(wav_path.as_uri(), id="url-stream"),
         asr_data.AudioStream.from_bytes(encoded, id="bytes-stream"),
         asr_data.AudioStream.from_base64(encoded_base64, id="base64-stream"),
@@ -1949,7 +1949,7 @@ def test_audio_and_audio_stream_convenience_factories(tmp_path):
     ]
     assert all(len(list(stream)) == 1 for stream in streams)
 
-    assert Waveform.from_path(str(wav_path)).channels == 1
+    assert Waveform.from_path(wav_path).channels == 1
     assert Waveform.from_bytes(wav_path.read_bytes()).channels == 1
     assert Waveform.from_source(from_file.source).channels == 1
     assert not hasattr(Audio, "from_file")
@@ -1958,7 +1958,8 @@ def test_audio_and_audio_stream_convenience_factories(tmp_path):
     assert repr(from_file).startswith('Audio(id="file", file="')
     assert 'duration="1ms"' in repr(from_file)
     rendered_file = str(from_file)
-    assert "╭─ Audio " in rendered_file
+    assert " file " in rendered_file
+    assert "╭─ Audio " not in rendered_file
     assert "WAV  ·  8 kHz  ·  Mono  ·  0.001 s" in rendered_file
     assert str(wav_path)[:40] in rendered_file
 

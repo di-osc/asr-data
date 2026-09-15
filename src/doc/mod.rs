@@ -97,7 +97,7 @@ impl Audio {
     ///
     /// 探测来源失败时返回错误。
     pub fn new(source: impl Into<AudioSource>) -> anyhow::Result<Self> {
-        Self::with_id(format!("audio_{}", uuid::Uuid::new_v4().simple()), source)
+        Self::with_id(new_audio_id(), source)
     }
 
     /// 从任意来源加载文档并指定 ID。
@@ -159,11 +159,7 @@ impl Audio {
 
     /// 用已有 [`AudioInfo`] 构造文档，自动生成 ID，不触发 I/O。
     pub fn from_info(source: impl Into<AudioSource>, info: &AudioInfo) -> Self {
-        Self::with_id_from_info(
-            format!("audio_{}", uuid::Uuid::new_v4().simple()),
-            source,
-            info,
-        )
+        Self::with_id_from_info(new_audio_id(), source, info)
     }
 
     /// 用已有 [`AudioInfo`] 构造指定 ID 的文档，并按声道预建满时长 timeline。
@@ -801,6 +797,11 @@ fn validate_channel(channel: AudioChannel) -> Result<(), AudioChannelError> {
         AudioChannel::Channel(index @ 0..=1) => Err(AudioChannelError { index }),
         _ => Ok(()),
     }
+}
+
+/// 生成随机文档 ID：32 位小写 UUID，不含 `audio_` 前缀。
+pub(crate) fn new_audio_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 /// 把文档 ID 收成 ASCII 标识：字母数字和 `-_`.` 保留，其余换成 `_`。

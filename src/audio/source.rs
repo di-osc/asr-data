@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::{Waveform, decode, local_path_from_urlish, waveform};
-use crate::doc::{Audio, AudioStream};
+use crate::doc::{Audio, AudioStream, new_audio_id};
 
 /// 时间轴和声道选择使用的声道标识。
 ///
@@ -223,7 +223,7 @@ impl AudioSource {
     ///
     /// 解码失败时返回错误。
     pub fn load(&self) -> anyhow::Result<Audio> {
-        self.load_with_id(format!("audio_{}", uuid::Uuid::new_v4().simple()))
+        self.load_with_id(new_audio_id())
     }
 
     /// 解码完整波形并包装成指定 ID 的 [`Audio`] 文档。
@@ -246,10 +246,7 @@ impl AudioSource {
     ///
     /// 探测来源或创建流失败时返回错误。
     pub fn stream(&self, chunk_size_ms: u64) -> anyhow::Result<AudioStream> {
-        self.stream_with_id(
-            format!("audio_{}", uuid::Uuid::new_v4().simple()),
-            chunk_size_ms,
-        )
+        self.stream_with_id(new_audio_id(), chunk_size_ms)
     }
 
     /// 创建指定 ID 的 [`AudioStream`]。

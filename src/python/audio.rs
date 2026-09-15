@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -257,7 +258,7 @@ impl PyWaveform {
     /// 从本地文件加载并解码音频。
     ///
     /// Args:
-    ///     path: 本地音频文件路径。
+    ///     path: 本地音频文件路径，可以是 `str` 或 `pathlib.Path`。
     ///
     /// Returns:
     ///     解码后的完整 Waveform。
@@ -274,7 +275,7 @@ impl PyWaveform {
     ///     ...     _ = urlretrieve(url, file.name)
     ///     ...     audio = Waveform.from_path(file.name)
     #[staticmethod]
-    fn from_path(py: Python<'_>, path: String) -> PyResult<Self> {
+    fn from_path(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
         py.detach(move || RustWaveform::from_path(path))
             .map(Self::from_rust)
             .map_err(py_error)
@@ -408,7 +409,7 @@ impl PyWaveform {
     }
 
     #[staticmethod]
-    fn _start_aload_from_path(path: String) -> PyResult<PyAudioLoadTask> {
+    fn _start_aload_from_path(path: PathBuf) -> PyResult<PyAudioLoadTask> {
         spawn_source_aload(RustAudioSource::from_path(path), None, None)
     }
 
@@ -1168,7 +1169,7 @@ impl PyAudioStream {
     /// 从本地文件创建 AudioStream。
     ///
     /// Args:
-    ///     path: 音频文件路径。
+    ///     path: 音频文件路径，可以是 `str` 或 `pathlib.Path`。
     ///     chunk_size_ms: 每个 chunk 的目标时长。
     ///     id: 可选的文档 ID。
     ///
@@ -1185,7 +1186,7 @@ impl PyAudioStream {
     #[pyo3(signature = (path, chunk_size_ms=100, *, id=None))]
     fn from_path(
         py: Python<'_>,
-        path: String,
+        path: PathBuf,
         chunk_size_ms: u64,
         id: Option<String>,
     ) -> PyResult<Self> {
@@ -1638,7 +1639,7 @@ fn create_audio_stream(
     let (audio, chunks) = py
         .detach(move || {
             let info = source.probe()?;
-            let audio_id = id.unwrap_or_else(|| format!("audio_{}", uuid::Uuid::new_v4().simple()));
+            let audio_id = id.unwrap_or_else(crate::doc::new_audio_id);
             let audio =
                 crate::doc::Audio::with_id_from_stream_info(audio_id, source.clone(), &info)?;
             let chunks = crate::audio::stream::SourceAudioStream::new(
@@ -1696,7 +1697,7 @@ impl PyAudioSource {
     /// 从本地文件路径创建来源。
     ///
     /// Args:
-    ///     path: 相对或绝对文件路径。
+    ///     path: 相对或绝对文件路径，可以是 `str` 或 `pathlib.Path`。
     ///
     /// Returns:
     ///     尚未加载的 AudioSource。
@@ -1706,7 +1707,7 @@ impl PyAudioSource {
     ///     >>> AudioSource.from_path("audio.wav").path
     ///     'audio.wav'
     #[staticmethod]
-    fn from_path(path: String) -> Self {
+    fn from_path(path: PathBuf) -> Self {
         Self {
             inner: RustAudioSource::from_path(path),
         }

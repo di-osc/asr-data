@@ -77,11 +77,9 @@ impl<'a> AudioTerminalView<'a> {
         }
     }
 
-    /// 画顶部标题栏。
+    /// 画顶部标题栏：顶边居中放文档 ID，框内是格式和来源。
     fn write_header(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let title = " Audio ";
-        let rule_width = self.width.saturating_sub(2 + title.chars().count());
-        let top = format!("╭─{title}{}╮", "─".repeat(rule_width.saturating_sub(1)));
+        let top = self.centered_title(&self.audio.id);
         writeln!(formatter, "{}", self.paint(BOLD_CYAN, &top))?;
 
         let info = format!(
@@ -92,7 +90,6 @@ impl<'a> AudioTerminalView<'a> {
             self.audio.info.timeline_duration_ms() as f64 / 1000.0,
             grouped_number(self.audio.info.frame_count),
         );
-        self.write_card_line(formatter, &self.audio.id)?;
         self.write_card_line(formatter, &info)?;
         self.write_card_line(
             formatter,
@@ -101,6 +98,17 @@ impl<'a> AudioTerminalView<'a> {
 
         let bottom = format!("╰{}╯", "─".repeat(self.width.saturating_sub(2)));
         writeln!(formatter, "{}", self.paint(BOLD_CYAN, &bottom))
+    }
+
+    /// 顶边把 ID 放在框线正中，例如 `╭──── abcdef ────╮`。
+    fn centered_title(&self, id: &str) -> String {
+        let inner = self.width.saturating_sub(2);
+        let id = truncate(id, inner.saturating_sub(2));
+        let title = format!(" {id} ");
+        let leftover = inner.saturating_sub(display_width(&title));
+        let left = leftover / 2;
+        let right = leftover - left;
+        format!("╭{}{title}{}╮", "─".repeat(left), "─".repeat(right))
     }
 
     /// 输出一行标签+值的卡片。
@@ -612,8 +620,8 @@ mod tests {
     fn terminal_view_renders_compact_audio_summary_and_waveform() {
         let output = format!("{}", AudioTerminalView::new(&test_audio(), 64, false));
 
-        assert!(output.contains("╭─ Audio "));
-        assert!(output.contains("audio_test"));
+        assert!(output.contains(" audio_test "));
+        assert!(!output.contains("╭─ Audio "));
         assert!(output.contains("WAV  ·  8 Hz  ·  Mono  ·  1.000 s  ·  8 frames"));
         assert!(output.contains("Mono       "));
         assert!(output.contains("8 samples"));

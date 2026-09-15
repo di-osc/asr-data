@@ -1,6 +1,8 @@
 from collections.abc import AsyncIterator, Iterator
 from datetime import datetime
+from os import PathLike
 from typing import Any, Awaitable, Literal
+
 import numpy as np
 import numpy.typing as npt
 
@@ -66,7 +68,7 @@ class _AudioLoadTask:
 class AudioSource:
     """尚未解码的音频来源描述。"""
     @staticmethod
-    def from_path(path: str) -> AudioSource:
+    def from_path(path: str | PathLike[str]) -> AudioSource:
         """从本地路径创建来源，不立即读取文件。
 
         Args:
@@ -257,7 +259,7 @@ class Waveform:
         self, samples: npt.ArrayLike, sample_rate: int, channels: int = 1
     ) -> None: ...
     @staticmethod
-    def from_path(path: str) -> Waveform:
+    def from_path(path: str | PathLike[str]) -> Waveform:
         """从本地文件加载并解码音频。
 
         Args:
@@ -374,7 +376,7 @@ class Waveform:
             10
         """
     @staticmethod
-    def _start_aload_from_path(path: str) -> _AudioLoadTask: ...
+    def _start_aload_from_path(path: str | PathLike[str]) -> _AudioLoadTask: ...
     @staticmethod
     def _start_aload_from_source(
         source: AudioSource,
@@ -602,7 +604,7 @@ class AudioStream:
     """与 Audio 平级、随 chunk 迭代持续增长的流式音频文档。"""
     @staticmethod
     def from_path(
-        path: str, chunk_size_ms: int = 100, *, id: str | None = None
+        path: str | PathLike[str], chunk_size_ms: int = 100, *, id: str | None = None
     ) -> AudioStream:
         """从本地文件创建流。
 
@@ -1519,7 +1521,7 @@ class Audio:
         id: str | None = None,
     ) -> None: ...
     @staticmethod
-    def from_path(path: str, *, id: str | None = None) -> Audio:
+    def from_path(path: str | PathLike[str], *, id: str | None = None) -> Audio:
         """从本地文件加载音频。
 
         Args:
