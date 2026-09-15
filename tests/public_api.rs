@@ -8,7 +8,7 @@ use asr_data::{
     CerStats, ChineseTextNormalizationOptions, DEFAULT_QUERY_LIMIT, DatasetActivityEvaluation,
     DatasetActivityEventEvaluation, DatasetEvalError, DatasetEvaluation, DatasetEvaluator,
     DatasetSpeakerEvaluation, DatasetTranscriptionEvaluation, DurationMs, MAX_QUERY_LIMIT,
-    SampleIndex, Sentence, SpeakerPayload, TextNormalizationError, TimeRange, TimeSpan, Timeline,
+    SampleIndex, Sentence, Speaker, TextNormalizationError, TimeRange, TimeSpan, Timeline,
     TimelineEvalConfig, TimelineEvalError, TimelineEvaluation, Token, Transcript, Transcription,
     TranscriptionEvaluation, TranscriptionNormalization, Waveform, compute_cer, evaluate_dataset,
     normalize_for_cer, normalize_zh, normalize_zh_with_options, read_audio_db_info,
@@ -39,7 +39,7 @@ fn stable_public_paths_compile() {
     let _: Option<CerStats> = None;
     let _: Option<DurationMs> = None;
     let _: Option<SampleIndex> = None;
-    let _: Option<SpeakerPayload> = None;
+    let _: Option<Speaker> = None;
     let _: Option<Sentence> = None;
     let _: Option<TimeRange> = None;
     let _: Option<Timeline> = None;

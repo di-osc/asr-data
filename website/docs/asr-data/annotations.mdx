@@ -163,8 +163,10 @@ Timeline 将 annotation 分成两个集合，避免真值与模型结果混在�
 
 调用 `timeline.annotate_span()` 时，Reference 使用 `is_reference=True` 且不接受
 `source`；Prediction 使用 `is_reference=False` 并必须提供非空字符串，例如
-`"whisper"`、`"qwen-asr"` 或 `"import"`。不同类型的 prediction 可以来自不同模型
-，例如 Speaker 使用 `"diarization-v2"`，Transcription 使用 `"qwen-asr"`。
+`"whisper"`、`"qwen-asr"` 或 `"import"`。Rust 的 `annotate_span(start_ms, end_ms, annotation)`
+默认写入 reference；指定 `is_reference` / `source` 时使用 `annotate_span_with`。
+不同类型的 prediction 可以来自不同模型，例如 Speaker 使用 `"diarization-v2"`，
+Transcription 使用 `"qwen-asr"`。
 
 ### 标注类型 {id="adding"}
 

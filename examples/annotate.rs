@@ -1,6 +1,4 @@
-use asr_data::{
-    Audio, AudioActivity, DurationMs, SpeakerPayload, TimeRange, Token, Transcription,
-};
+use asr_data::{Audio, AudioActivity, DurationMs, Speaker, TimeRange, Token, Transcription};
 
 const TEXT: &str = "甚至出现交易几乎停滞的情况。";
 
@@ -37,7 +35,7 @@ fn main() -> anyhow::Result<()> {
     timeline.annotate_span(
         0,
         duration_ms,
-        SpeakerPayload::new("female0")
+        Speaker::new("female0")
             .with_confidence(0.9)
             .with_transcription(Transcription::new(TEXT).with_tokens(tokens)),
     )?;

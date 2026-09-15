@@ -176,9 +176,7 @@ class AudioSource:
             >>> from asr_data import AudioSource
             >>> audio = AudioSource.from_pcm(b"\0\0", 16000).load(id="sample")
         """
-    def stream(
-        self, chunk_size_ms: int = 100, *, id: str | None = None
-    ) -> AudioStream:
+    def stream(self, chunk_size_ms: int = 100, *, id: str | None = None) -> AudioStream:
         """创建 timeline 随 AudioChunk 迭代增长的 AudioStream。
 
         Args:

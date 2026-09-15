@@ -129,7 +129,7 @@ impl Transcription {
 
 /// 说话人标注，可附带该段转写。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SpeakerPayload {
+pub struct Speaker {
     /// 说话人标识。
     pub name: SpeakerId,
     /// 该说话人在此时间段内的转写。
@@ -140,8 +140,8 @@ pub struct SpeakerPayload {
     pub confidence: Option<f32>,
 }
 
-impl SpeakerPayload {
-    /// 用说话人名称构造 payload。
+impl Speaker {
+    /// 用说话人名称构造标注。
     pub fn new(name: impl Into<SpeakerId>) -> Self {
         Self {
             name: name.into(),
@@ -175,7 +175,7 @@ pub enum Annotation {
     /// 句级分段。
     Sentence(Sentence),
     /// 说话人。
-    Speaker(SpeakerPayload),
+    Speaker(Speaker),
     /// 语种。
     Language(LanguageTag),
 }
@@ -204,8 +204,8 @@ impl From<Sentence> for Annotation {
     }
 }
 
-impl From<SpeakerPayload> for Annotation {
-    fn from(value: SpeakerPayload) -> Self {
+impl From<Speaker> for Annotation {
+    fn from(value: Speaker) -> Self {
         Self::Speaker(value)
     }
 }

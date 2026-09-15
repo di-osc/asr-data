@@ -894,7 +894,7 @@ fn overlay(target: &mut [char], start: usize, value: &str) {
 #[cfg(test)]
 mod tests {
     use crate::audio::{AudioEncoding, AudioFormat, AudioSource, Waveform};
-    use crate::timeline::{AudioActivity, SpeakerPayload, Timeline, Token, Transcription};
+    use crate::timeline::{AudioActivity, Speaker, Timeline, Token, Transcription};
     use crate::utils::DurationMs;
 
     use super::{Audio, AudioTerminalView, TimelineTerminalView, WaveformTerminalView};
@@ -1009,10 +1009,12 @@ mod tests {
             .annotate_span(
                 0,
                 350,
-                SpeakerPayload::new("female0").with_confidence(0.9).with_transcription(
-                    Transcription::new("甚至出现交易几乎停滞的情况。")
-                        .with_tokens(vec![Token::new("甚"), Token::new("至")]),
-                ),
+                Speaker::new("female0")
+                    .with_confidence(0.9)
+                    .with_transcription(
+                        Transcription::new("甚至出现交易几乎停滞的情况。")
+                            .with_tokens(vec![Token::new("甚"), Token::new("至")]),
+                    ),
             )
             .expect("speaker");
         timeline

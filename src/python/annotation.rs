@@ -1,5 +1,5 @@
 use crate::timeline::{
-    AudioActivity as RustAudioActivity, SpeakerPayload, Token as RustToken,
+    AudioActivity as RustAudioActivity, Speaker, Token as RustToken,
     Transcription as RustTranscription,
 };
 use crate::utils::{DurationMs, TimeRange};
@@ -269,7 +269,7 @@ impl PyTranscription {
 #[pyclass(name = "Speaker", module = "asr_data.annotation", frozen)]
 #[derive(Clone)]
 pub(super) struct PySpeaker {
-    pub(super) inner: SpeakerPayload,
+    pub(super) inner: Speaker,
 }
 
 #[pymethods]
@@ -282,7 +282,7 @@ impl PySpeaker {
         confidence: Option<f32>,
     ) -> Self {
         Self {
-            inner: SpeakerPayload {
+            inner: Speaker {
                 name,
                 transcription: transcription.map(|value| value.inner.clone()),
                 confidence,

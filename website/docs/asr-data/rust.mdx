@@ -18,7 +18,7 @@ menu:
   - ['AudioActivity', 'audio-activity']
   - ['Transcription', 'transcription']
   - ['Sentence', 'sentence']
-  - ['SpeakerPayload', 'speaker-payload']
+  - ['Speaker', 'speaker']
   - ['LanguageTag', 'language-tag']
   - ['Token', 'token']
   - ['Transcript', 'transcript']
@@ -536,7 +536,7 @@ Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, 
 | `&mut self`    | 可变借用 timeline。                                                                    |
 | `start_ms`     | 起始时间，单位毫秒。~~u64~~                                                            |
 | `end_ms`       | 结束时间，单位毫秒。~~u64~~                                                            |
-| `annotation`   | 标注 payload，例如 `AudioActivity`、`Transcription`、`SpeakerPayload`。~~impl Into&lt;Annotation&gt;~~ |
+| `annotation`   | 标注 payload，例如 `AudioActivity`、`Transcription`、`Speaker`。~~impl Into&lt;Annotation&gt;~~ |
 | **RETURNS**    | 新标注或已有重复项；source 或重叠无效时报错。~~Result&lt;&TimeSpan, TimelineSpanError&gt;~~ |
 
 ## Timeline::annotate_span_with {id="timeline-annotate-span-with",tag="method"}
@@ -607,7 +607,7 @@ Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, 
 
 `reference_transcript()` / `prediction_transcript()` 会合并
 [`Transcription`](#transcription)、[`Sentence`](#sentence)，以及带 transcription 的
-[`SpeakerPayload`](#speaker-payload)。
+[`Speaker`](#speaker)。
 ## Timeline::eval {id="evaluation",tag="method"}
 
 按照 reference 评测一个或多个 prediction source。空的 `TimelineEvalConfig::new()` 会
@@ -742,7 +742,7 @@ annotation payload 内，可通过 `annotation.confidence()` 读取。
 | `Token(Token)`                 | 单个细粒度文本单元。   |
 | `Transcription(Transcription)` | 完整转写。             |
 | `Sentence(Sentence)`           | 句子级文本片段。       |
-| `Speaker(SpeakerPayload)`      | 说话人发话。           |
+| `Speaker(Speaker)`             | 说话人发话。           |
 | `Language(LanguageTag)`        | 语言信息。             |
 
 `confidence()` 从 Activity、Token、Transcription、Speaker 读取可选置信度；
@@ -850,17 +850,17 @@ reference 集合或同一 prediction source 中重叠；不同 event 可以重�
 
 当前重叠校验不约束 `Sentence`；它仍会进入 transcript 组合与转写评测来源发现。
 Python 目前不能新建 `Sentence`，但可以从已有数据读出。
-## SpeakerPayload {id="speaker-payload",tag="struct"}
+## Speaker {id="speaker",tag="struct"}
 
 一次说话人发话，由名称和可选 [`Transcription`](#transcription) 组成。
 
 > #### Example
 >
 > ```rust
-> use asr_data::{SpeakerPayload, Transcription};
+> use asr_data::{Speaker, Transcription};
 >
 > fn main() {
->     let mut speaker = SpeakerPayload::new("agent").with_confidence(0.96);
+>     let mut speaker = Speaker::new("agent").with_confidence(0.96);
 >     speaker.transcription = Some(Transcription::new(
 >         "甚至出现交易几乎停滞的情况",
 >     ));

@@ -29,9 +29,9 @@ pub use metrics::{
 };
 pub use timeline::{
     ActivityEvaluation, ActivityEventEvaluation, Annotation, AudioActivity, AudioId, LanguageTag,
-    Sentence, SpeakerId, SpeakerPayload, TimeSpan, TimeSpanConflictKind, TimeSpanId,
-    TimeSpanOverlap, Timeline, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation,
-    TimelineId, TimelineSpanError, Token, Transcript, Transcription, TranscriptionEvaluation,
+    Sentence, Speaker, SpeakerId, TimeSpan, TimeSpanConflictKind, TimeSpanId, TimeSpanOverlap,
+    Timeline, TimelineEvalConfig, TimelineEvalError, TimelineEvaluation, TimelineId,
+    TimelineSpanError, Token, Transcript, Transcription, TranscriptionEvaluation,
     TranscriptionNormalization,
 };
 pub use utils::{DurationMs, SampleIndex, TimeRange};

@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use asr_data::{
     Annotation, Audio, AudioActivity, AudioChannel, AudioChunk, AudioDb, AudioDbError, AudioDbMode,
     AudioEncoding, AudioError, AudioFormat, AudioQuery, AudioSource, DurationMs, MAX_QUERY_LIMIT,
-    Sentence, SpeakerPayload, TimeRange, TimeSpan, Timeline, TimelineSpanError, Token,
-    Transcription, Waveform,
+    Sentence, Speaker, TimeRange, TimeSpan, Timeline, TimelineSpanError, Token, Transcription,
+    Waveform,
 };
 
 trait PushSpan {
@@ -179,7 +179,7 @@ fn speaker_annotation(
 ) -> TimeSpan {
     TimeSpan::new(
         TimeRange::new(DurationMs(start), DurationMs(end)),
-        Annotation::Speaker(SpeakerPayload {
+        Annotation::Speaker(Speaker {
             name: name.to_owned(),
             transcription: text.map(Transcription::new),
             confidence: None,

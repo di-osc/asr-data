@@ -1,7 +1,6 @@
 use asr_data::{
     AudioActivity, AudioDb, AudioFormat, AudioInfo, AudioQuery, AudioSource, DatasetEvaluator,
-    SpeakerPayload, TimelineEvalConfig, Transcription, TranscriptionNormalization,
-    evaluate_dataset,
+    Speaker, TimelineEvalConfig, Transcription, TranscriptionNormalization, evaluate_dataset,
 };
 
 fn doc(id: &str) -> asr_data::Audio {
@@ -37,13 +36,7 @@ fn aggregates_corpus_metrics_and_source_coverage() {
         .annotate_span_with(0, 1_000, Transcription::new("aaab"), false, Some("qwen"))
         .unwrap();
     timeline
-        .annotate_span_with(
-            0,
-            1_000,
-            Transcription::new("aaaa"),
-            false,
-            Some("whisper"),
-        )
+        .annotate_span_with(0, 1_000, Transcription::new("aaaa"), false, Some("whisper"))
         .unwrap();
     timeline
         .annotate_span(100, 500, activity(Some("speech")))
@@ -146,25 +139,19 @@ fn audio_db_speaker_evaluation_is_label_invariant() {
     let mut audio = doc("speakers");
     let timeline = audio.mono_timeline_mut().unwrap();
     timeline
-        .annotate_span(0, 500, SpeakerPayload::new("alice"))
+        .annotate_span(0, 500, Speaker::new("alice"))
         .unwrap();
     timeline
-        .annotate_span(500, 1_000, SpeakerPayload::new("bob"))
+        .annotate_span(500, 1_000, Speaker::new("bob"))
         .unwrap();
     timeline
-        .annotate_span_with(
-            0,
-            500,
-            SpeakerPayload::new("speaker_1"),
-            false,
-            Some("diarizer"),
-        )
+        .annotate_span_with(0, 500, Speaker::new("speaker_1"), false, Some("diarizer"))
         .unwrap();
     timeline
         .annotate_span_with(
             500,
             1_000,
-            SpeakerPayload::new("speaker_0"),
+            Speaker::new("speaker_0"),
             false,
             Some("diarizer"),
         )

@@ -1,5 +1,5 @@
 use asr_data::{
-    Annotation, AudioActivity, DurationMs, SpeakerPayload, TimeRange, TimeSpan, Timeline,
+    Annotation, AudioActivity, DurationMs, Speaker, TimeRange, TimeSpan, Timeline,
     TimelineEvalConfig, Transcription, TranscriptionNormalization,
 };
 
@@ -75,13 +75,7 @@ fn can_evaluate_transcription_without_normalization() {
         .annotate_span(0, 1_000, Transcription::new("交易停滞"))
         .unwrap();
     timeline
-        .annotate_span_with(
-            0,
-            1_000,
-            Transcription::new("交易停止"),
-            false,
-            Some("asr"),
-        )
+        .annotate_span_with(0, 1_000, Transcription::new("交易停止"), false, Some("asr"))
         .unwrap();
     let config = TimelineEvalConfig::new()
         .with_transcription("asr")
@@ -117,7 +111,7 @@ fn automatically_evaluates_all_sources_with_references() {
         .annotate_span_with(
             0,
             1_000,
-            SpeakerPayload::new("agent").with_transcription(Transcription::new("交易停止")),
+            Speaker::new("agent").with_transcription(Transcription::new("交易停止")),
             false,
             Some("whisper"),
         )
