@@ -135,23 +135,13 @@ cargo add asr-data
 > #### Rust Example
 >
 > ```rust
-> use asr_data::{
->     Annotation, Audio, AudioChannel, AudioDb, DurationMs, TimeRange, TimeSpan,
->     Transcription,
-> };
+> use asr_data::{Audio, AudioChannel, AudioDb, Transcription};
 >
 > fn main() -> Result<(), Box<dyn std::error::Error>> {
 >     let mut audio = Audio::from_path("audio.wav")?;
 >     let end = audio.info.timeline_duration_ms();
 >     let timeline = audio.timeline_mut(AudioChannel::Mono)?.unwrap();
->     timeline.annotate_span(
->         false,
->         TimeSpan::new(
->             TimeRange::new(DurationMs(0), DurationMs(end)),
->             Annotation::Transcription(Transcription::new("识别结果")),
->             Some("my-asr".to_owned()),
->         ),
->     )?;
+>     timeline.annotate_span_with(0, end, Transcription::new("识别结果"), false, Some("my-asr"))?;
 >
 >     let db = AudioDb::create("dataset.db")?;
 >     db.insert(&audio)?;

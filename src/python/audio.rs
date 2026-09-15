@@ -16,7 +16,7 @@ use pyo3::types::{PyAny, PyBytes, PyDict};
 use super::AsrDataError;
 use super::common::{
     SharedAudio, audio_channel, encoding_name, format_duration_ms, poisoned, py_error,
-    summarize_url, truncate,
+    summarize_url, terminal_view_html, truncate,
 };
 use super::doc::PyAudio;
 use super::timeline::PyTimeline;
@@ -651,13 +651,16 @@ impl PyWaveform {
         )
     }
 
-    fn __str__(&self, py: Python<'_>) -> String {
-        format!(
-            "Waveform({}, {}Hz, {}ch)",
-            format_duration_ms(self.duration_ms(py)),
-            self.sample_rate(),
-            self.channels()
-        )
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(self.materialize(py)?.terminal_view().to_string())
+    }
+
+    fn _repr_html_(&self, py: Python<'_>) -> PyResult<String> {
+        let rendered = self
+            .materialize(py)?
+            .terminal_view_with_color(true)
+            .to_string();
+        Ok(terminal_view_html(&rendered))
     }
 }
 

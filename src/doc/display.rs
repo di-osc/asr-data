@@ -2,8 +2,8 @@ use std::env;
 use std::fmt;
 use std::io::{self, IsTerminal};
 
-use crate::audio::{AudioChannel, AudioEncoding, AudioSource};
-use crate::timeline::{Annotation, TimeSpan};
+use crate::audio::{AudioChannel, AudioEncoding, AudioSource, Waveform};
+use crate::timeline::{Annotation, TimeSpan, Timeline, Token, Transcription};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::Audio;
@@ -21,6 +21,20 @@ const GREEN: &str = "\x1b[32m";
 const BLUE: &str = "\x1b[34m";
 const YELLOW: &str = "\x1b[33m";
 
+/// 读取 `COLUMNS`，夹在最小和最大终端宽度之间。
+fn terminal_width() -> usize {
+    env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_WIDTH)
+        .clamp(MIN_WIDTH, MAX_WIDTH)
+}
+
+/// 标准输出是 TTY 且未设置 `NO_COLOR` 时启用 ANSI 颜色。
+fn auto_color() -> bool {
+    io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none()
+}
+
 /// 终端里的紧凑 Audio 摘要：标题、波形和标注轨道。
 pub(super) struct AudioTerminalView<'a> {
     audio: &'a Audio,
@@ -31,29 +45,18 @@ pub(super) struct AudioTerminalView<'a> {
 impl<'a> AudioTerminalView<'a> {
     /// 按 `COLUMNS` 和是否 TTY 自动选择宽度与颜色。
     pub(super) fn auto(audio: &'a Audio) -> Self {
-        let width = env::var("COLUMNS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(DEFAULT_WIDTH)
-            .clamp(MIN_WIDTH, MAX_WIDTH);
-        let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
         Self {
             audio,
-            width,
-            color,
+            width: terminal_width(),
+            color: auto_color(),
         }
     }
 
     /// 强制开关颜色，宽度仍随终端。
     pub(super) fn with_color(audio: &'a Audio, color: bool) -> Self {
-        let width = env::var("COLUMNS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(DEFAULT_WIDTH)
-            .clamp(MIN_WIDTH, MAX_WIDTH);
         Self {
             audio,
-            width,
+            width: terminal_width(),
             color,
         }
     }
@@ -68,19 +71,10 @@ impl<'a> AudioTerminalView<'a> {
         }
     }
 
-    /// 颜色开启时包一层 ANSI，否则原样返回。
-    fn paint(&self, style: &str, value: &str) -> String {
-        if self.color {
-            format!("{style}{value}{RESET}")
-        } else {
-            value.to_owned()
-        }
-    }
-
-    /// 画顶部标题栏：顶边居中放文档 ID，框内是格式和来源。
+    /// 画顶部标题栏：顶边居中放 `Audio · {id}`，框内是格式和来源。
     fn write_header(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let top = self.centered_title(&self.audio.id);
-        writeln!(formatter, "{}", self.paint(BOLD_CYAN, &top))?;
+        let top = centered_title(self.width, &format!("Audio · {}", self.audio.id));
+        writeln!(formatter, "{}", paint(BOLD_CYAN, &top, self.color))?;
 
         let info = format!(
             "{}  ·  {}  ·  {}  ·  {:.3} s  ·  {} frames",
@@ -90,33 +84,13 @@ impl<'a> AudioTerminalView<'a> {
             self.audio.info.timeline_duration_ms() as f64 / 1000.0,
             grouped_number(self.audio.info.frame_count),
         );
-        self.write_card_line(formatter, &info)?;
-        self.write_card_line(
+        write_card_line(formatter, self.width, &info)?;
+        write_card_line(
             formatter,
+            self.width,
             &format!("source: {}", source_name(&self.audio.source)),
         )?;
-
-        let bottom = format!("╰{}╯", "─".repeat(self.width.saturating_sub(2)));
-        writeln!(formatter, "{}", self.paint(BOLD_CYAN, &bottom))
-    }
-
-    /// 顶边把 ID 放在框线正中，例如 `╭──── abcdef ────╮`。
-    fn centered_title(&self, id: &str) -> String {
-        let inner = self.width.saturating_sub(2);
-        let id = truncate(id, inner.saturating_sub(2));
-        let title = format!(" {id} ");
-        let leftover = inner.saturating_sub(display_width(&title));
-        let left = leftover / 2;
-        let right = leftover - left;
-        format!("╭{}{title}{}╮", "─".repeat(left), "─".repeat(right))
-    }
-
-    /// 输出一行标签+值的卡片。
-    fn write_card_line(&self, formatter: &mut fmt::Formatter<'_>, value: &str) -> fmt::Result {
-        let content_width = self.width.saturating_sub(4);
-        let value = truncate(value, content_width);
-        let padding = content_width.saturating_sub(display_width(&value));
-        writeln!(formatter, "│ {value}{} │", " ".repeat(padding))
+        write_card_bottom(formatter, self.width, self.color)
     }
 
     /// 按声道画出波形和标注轨道。
@@ -131,14 +105,14 @@ impl<'a> AudioTerminalView<'a> {
             formatter,
             "{}{}",
             " ".repeat(LABEL_WIDTH),
-            self.paint(DIM, &labels)
+            paint(DIM, &labels, self.color)
         )?;
         let axis = time_axis(plot_width, &ticks);
         writeln!(
             formatter,
             "{}{}",
             " ".repeat(LABEL_WIDTH),
-            self.paint(DIM, &axis)
+            paint(DIM, &axis, self.color)
         )?;
 
         for (channel, timeline) in &self.audio.timelines {
@@ -152,7 +126,7 @@ impl<'a> AudioTerminalView<'a> {
                 formatter,
                 "{:<LABEL_WIDTH$}{}",
                 channel_label(*channel),
-                self.paint(GREEN, &waveform),
+                paint(GREEN, &waveform, self.color),
             )?;
 
             if !timeline.reference.is_empty() {
@@ -193,7 +167,7 @@ impl<'a> AudioTerminalView<'a> {
             formatter,
             "{}{}",
             " ".repeat(LABEL_WIDTH),
-            self.paint(DIM, &footer)
+            paint(DIM, &footer, self.color)
         )
     }
 }
@@ -202,6 +176,260 @@ impl fmt::Display for AudioTerminalView<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.write_header(formatter)?;
         self.write_timeline(formatter)
+    }
+}
+
+/// 终端里的紧凑 Waveform 摘要：格式卡片和分声道块状波形。
+pub(crate) struct WaveformTerminalView<'a> {
+    waveform: &'a Waveform,
+    width: usize,
+    color: bool,
+}
+
+impl<'a> WaveformTerminalView<'a> {
+    /// 按 `COLUMNS` 和是否 TTY 自动选择宽度与颜色。
+    pub(crate) fn auto(waveform: &'a Waveform) -> Self {
+        Self {
+            waveform,
+            width: terminal_width(),
+            color: auto_color(),
+        }
+    }
+
+    /// 强制开关颜色，宽度仍随终端。
+    pub(crate) fn with_color(waveform: &'a Waveform, color: bool) -> Self {
+        Self {
+            waveform,
+            width: terminal_width(),
+            color,
+        }
+    }
+
+    /// 测试用固定宽度构造器。
+    #[cfg(test)]
+    fn new(waveform: &'a Waveform, width: usize, color: bool) -> Self {
+        Self {
+            waveform,
+            width: width.clamp(MIN_WIDTH, MAX_WIDTH),
+            color,
+        }
+    }
+
+    /// 画顶部标题栏：顶边居中写 `Waveform`，框内是编码、采样率和时长。
+    fn write_header(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let top = centered_title(self.width, "Waveform");
+        writeln!(formatter, "{}", paint(BOLD_CYAN, &top, self.color))?;
+        write_card_line(formatter, self.width, &waveform_info_line(self.waveform))?;
+        write_card_bottom(formatter, self.width, self.color)
+    }
+
+    /// 按声道画出时间轴和块状波形，不带标注轨道。
+    fn write_plot(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let plot_width = self.width.saturating_sub(LABEL_WIDTH);
+        let duration_ms = self.waveform.duration_ms() as u64;
+        let ticks = timeline_ticks(duration_ms, plot_width);
+
+        writeln!(formatter)?;
+        let labels = time_labels(plot_width, &ticks);
+        writeln!(
+            formatter,
+            "{}{}",
+            " ".repeat(LABEL_WIDTH),
+            paint(DIM, &labels, self.color)
+        )?;
+        let axis = time_axis(plot_width, &ticks);
+        writeln!(
+            formatter,
+            "{}{}",
+            " ".repeat(LABEL_WIDTH),
+            paint(DIM, &axis, self.color)
+        )?;
+
+        for channel in waveform_channels(self.waveform.channels) {
+            let line = waveform_line(self.waveform, channel, plot_width);
+            writeln!(
+                formatter,
+                "{:<LABEL_WIDTH$}{}",
+                channel_label(channel),
+                paint(GREEN, &line, self.color),
+            )?;
+        }
+
+        let footer = centered_rule(
+            &format!(
+                "{} samples",
+                grouped_number(self.waveform.samples.len() as u64)
+            ),
+            plot_width,
+        );
+        write!(
+            formatter,
+            "{}{}",
+            " ".repeat(LABEL_WIDTH),
+            paint(DIM, &footer, self.color)
+        )
+    }
+}
+
+impl fmt::Display for WaveformTerminalView<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write_header(formatter)?;
+        self.write_plot(formatter)
+    }
+}
+
+/// 终端里的紧凑 Timeline 摘要：时长、标注计数和分轨详情。
+pub(crate) struct TimelineTerminalView<'a> {
+    timeline: &'a Timeline,
+    width: usize,
+    color: bool,
+}
+
+impl<'a> TimelineTerminalView<'a> {
+    /// 按 `COLUMNS` 和是否 TTY 自动选择宽度与颜色。
+    pub(crate) fn auto(timeline: &'a Timeline) -> Self {
+        Self {
+            timeline,
+            width: terminal_width(),
+            color: auto_color(),
+        }
+    }
+
+    /// 强制开关颜色，宽度仍随终端。
+    pub(crate) fn with_color(timeline: &'a Timeline, color: bool) -> Self {
+        Self {
+            timeline,
+            width: terminal_width(),
+            color,
+        }
+    }
+
+    /// 测试用固定宽度构造器。
+    #[cfg(test)]
+    fn new(timeline: &'a Timeline, width: usize, color: bool) -> Self {
+        Self {
+            timeline,
+            width: width.clamp(MIN_WIDTH, MAX_WIDTH),
+            color,
+        }
+    }
+
+    /// 画顶部标题栏：顶边居中放 `Timeline · {id}`，框内是时长和标注计数。
+    fn write_header(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let top = centered_title(self.width, &format!("Timeline · {}", self.timeline.id));
+        writeln!(formatter, "{}", paint(BOLD_CYAN, &top, self.color))?;
+        write_card_line(formatter, self.width, &timeline_info_line(self.timeline))?;
+        write_card_line(
+            formatter,
+            self.width,
+            &format!("audio · {}", self.timeline.audio_id),
+        )?;
+        write_card_bottom(formatter, self.width, self.color)
+    }
+
+    /// 画时间轴和 Reference / Prediction 标注轨道，没有波形行。
+    fn write_plot(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let plot_width = self.width.saturating_sub(LABEL_WIDTH);
+        let duration_ms = self.timeline.duration.0;
+        let ticks = timeline_ticks(duration_ms, plot_width);
+
+        writeln!(formatter)?;
+        let labels = time_labels(plot_width, &ticks);
+        writeln!(
+            formatter,
+            "{}{}",
+            " ".repeat(LABEL_WIDTH),
+            paint(DIM, &labels, self.color)
+        )?;
+        let axis = time_axis(plot_width, &ticks);
+        writeln!(
+            formatter,
+            "{}{}",
+            " ".repeat(LABEL_WIDTH),
+            paint(DIM, &axis, self.color)
+        )?;
+
+        if !self.timeline.reference.is_empty() {
+            write_annotation_groups(
+                formatter,
+                "Reference",
+                &self.timeline.reference,
+                duration_ms,
+                plot_width,
+                self.width,
+                BLUE,
+                self.color,
+            )?;
+        }
+        if !self.timeline.prediction.is_empty() {
+            write_annotation_groups(
+                formatter,
+                "Prediction",
+                &self.timeline.prediction,
+                duration_ms,
+                plot_width,
+                self.width,
+                YELLOW,
+                self.color,
+            )?;
+        }
+
+        let span_count = self.timeline.reference.len() + self.timeline.prediction.len();
+        let footer_label = if span_count == 0 {
+            "no annotations".to_owned()
+        } else {
+            format!("{} annotations", grouped_number(span_count as u64))
+        };
+        let footer = centered_rule(&footer_label, plot_width);
+        write!(
+            formatter,
+            "{}{}",
+            " ".repeat(LABEL_WIDTH),
+            paint(DIM, &footer, self.color)
+        )
+    }
+}
+
+impl fmt::Display for TimelineTerminalView<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write_header(formatter)?;
+        self.write_plot(formatter)
+    }
+}
+
+/// 卡片信息行：时长和参考 / 预测条数。
+fn timeline_info_line(timeline: &Timeline) -> String {
+    format!(
+        "{:.3} s  ·  {} reference  ·  {} prediction",
+        timeline.duration.0 as f64 / 1000.0,
+        grouped_number(timeline.reference.len() as u64),
+        grouped_number(timeline.prediction.len() as u64),
+    )
+}
+
+/// 卡片信息行：编码来自 `source_format`，没有则写 `PCM`。
+fn waveform_info_line(waveform: &Waveform) -> String {
+    let encoding = waveform
+        .source_format
+        .as_ref()
+        .map(|format| encoding_name(&format.encoding))
+        .unwrap_or_else(|| "PCM".to_owned());
+    format!(
+        "{}  ·  {}  ·  {}  ·  {:.3} s  ·  {} frames",
+        encoding,
+        sample_rate_name(waveform.sample_rate),
+        channel_count_name(waveform.channels),
+        waveform.duration_seconds(),
+        grouped_number(waveform.frame_count() as u64),
+    )
+}
+
+/// 按当前 PCM 声道数生成终端标签：单声道用 `Mono`，否则按下标展开。
+fn waveform_channels(channels: u16) -> Vec<AudioChannel> {
+    if channels <= 1 {
+        vec![AudioChannel::Mono]
+    } else {
+        (0..channels).map(AudioChannel::from_index).collect()
     }
 }
 
@@ -287,7 +515,7 @@ fn channel_label(channel: AudioChannel) -> String {
 }
 
 /// 把峰值能量画成字符波形。
-fn waveform_line(waveform: &crate::audio::Waveform, channel: AudioChannel, width: usize) -> String {
+fn waveform_line(waveform: &Waveform, channel: AudioChannel, width: usize) -> String {
     let channels = usize::from(waveform.channels.max(1));
     let channel_index = usize::from(channel.index().unwrap_or(0)).min(channels - 1);
     let frames = waveform.samples.len() / channels;
@@ -491,15 +719,11 @@ fn write_annotation_box(
         "─".repeat(width.saturating_sub(3 + title_width))
     )?;
     for span in annotations {
-        let label = format!(
-            "{}–{}  {}",
-            format_time(span.range.start.0),
-            format_time(span.range.end.0),
-            annotation_label(span),
-        );
-        let value = truncate(&label, content_width);
-        let padding = content_width.saturating_sub(display_width(&value));
-        writeln!(formatter, "│ {value}{} │", " ".repeat(padding))?;
+        for line in annotation_detail_lines(span) {
+            let value = truncate(&line, content_width);
+            let padding = content_width.saturating_sub(display_width(&value));
+            writeln!(formatter, "│ {value}{} │", " ".repeat(padding))?;
+        }
     }
     writeln!(formatter, "╰{}╯", "─".repeat(width.saturating_sub(2)))?;
     Ok(())
@@ -522,6 +746,75 @@ fn annotation_label(span: &TimeSpan) -> String {
         label.push_str(&format!(" {:.0}%", confidence * 100.0));
     }
     label
+}
+
+/// 标注详情盒里的多行内容：时间范围、文本，以及嵌套 token。
+fn annotation_detail_lines(span: &TimeSpan) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{}–{}  {}",
+        format_time(span.range.start.0),
+        format_time(span.range.end.0),
+        annotation_label(span),
+    )];
+    match &span.annotation {
+        Annotation::Speaker(speaker) => {
+            if let Some(transcription) = &speaker.transcription {
+                lines.push(format!("“{}”", transcription.text));
+                push_token_line(&mut lines, transcription);
+            }
+        }
+        Annotation::Transcription(transcription) => {
+            push_token_line(&mut lines, transcription);
+        }
+        Annotation::Sentence(sentence) => {
+            if !sentence.tokens.is_empty() {
+                lines.push(join_token_texts(&sentence.tokens));
+            }
+        }
+        _ => {}
+    }
+    lines
+}
+
+/// 有 token 时追加一行空格拼接的词序列。
+fn push_token_line(lines: &mut Vec<String>, transcription: &Transcription) {
+    if !transcription.tokens.is_empty() {
+        lines.push(join_token_texts(&transcription.tokens));
+    }
+}
+
+/// 把 token 文本拼成一行，便于在卡片里扫读。
+fn join_token_texts(tokens: &[Token]) -> String {
+    tokens
+        .iter()
+        .map(|token| token.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 顶边把标题放在框线正中，例如 `╭──── Waveform ────╮`。
+fn centered_title(width: usize, title: &str) -> String {
+    let inner = width.saturating_sub(2);
+    let title = truncate(title, inner.saturating_sub(2));
+    let title = format!(" {title} ");
+    let leftover = inner.saturating_sub(display_width(&title));
+    let left = leftover / 2;
+    let right = leftover - left;
+    format!("╭{}{title}{}╮", "─".repeat(left), "─".repeat(right))
+}
+
+/// 输出卡片正文一行，左右用 `│` 包住。
+fn write_card_line(formatter: &mut fmt::Formatter<'_>, width: usize, value: &str) -> fmt::Result {
+    let content_width = width.saturating_sub(4);
+    let value = truncate(value, content_width);
+    let padding = content_width.saturating_sub(display_width(&value));
+    writeln!(formatter, "│ {value}{} │", " ".repeat(padding))
+}
+
+/// 画青色卡片底边。
+fn write_card_bottom(formatter: &mut fmt::Formatter<'_>, width: usize, color: bool) -> fmt::Result {
+    let bottom = format!("╰{}╯", "─".repeat(width.saturating_sub(2)));
+    writeln!(formatter, "{}", paint(BOLD_CYAN, &bottom, color))
 }
 
 /// 居中分隔线。
@@ -601,10 +894,10 @@ fn overlay(target: &mut [char], start: usize, value: &str) {
 #[cfg(test)]
 mod tests {
     use crate::audio::{AudioEncoding, AudioFormat, AudioSource, Waveform};
-    use crate::timeline::{Annotation, AudioActivity, TimeSpan};
-    use crate::utils::{DurationMs, TimeRange};
+    use crate::timeline::{AudioActivity, SpeakerPayload, Timeline, Token, Transcription};
+    use crate::utils::DurationMs;
 
-    use super::{Audio, AudioTerminalView};
+    use super::{Audio, AudioTerminalView, TimelineTerminalView, WaveformTerminalView};
 
     fn test_audio() -> Audio {
         let waveform = Waveform::new(vec![0.0, 0.25, -0.5, 1.0, -0.5, 0.25, 0.0, 0.0], 8)
@@ -620,7 +913,7 @@ mod tests {
     fn terminal_view_renders_compact_audio_summary_and_waveform() {
         let output = format!("{}", AudioTerminalView::new(&test_audio(), 64, false));
 
-        assert!(output.contains(" audio_test "));
+        assert!(output.contains(" Audio · audio_test "));
         assert!(!output.contains("╭─ Audio "));
         assert!(output.contains("WAV  ·  8 Hz  ·  Mono  ·  1.000 s  ·  8 frames"));
         assert!(output.contains("Mono       "));
@@ -635,14 +928,7 @@ mod tests {
         audio
             .mono_timeline_mut()
             .expect("mono timeline")
-            .annotate_span(
-                true,
-                TimeSpan::new(
-                    TimeRange::new(DurationMs(125), DurationMs(750)),
-                    Annotation::Activity(AudioActivity::new().with_event("speech")),
-                    None,
-                ),
-            )
+            .annotate_span(125, 750, AudioActivity::new().with_event("speech"))
             .expect("valid annotation");
 
         let output = format!("{}", AudioTerminalView::new(&audio, 64, false));
@@ -655,6 +941,112 @@ mod tests {
     #[test]
     fn terminal_view_adds_color_only_when_enabled() {
         let output = format!("{}", AudioTerminalView::new(&test_audio(), 64, true));
+
+        assert!(output.contains("\x1b["));
+    }
+
+    fn test_waveform() -> Waveform {
+        Waveform::new(vec![0.0, 0.25, -0.5, 1.0, -0.5, 0.25, 0.0, 0.0], 8).with_source_format(
+            AudioFormat {
+                encoding: AudioEncoding::Wav,
+                sample_rate: 8,
+                channels: 1,
+            },
+        )
+    }
+
+    #[test]
+    fn waveform_terminal_view_renders_compact_summary_and_sparkline() {
+        let output = format!("{}", WaveformTerminalView::new(&test_waveform(), 64, false));
+
+        assert!(output.contains(" Waveform "));
+        assert!(output.contains("WAV  ·  8 Hz  ·  Mono  ·  1.000 s  ·  8 frames"));
+        assert!(output.contains("Mono       "));
+        assert!(output.contains("8 samples"));
+        assert!(!output.contains("source:"));
+        assert!(!output.contains("\x1b["));
+        assert!(!output.contains("0.25"));
+    }
+
+    #[test]
+    fn waveform_terminal_view_uses_pcm_when_source_format_is_missing() {
+        let waveform = Waveform::new(vec![0.0; 8], 8);
+        let output = format!("{}", WaveformTerminalView::new(&waveform, 64, false));
+
+        assert!(output.contains("PCM  ·  8 Hz  ·  Mono  ·  1.000 s  ·  8 frames"));
+    }
+
+    #[test]
+    fn waveform_terminal_view_renders_stereo_channels() {
+        let waveform = Waveform::new_with_channels(vec![0.0, 1.0, 0.5, -0.5, 0.25, -0.25], 3, 2);
+        let output = format!("{}", WaveformTerminalView::new(&waveform, 64, false));
+
+        assert!(output.contains("Stereo"));
+        assert!(output.contains("Left       "));
+        assert!(output.contains("Right      "));
+        assert!(!output.contains("Mono       "));
+    }
+
+    #[test]
+    fn waveform_terminal_view_adds_color_only_when_enabled() {
+        let output = format!("{}", WaveformTerminalView::new(&test_waveform(), 64, true));
+
+        assert!(output.contains("\x1b["));
+    }
+
+    fn test_timeline() -> Timeline {
+        let mut timeline = Timeline::new("audio_test", DurationMs(1_000));
+        timeline
+            .annotate_span(
+                0,
+                350,
+                AudioActivity::new()
+                    .with_event("speech")
+                    .with_confidence(0.9),
+            )
+            .expect("activity");
+        timeline
+            .annotate_span(
+                0,
+                350,
+                SpeakerPayload::new("female0").with_confidence(0.9).with_transcription(
+                    Transcription::new("甚至出现交易几乎停滞的情况。")
+                        .with_tokens(vec![Token::new("甚"), Token::new("至")]),
+                ),
+            )
+            .expect("speaker");
+        timeline
+    }
+
+    #[test]
+    fn timeline_terminal_view_renders_summary_and_annotation_tracks() {
+        let output = format!("{}", TimelineTerminalView::new(&test_timeline(), 64, false));
+
+        assert!(output.contains(" Timeline · "));
+        assert!(output.contains("1.000 s  ·  2 reference  ·  0 prediction"));
+        assert!(output.contains("audio · audio_test"));
+        assert!(output.contains("Reference · Activity"));
+        assert!(output.contains("speech"));
+        assert!(output.contains("female0"));
+        assert!(output.contains("甚至出现交易几乎停滞的情况。"));
+        assert!(output.contains("甚 至"));
+        assert!(output.contains("2 annotations"));
+        assert!(!output.contains("\x1b["));
+        assert!(!output.contains("source:"));
+    }
+
+    #[test]
+    fn timeline_terminal_view_renders_empty_state() {
+        let timeline = Timeline::new("audio_test", DurationMs(1_000));
+        let output = format!("{}", TimelineTerminalView::new(&timeline, 64, false));
+
+        assert!(output.contains("1.000 s  ·  0 reference  ·  0 prediction"));
+        assert!(output.contains("no annotations"));
+    }
+
+    #[test]
+    fn timeline_terminal_view_adds_color_only_when_enabled() {
+        let output = format!("{}", TimelineTerminalView::new(&test_timeline(), 64, true));
 
         assert!(output.contains("\x1b["));
     }

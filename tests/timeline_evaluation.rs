@@ -72,23 +72,15 @@ fn evaluates_activity_events_and_masks_unknown_reference_ranges() {
 fn can_evaluate_transcription_without_normalization() {
     let mut timeline = Timeline::new("audio", DurationMs(1_000));
     timeline
-        .annotate_span(
-            true,
-            TimeSpan::new(
-                TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                Annotation::Transcription(Transcription::new("交易停滞")),
-                None,
-            ),
-        )
+        .annotate_span(0, 1_000, Transcription::new("交易停滞"))
         .unwrap();
     timeline
-        .annotate_span(
+        .annotate_span_with(
+            0,
+            1_000,
+            Transcription::new("交易停止"),
             false,
-            TimeSpan::new(
-                TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                Annotation::Transcription(Transcription::new("交易停止")),
-                Some("asr".to_owned()),
-            ),
+            Some("asr"),
         )
         .unwrap();
     let config = TimelineEvalConfig::new()
@@ -110,35 +102,24 @@ fn can_evaluate_transcription_without_normalization() {
 fn automatically_evaluates_all_sources_with_references() {
     let mut timeline = Timeline::new("audio", DurationMs(1_000));
     timeline
-        .annotate_span(
-            true,
-            TimeSpan::new(
-                TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                Annotation::Transcription(Transcription::new("交易停滞")),
-                None,
-            ),
+        .annotate_span(0, 1_000, Transcription::new("交易停滞"))
+        .unwrap();
+    timeline
+        .annotate_span_with(
+            0,
+            1_000,
+            Transcription::new("交易停滞"),
+            false,
+            Some("qwen"),
         )
         .unwrap();
     timeline
-        .annotate_span(
+        .annotate_span_with(
+            0,
+            1_000,
+            SpeakerPayload::new("agent").with_transcription(Transcription::new("交易停止")),
             false,
-            TimeSpan::new(
-                TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                Annotation::Transcription(Transcription::new("交易停滞")),
-                Some("qwen".to_owned()),
-            ),
-        )
-        .unwrap();
-    let mut speaker = SpeakerPayload::new("agent");
-    speaker.transcription = Some(Transcription::new("交易停止"));
-    timeline
-        .annotate_span(
-            false,
-            TimeSpan::new(
-                TimeRange::new(DurationMs(0), DurationMs(1_000)),
-                Annotation::Speaker(speaker),
-                Some("whisper".to_owned()),
-            ),
+            Some("whisper"),
         )
         .unwrap();
 

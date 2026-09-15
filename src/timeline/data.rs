@@ -35,6 +35,13 @@ pub struct Timeline {
     pub prediction: Vec<TimeSpan>,
 }
 
+/// 终端打印时使用 [`Timeline::terminal_view`] 的卡片与标注轨道布局。
+impl fmt::Display for Timeline {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.terminal_view().fmt(formatter)
+    }
+}
+
 /// 一次非法重叠的详细信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeSpanOverlap {
@@ -79,6 +86,18 @@ pub enum TimelineSpanError {
 }
 
 impl Timeline {
+    /// 渲染紧凑的终端摘要：时长卡片和 Reference / Prediction 标注轨道。
+    ///
+    /// 宽度读取 `COLUMNS`（夹在 56–120），颜色在 TTY 且未设置 `NO_COLOR` 时开启。
+    pub fn terminal_view(&self) -> impl fmt::Display + '_ {
+        crate::doc::TimelineTerminalView::auto(self)
+    }
+
+    /// 渲染带或不带 ANSI 颜色的终端摘要，宽度仍随终端。
+    pub fn terminal_view_with_color(&self, color: bool) -> impl fmt::Display + '_ {
+        crate::doc::TimelineTerminalView::with_color(self, color)
+    }
+
     /// 构造空时间轴，生成随机 ID。
     pub fn new(audio_id: impl Into<AudioId>, duration: DurationMs) -> Self {
         Self {
@@ -90,18 +109,49 @@ impl Timeline {
         }
     }
 
-    /// 写入一条标注。参考禁止 `source`，预测必须有非空 `source`。
+    /// 写入一条标注。
     ///
+    /// 参数与 Python `Timeline.annotate_span(start_ms, end_ms, annotation)` 对齐：
+    /// 默认作为 reference（`is_reference=True` 且不带 `source`）。
     /// 内容完全相同的 span 会被去重并返回已有项。
+    ///
+    /// 指定 `is_reference` / `source` 时请使用 [`Self::annotate_span_with`]。
     ///
     /// # Errors
     ///
     /// source 约束不满足或与已有 span 非法重叠时返回错误。
     pub fn annotate_span(
         &mut self,
-        is_reference: bool,
-        annotation: TimeSpan,
+        start_ms: u64,
+        end_ms: u64,
+        annotation: impl Into<Annotation>,
     ) -> Result<&TimeSpan, TimelineSpanError> {
+        self.annotate_span_with(start_ms, end_ms, annotation, true, None)
+    }
+
+    /// 写入一条标注，并指定是否为 reference 以及 prediction source。
+    ///
+    /// 参数顺序与 Python
+    /// `Timeline.annotate_span(start_ms, end_ms, annotation, *, is_reference, source)`
+    /// 对齐。参考禁止 `source`，预测必须有非空 `source`。
+    /// 内容完全相同的 span 会被去重并返回已有项。
+    ///
+    /// # Errors
+    ///
+    /// source 约束不满足或与已有 span 非法重叠时返回错误。
+    pub fn annotate_span_with(
+        &mut self,
+        start_ms: u64,
+        end_ms: u64,
+        annotation: impl Into<Annotation>,
+        is_reference: bool,
+        source: Option<&str>,
+    ) -> Result<&TimeSpan, TimelineSpanError> {
+        let annotation = TimeSpan::new(
+            TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
+            annotation.into(),
+            source.map(str::to_owned),
+        );
         if is_reference {
             if annotation.source.is_some() {
                 return Err(TimelineSpanError::ReferenceHasSource {

@@ -1142,7 +1142,7 @@ def test_public_types_have_informative_repr(tmp_path):
         'duration="3.25s", annotations=1)'
     )
     rendered_audio = str(audio)
-    assert " call-1 " in rendered_audio
+    assert " Audio · call-1 " in rendered_audio
     assert "╭─ Audio " not in rendered_audio
     assert "PCM S16LE  ·  8 kHz  ·  Stereo  ·  3.250 s" in rendered_audio
     assert "Left" in rendered_audio
@@ -1153,6 +1153,11 @@ def test_public_types_have_informative_repr(tmp_path):
     assert 'text="hello world"' in repr(annotation)
     assert str(annotation) == 'transcription [100..800ms]: "hello world"'
     assert 'duration="3.25s"' in repr(audio.timeline("left"))
+    rendered_timeline = str(audio.timeline("left"))
+    assert " Timeline · " in rendered_timeline
+    assert "3.250 s  ·  1 reference  ·  0 prediction" in rendered_timeline
+    assert "audio · call-1" in rendered_timeline
+    assert "Reference · Transcription" in rendered_timeline
     assert repr(db).endswith('mode="read-write", audios=1, duration="3.25s")')
 
 
@@ -1958,7 +1963,7 @@ def test_audio_and_audio_stream_convenience_factories(tmp_path):
     assert repr(from_file).startswith('Audio(id="file", file="')
     assert 'duration="1ms"' in repr(from_file)
     rendered_file = str(from_file)
-    assert " file " in rendered_file
+    assert " Audio · file " in rendered_file
     assert "╭─ Audio " not in rendered_file
     assert "WAV  ·  8 kHz  ·  Mono  ·  0.001 s" in rendered_file
     assert str(wav_path)[:40] in rendered_file

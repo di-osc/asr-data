@@ -107,6 +107,24 @@ impl Transcription {
             confidence: None,
         }
     }
+
+    /// 附上词级 token。
+    pub fn with_tokens(mut self, tokens: Vec<Token>) -> Self {
+        self.tokens = tokens;
+        self
+    }
+
+    /// 附上语种标签。
+    pub fn with_language(mut self, language: impl Into<String>) -> Self {
+        self.language = Some(language.into());
+        self
+    }
+
+    /// 附上整段置信度。
+    pub fn with_confidence(mut self, confidence: f32) -> Self {
+        self.confidence = Some(confidence);
+        self
+    }
 }
 
 /// 说话人标注，可附带该段转写。
@@ -137,6 +155,12 @@ impl SpeakerPayload {
         self.confidence = Some(confidence);
         self
     }
+
+    /// 附上该说话人在此时间段内的转写。
+    pub fn with_transcription(mut self, transcription: Transcription) -> Self {
+        self.transcription = Some(transcription);
+        self
+    }
 }
 
 /// 可放进 [`TimeSpan`] 的标注内容。
@@ -154,6 +178,36 @@ pub enum Annotation {
     Speaker(SpeakerPayload),
     /// 语种。
     Language(LanguageTag),
+}
+
+impl From<AudioActivity> for Annotation {
+    fn from(value: AudioActivity) -> Self {
+        Self::Activity(value)
+    }
+}
+
+impl From<Token> for Annotation {
+    fn from(value: Token) -> Self {
+        Self::Token(value)
+    }
+}
+
+impl From<Transcription> for Annotation {
+    fn from(value: Transcription) -> Self {
+        Self::Transcription(value)
+    }
+}
+
+impl From<Sentence> for Annotation {
+    fn from(value: Sentence) -> Self {
+        Self::Sentence(value)
+    }
+}
+
+impl From<SpeakerPayload> for Annotation {
+    fn from(value: SpeakerPayload) -> Self {
+        Self::Speaker(value)
+    }
 }
 
 impl Annotation {

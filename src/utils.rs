@@ -32,6 +32,11 @@ impl TimeRange {
         Self { start, end }
     }
 
+    /// 用毫秒起止构造半开区间 `[start_ms, end_ms)`。
+    pub fn from_ms(start_ms: u64, end_ms: u64) -> Self {
+        Self::new(DurationMs(start_ms), DurationMs(end_ms))
+    }
+
     /// 区间长度；若 `end < start` 则饱和为 0。
     pub fn duration(self) -> DurationMs {
         DurationMs(self.end.0.saturating_sub(self.start.0))

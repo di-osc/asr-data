@@ -138,22 +138,11 @@ fn audio_and_stream_convenience_factories_are_public() {
 #[test]
 fn timeline_uses_one_annotation_write_method() {
     let mut timeline = Timeline::new("audio", DurationMs(1_000));
-    let reference = TimeSpan::new(
-        TimeRange::new(DurationMs(0), DurationMs(1_000)),
-        Annotation::Activity(AudioActivity::new().with_event("speech")),
-        None,
-    );
     timeline
-        .annotate_span(true, reference)
+        .annotate_span(0, 1_000, AudioActivity::new().with_event("speech"))
         .expect("reference annotation");
-
-    let prediction = TimeSpan::new(
-        TimeRange::new(DurationMs(0), DurationMs(1_000)),
-        Annotation::Transcription(Transcription::new("hello")),
-        Some("asr".to_owned()),
-    );
     timeline
-        .annotate_span(false, prediction)
+        .annotate_span_with(0, 1_000, Transcription::new("hello"), false, Some("asr"))
         .expect("prediction annotation");
 
     assert_eq!(timeline.reference.len(), 1);

@@ -136,19 +136,18 @@ Transcription 和 Token 分别保存各自语义下的 `confidence`。因此说�
 > #### Rust Example
 >
 > ```rust
-> use asr_data::{Annotation, AudioActivity, DurationMs, TimeRange, TimeSpan, Timeline, Transcription};
+> use asr_data::{AudioActivity, Timeline, Transcription};
 >
 > fn main() -> anyhow::Result<()> {
->     let mut timeline = Timeline::new("example-001", DurationMs(1_000));
->     timeline.annotate_span(true, TimeSpan::new(
->         TimeRange::new(DurationMs(0), DurationMs(1_000)),
->         Annotation::Activity(AudioActivity::new().with_event("speech")), None,
->     ))?;
->     timeline.annotate_span(false, TimeSpan::new(
->         TimeRange::new(DurationMs(0), DurationMs(1_000)),
->         Annotation::Transcription(Transcription::new("甚至出现交易几乎停滞的情况")),
->         Some("qwen-asr".to_owned()),
->     ))?;
+>     let mut timeline = Timeline::new("example-001", asr_data::DurationMs(1_000));
+>     timeline.annotate_span(0, 1_000, AudioActivity::new().with_event("speech"))?;
+>     timeline.annotate_span_with(
+>         0,
+>         1_000,
+>         Transcription::new("甚至出现交易几乎停滞的情况"),
+>         false,
+>         Some("qwen-asr"),
+>     )?;
 >     Ok(())
 > }
 > ```
@@ -238,8 +237,9 @@ TimeSpan 不再具有 `status`。集合中的每条 annotation 都表示当前�
 #### Reference 与 Prediction 来源
 
 - Reference annotation 不携带 source。Python 调用 `timeline.annotate_span()` 时
-  使用 `is_reference=True` 并省略 source；Rust 使用相同布尔参数。整体验证会拒绝
-  通过直接修改得到的非空 reference source。
+  使用 `is_reference=True` 并省略 source；Rust 的 `annotate_span(start_ms, end_ms, annotation)`
+  默认同样写入 reference。指定 `is_reference` / `source` 时使用 `annotate_span_with`。
+  整体验证会拒绝通过直接修改得到的非空 reference source。
 - 每条 Prediction annotation 都必须有 source，而且 source 至少包含一个非空白字
   符。`""` 和 `"   "` 无效。
 - source 使用原始字符串精确比较，区分大小写，不会自动 trim 或标准化。因此
@@ -281,7 +281,7 @@ prediction source 使用上表；不同 source 可以自由重叠。例如两个
 | 入口 | 校验行为 |
 | ---- | -------- |
 | Python `Timeline.annotate_span()` | 添加前检查范围、is_reference、source、annotation 和重叠规则。 |
-| Rust `Timeline::annotate_span()` | 幂等插入，并检查 is_reference、source 与重叠规则。 |
+| Rust `Timeline::annotate_span()` / `annotate_span_with()` | 幂等插入，并检查 is_reference、source 与重叠规则。 |
 | Python `span.annotation = ...` | 使用候选副本进行原子校验。 |
 | Python/Rust source 重命名 | 校验完整候选集合，成功后一次性提交。 |
 | `Audio.validate()` | 重新检查声道、timeline、annotation 边界、source 和集合重叠。 |

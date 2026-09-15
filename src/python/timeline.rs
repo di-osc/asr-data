@@ -13,7 +13,9 @@ use pyo3::prelude::*;
 
 use super::annotation::{PyAudioActivity, PySpeaker, PyToken, PyTranscription};
 use super::audio::{PyWaveform, display_rust_waveform};
-use super::common::{SharedAudio, format_duration_ms, poisoned, py_error, truncate};
+use super::common::{
+    SharedAudio, format_duration_ms, poisoned, py_error, terminal_view_html, truncate,
+};
 
 /// Timeline 上一条带时间范围的标注记录。
 ///
@@ -1087,14 +1089,16 @@ impl PyTimeline {
 
     fn __str__(&self) -> PyResult<String> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
-        let timeline = self.selected(&audio)?;
-        let duration = format_duration_ms(timeline.duration.0 as f64);
-        Ok(format!(
-            "Timeline({}, {} reference, {} prediction)",
-            duration,
-            timeline.reference.len(),
-            timeline.prediction.len()
-        ))
+        Ok(self.selected(&audio)?.terminal_view().to_string())
+    }
+
+    fn _repr_html_(&self) -> PyResult<String> {
+        let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
+        let rendered = self
+            .selected(&audio)?
+            .terminal_view_with_color(true)
+            .to_string();
+        Ok(terminal_view_html(&rendered))
     }
 }
 
@@ -1201,11 +1205,6 @@ impl SpanCollectionCore {
         if end_ms < start_ms {
             return Err(PyValueError::new_err("end_ms must be >= start_ms"));
         }
-        let annotation = RustTimeSpan::new(
-            TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
-            annotation,
-            source.map(str::to_string),
-        );
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
         let timeline = self.selected_mut(&mut audio)?;
         if end_ms > timeline.duration.0 {
@@ -1215,7 +1214,13 @@ impl SpanCollectionCore {
             )));
         }
         let annotation_id = timeline
-            .annotate_span(matches!(self.group, SpanGroup::Reference), annotation)
+            .annotate_span_with(
+                start_ms,
+                end_ms,
+                annotation,
+                matches!(self.group, SpanGroup::Reference),
+                source,
+            )
             .map_err(py_error)?
             .id
             .clone();

@@ -161,6 +161,37 @@ pub(super) fn format_source_field(source: &RustAudioSource) -> String {
     }
 }
 
+/// 把带 ANSI 颜色的终端摘要包成 IPython `_repr_html_` 用的 `<pre>`。
+pub(super) fn terminal_view_html(rendered: &str) -> String {
+    format!(
+        "<pre style=\"margin:0; color:#d4d4d4; background:#1e1e1e; padding:1em; border-radius:8px; overflow-x:auto;\">{}</pre>",
+        ansi_to_html(rendered)
+    )
+}
+
+/// 把终端摘要里的 ANSI 颜色码换成 HTML `<span>`。
+fn ansi_to_html(value: &str) -> String {
+    html_escape(value)
+        .replace(
+            "\u{1b}[1;36m",
+            "<span style=\"color:#67e8f9;font-weight:700\">",
+        )
+        .replace("\u{1b}[2m", "<span style=\"color:#94a3b8\">")
+        .replace("\u{1b}[32m", "<span style=\"color:#86efac\">")
+        .replace("\u{1b}[34m", "<span style=\"color:#93c5fd\">")
+        .replace("\u{1b}[33m", "<span style=\"color:#fde68a\">")
+        .replace("\u{1b}[0m", "</span>")
+}
+
+/// HTML 转义，避免波形卡片里的符号破坏 `_repr_html_`。
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 #[cfg(test)]
 mod repr_tests {
     use super::summarize_url;

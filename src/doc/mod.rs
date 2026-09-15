@@ -1,5 +1,7 @@
 mod display;
 
+pub(crate) use display::{TimelineTerminalView, WaveformTerminalView};
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

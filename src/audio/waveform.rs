@@ -63,7 +63,26 @@ impl fmt::Debug for Waveform {
     }
 }
 
+/// 终端打印时使用 [`Self::terminal_view`] 的卡片与波形布局。
+impl fmt::Display for Waveform {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.terminal_view().fmt(formatter)
+    }
+}
+
 impl Waveform {
+    /// 渲染紧凑的终端摘要：格式卡片和分声道块状波形。
+    ///
+    /// 宽度读取 `COLUMNS`（夹在 56–120），颜色在 TTY 且未设置 `NO_COLOR` 时开启。
+    pub fn terminal_view(&self) -> impl fmt::Display + '_ {
+        crate::doc::WaveformTerminalView::auto(self)
+    }
+
+    /// 渲染带或不带 ANSI 颜色的终端摘要，宽度仍随终端。
+    pub fn terminal_view_with_color(&self, color: bool) -> impl fmt::Display + '_ {
+        crate::doc::WaveformTerminalView::with_color(self, color)
+    }
+
     /// 用单声道样本构造波形。
     ///
     /// 多声道请用 [`Self::new_with_channels`] 或 [`Self::try_new_with_channels`]。
