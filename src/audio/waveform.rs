@@ -1,11 +1,12 @@
-//! 内存中的波形、切块迭代器，以及 PCM 清洗 / 归一化辅助函数。
+//! 内存中的交错 PCM 波形，以及样本清洗 / 峰值归一化辅助函数。
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{AudioEncoding, AudioFormat, AudioInfo, AudioSource};
+use super::chunk::AudioChunk;
+use super::{AudioEncoding, AudioFormat, AudioSource};
 use crate::utils::DurationMs;
 
 /// 低能量切分时，在目标切点之前回看的最大窗口（毫秒）。
@@ -60,50 +61,6 @@ impl fmt::Debug for Waveform {
             .field("source_format", &self.source_format)
             .finish()
     }
-}
-
-/// 源音频中一段帧对齐的 PCM 窗口，带有在整段中的位置。
-///
-/// 由 [`AudioChunks`]、[`DecodedAudioChunks`](super::decode::DecodedAudioChunks)
-/// 或 [`crate::doc::AudioStream`] 迭代产生。最后一块不补零，`is_final` 标记
-/// 是否已经到达来源结尾。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AudioChunk {
-    /// 本块的交错 `f32` 样本。
-    pub samples: Vec<f32>,
-    /// 本块样本的采样率。
-    pub sample_rate: u32,
-    /// 本块声道数。
-    pub channels: u16,
-    /// 源容器/编码格式；流式路径上通常从第一块开始带上。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_format: Option<AudioFormat>,
-    /// 在父流中从零开始的块序号。
-    pub index: usize,
-    /// 本块起始位置，相对于源/父时间轴的毫秒偏移。
-    pub offset_ms: u64,
-    /// 是否为来源的最后一块。
-    pub is_final: bool,
-}
-
-/// 把已经在内存中的 [`Waveform`] 按固定时长惰性切成 [`AudioChunk`]。
-///
-/// 这是 PCM 路径上的切窗迭代器：样本已经解码，不再读容器。编码音频的对应
-/// 类型是 [`DecodedAudioChunks`](super::decode::DecodedAudioChunks)。
-/// 由 [`Waveform::into_chunks_ms`] 创建；需要一次性拿到全部块时用
-/// [`Waveform::chunks_ms`]。
-pub struct AudioChunks {
-    /// 尚未切出的剩余交错样本。
-    samples: std::vec::IntoIter<f32>,
-    sample_rate: u32,
-    channels: u16,
-    source_format: Option<AudioFormat>,
-    /// 每块包含的帧数（由 `chunk_size_ms` 和采样率向上取整）。
-    frames_per_chunk: usize,
-    /// 下一块在源波形中的起始帧。
-    next_frame: usize,
-    /// 下一块的从零开始序号。
-    next_index: usize,
 }
 
 impl Waveform {
@@ -315,25 +272,27 @@ impl Waveform {
 
     /// 把波形切成固定时长、帧对齐的 [`AudioChunk`] 列表。
     ///
-    /// 最后一块不补零。若不再需要原波形，优先用 [`Self::into_chunks_ms`] 避免克隆。
+    /// 切分按帧而不是按字节：每块最多 `frames_per_chunk` 帧，对应
+    /// `frames_per_chunk * channels` 个交错样本。`frames_per_chunk` 由
+    /// `chunk_size_ms * sample_rate` 向上取整得到，因此完整块的时长至少为请求的
+    /// 毫秒数。
+    ///
+    /// 窗口从波形起点顺序向前推进，彼此首尾相接、不重叠：
+    ///
+    /// - 剩余样本足够一整块时，切出满窗。
+    /// - 剩余不足一整块时，把余下样本全部交出，不补零。
+    /// - [`AudioChunk::offset_ms`] 是本块第一帧相对波形起点的毫秒偏移，
+    ///   由已切出帧数 `* 1000 / sample_rate` 向下取整。
+    /// - [`AudioChunk::index`] 从 0 递增；最后一块 [`AudioChunk::is_final`] 为
+    ///   `true`。
+    ///
+    /// 原波形不会被消耗。适合 PCM 已经在内存、且希望和流式解码走同一套
+    /// [`AudioChunk`] 接口的场景。
     ///
     /// # Errors
     ///
     /// `chunk_size_ms`、采样率或声道数无效时返回错误。
-    pub fn chunks_ms(&self, chunk_size_ms: u64) -> Result<Vec<AudioChunk>, AudioError> {
-        self.clone()
-            .into_chunks_ms(chunk_size_ms)
-            .map(Iterator::collect)
-    }
-
-    /// 消耗波形，返回按固定时长惰性吐块的 [`AudioChunks`]。
-    ///
-    /// 适合 PCM 已经在内存、且希望和流式解码走同一套 [`AudioChunk`] 接口的场景。
-    ///
-    /// # Errors
-    ///
-    /// `chunk_size_ms`、采样率或声道数无效时返回错误。
-    pub fn into_chunks_ms(self, chunk_size_ms: u64) -> Result<AudioChunks, AudioError> {
+    pub fn chunk(&self, chunk_size_ms: u64) -> Result<Vec<AudioChunk>, AudioError> {
         if chunk_size_ms == 0 {
             return Err(AudioError::InvalidChunkSize);
         }
@@ -349,15 +308,33 @@ impl Waveform {
             .div_ceil(1000))
         .max(1)
         .min(usize::MAX as u128) as usize;
-        Ok(AudioChunks {
-            samples: self.samples.into_iter(),
-            sample_rate: self.sample_rate,
-            channels: self.channels,
-            source_format: self.source_format,
-            frames_per_chunk,
-            next_frame: 0,
-            next_index: 0,
-        })
+        // 满窗样本数 = 每块帧数 × 声道数；最后一块可能更短。
+        let samples_per_chunk = frames_per_chunk.saturating_mul(usize::from(self.channels));
+
+        let mut chunks = Vec::new();
+        let mut offset = 0usize;
+        let mut next_frame = 0usize;
+        let mut next_index = 0usize;
+        while offset < self.samples.len() {
+            let end = (offset + samples_per_chunk).min(self.samples.len());
+            let sample_count = end - offset;
+            // 本块起点用已经切出的帧数换算，整数除法会向下取整到整毫秒。
+            let offset_ms = next_frame as u64 * 1_000 / u64::from(self.sample_rate);
+            next_frame = next_frame.saturating_add(sample_count / usize::from(self.channels));
+            chunks.push(AudioChunk {
+                samples: self.samples[offset..end].to_vec(),
+                sample_rate: self.sample_rate,
+                channels: self.channels,
+                source_format: self.source_format.clone(),
+                index: next_index,
+                offset_ms,
+                // 切到样本末尾，说明到达波形结尾。
+                is_final: end >= self.samples.len(),
+            });
+            next_index = next_index.saturating_add(1);
+            offset = end;
+        }
+        Ok(chunks)
     }
 
     /// 在低能量边界切开超长波形，不改动样本本身。
@@ -594,7 +571,7 @@ pub(crate) fn sanitize_samples(samples: &mut [f32]) {
 }
 
 /// 按峰值缩放样本，使最大绝对值不超过 1.0。
-fn peak_normalize_samples(samples: &mut [f32]) {
+pub(crate) fn peak_normalize_samples(samples: &mut [f32]) {
     for sample in samples.iter_mut() {
         if !sample.is_finite() {
             *sample = 0.0;
@@ -665,248 +642,9 @@ impl Default for Waveform {
     }
 }
 
-impl Iterator for AudioChunks {
-    type Item = AudioChunk;
-
-    /// 切出下一块；最后一块可能短于 `frames_per_chunk`，且不补零。
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.samples.len() == 0 {
-            return None;
-        }
-        let sample_count = self
-            .frames_per_chunk
-            .saturating_mul(usize::from(self.channels))
-            .min(self.samples.len());
-        let samples = self.samples.by_ref().take(sample_count).collect();
-        let offset_ms = self.next_frame as u64 * 1_000 / u64::from(self.sample_rate);
-        self.next_frame = self
-            .next_frame
-            .saturating_add(sample_count / usize::from(self.channels));
-        let chunk = AudioChunk {
-            samples,
-            sample_rate: self.sample_rate,
-            channels: self.channels,
-            source_format: self.source_format.clone(),
-            index: self.next_index,
-            offset_ms,
-            is_final: self.samples.len() == 0,
-        };
-        self.next_index = self.next_index.saturating_add(1);
-        Some(chunk)
-    }
-
-    /// 剩余块数可精确计算，因此同时实现 [`ExactSizeIterator`]。
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let samples_per_chunk = self
-            .frames_per_chunk
-            .saturating_mul(usize::from(self.channels));
-        let chunks = self.samples.len().div_ceil(samples_per_chunk);
-        (chunks, Some(chunks))
-    }
-}
-
-impl ExactSizeIterator for AudioChunks {}
-
-impl AudioChunk {
-    /// 替换样本、采样率或声道，但保留 `index` / `offset_ms` / `is_final`。
-    fn with_samples(&self, samples: Vec<f32>, sample_rate: u32, channels: u16) -> Self {
-        Self {
-            samples,
-            sample_rate,
-            channels,
-            source_format: self.source_format.clone(),
-            index: self.index,
-            offset_ms: self.offset_ms,
-            is_final: self.is_final,
-        }
-    }
-
-    /// 只描述本块的 [`AudioInfo`]，`frame_count` 是本块帧数而不是整段音频。
-    pub fn info(&self) -> AudioInfo {
-        AudioInfo {
-            sample_rate: self.sample_rate,
-            channels: self.channels,
-            frame_count: self.frame_count() as u64,
-            source_format: self.source_format.clone().unwrap_or(AudioFormat {
-                encoding: AudioEncoding::Unknown,
-                sample_rate: self.sample_rate,
-                channels: self.channels,
-            }),
-        }
-    }
-
-    /// 把本块样本拷成独立 [`Waveform`]。
-    pub fn as_waveform(&self) -> Waveform {
-        Waveform {
-            samples: self.samples.clone(),
-            sample_rate: self.sample_rate,
-            channels: self.channels,
-            source_format: self.source_format.clone(),
-        }
-    }
-
-    /// 本块结束位置，使用父时间轴的全局毫秒坐标。
-    pub fn end_ms(&self) -> u64 {
-        self.offset_ms
-            .saturating_add(self.duration_ms().ceil() as u64)
-    }
-
-    /// 把块内毫秒区间换成父时间轴坐标。
-    ///
-    /// # Errors
-    ///
-    /// 区间无序，或结束点超出本块时长时返回 [`AudioError::InvalidChunkRange`]。
-    pub fn to_timeline_range(&self, start_ms: u64, end_ms: u64) -> Result<(u64, u64), AudioError> {
-        if end_ms < start_ms || end_ms as f64 > self.duration_ms().ceil() {
-            return Err(AudioError::InvalidChunkRange);
-        }
-        Ok((
-            self.offset_ms.saturating_add(start_ms),
-            self.offset_ms.saturating_add(end_ms),
-        ))
-    }
-
-    /// 本块帧数；声道数为 0 时返回 0。
-    pub fn frame_count(&self) -> usize {
-        if self.channels == 0 {
-            0
-        } else {
-            self.samples.len() / usize::from(self.channels)
-        }
-    }
-
-    /// 本块时长（毫秒）。
-    pub fn duration_ms(&self) -> f64 {
-        if self.sample_rate == 0 || self.channels == 0 {
-            return 0.0;
-        }
-        self.frame_count() as f64 * 1000.0 / f64::from(self.sample_rate)
-    }
-
-    /// 把本块样本量化为 `i16` PCM。
-    pub fn to_i16_pcm(&self) -> Vec<i16> {
-        self.samples
-            .iter()
-            .map(|sample| {
-                let scaled = sample.clamp(-1.0, 1.0) * 32768.0;
-                scaled.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
-            })
-            .collect()
-    }
-
-    /// 抽出指定声道，保留 `index` / `offset_ms` / `is_final`。
-    ///
-    /// # Errors
-    ///
-    /// 声道数为 0 或 `index` 越界时返回错误。
-    pub fn channel(&self, index: u16) -> Result<Self, AudioError> {
-        if self.channels == 0 {
-            return Err(AudioError::InvalidChannelCount);
-        }
-        if index >= self.channels {
-            return Err(AudioError::ChannelIndexOutOfRange);
-        }
-        if self.channels == 1 {
-            return Ok(self.clone());
-        }
-        let channels = usize::from(self.channels);
-        let index = usize::from(index);
-        let samples = self
-            .samples
-            .chunks_exact(channels)
-            .map(|frame| frame[index])
-            .collect();
-        Ok(self.with_samples(samples, self.sample_rate, 1))
-    }
-
-    /// 把本块平均成单声道，保留时间位置元数据。
-    ///
-    /// # Errors
-    ///
-    /// 声道数为 0 时返回错误。
-    pub fn to_mono(&self) -> Result<Self, AudioError> {
-        if self.channels == 0 {
-            return Err(AudioError::InvalidChannelCount);
-        }
-        if self.channels == 1 {
-            return Ok(self.clone());
-        }
-        let channels = usize::from(self.channels);
-        let samples = self
-            .samples
-            .chunks_exact(channels)
-            .map(|frame| frame.iter().copied().sum::<f32>() / channels as f32)
-            .collect();
-        Ok(self.with_samples(samples, self.sample_rate, 1))
-    }
-
-    /// 重采样本块；`index` / `offset_ms` / `is_final` 不变。
-    ///
-    /// # Errors
-    ///
-    /// 采样率为 0 或重采样失败时返回错误。
-    pub fn resample(&self, sample_rate: u32) -> anyhow::Result<Self> {
-        if self.sample_rate == 0 || sample_rate == 0 {
-            anyhow::bail!(
-                "invalid sample rate conversion: {} -> {}",
-                self.sample_rate,
-                sample_rate
-            );
-        }
-        if self.sample_rate == sample_rate {
-            return Ok(self.clone());
-        }
-        let samples = super::stream::resample_interleaved(
-            &self.samples,
-            self.sample_rate,
-            sample_rate,
-            self.channels,
-        )?;
-        Ok(self.with_samples(samples, sample_rate, self.channels))
-    }
-
-    /// 把本块峰值幅度缩放到不超过 1.0。
-    ///
-    /// 行为与 [`Waveform::peak_normalize`] 相同。
-    pub fn peak_normalize(&mut self) {
-        peak_normalize_samples(&mut self.samples);
-    }
-
-    /// [`Self::peak_normalize`] 的链式版本。
-    pub fn with_peak_normalize(mut self) -> Self {
-        self.peak_normalize();
-        self
-    }
-
-    /// 按块内毫秒区间切出子块，并平移 `offset_ms`。
-    ///
-    /// 切到原块末尾且原块是最后一块时，结果仍标记 `is_final`。
-    pub fn slice_ms(&self, start_ms: u64, end_ms: u64) -> Self {
-        let duration_ms = self.duration_ms().ceil() as u64;
-        let effective_start = start_ms.min(duration_ms);
-        let channels = usize::from(self.channels);
-        let start_frame = (start_ms as usize).saturating_mul(self.sample_rate as usize) / 1000;
-        let end_frame = (end_ms as usize)
-            .saturating_mul(self.sample_rate as usize)
-            .div_ceil(1000)
-            .min(self.frame_count());
-        let start = start_frame.saturating_mul(channels).min(self.samples.len());
-        let end = end_frame.saturating_mul(channels).min(self.samples.len());
-        let samples = if end_ms <= start_ms || start >= end {
-            Vec::new()
-        } else {
-            self.samples[start..end].to_vec()
-        };
-        let mut chunk = self.with_samples(samples, self.sample_rate, self.channels);
-        chunk.offset_ms = self.offset_ms.saturating_add(effective_start);
-        chunk.is_final = self.is_final && end_ms >= duration_ms;
-        chunk
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{AudioChunk, Waveform, peak_normalize_samples, sanitize_samples};
+    use super::{Waveform, peak_normalize_samples, sanitize_samples};
 
     #[test]
     fn waveform_samples_are_sanitized() {
@@ -936,20 +674,5 @@ mod tests {
         let mut samples = vec![f32::NAN, f32::INFINITY, 2.0, -2.0];
         peak_normalize_samples(&mut samples);
         assert_eq!(samples, vec![0.0, 0.0, 1.0, -1.0]);
-    }
-
-    #[test]
-    fn audio_chunk_peak_normalize_matches_waveform() {
-        let mut chunk = AudioChunk {
-            samples: vec![0.5, 2.0],
-            sample_rate: 16_000,
-            channels: 1,
-            source_format: None,
-            index: 0,
-            offset_ms: 0,
-            is_final: true,
-        };
-        chunk.peak_normalize();
-        assert_eq!(chunk.samples, vec![0.25, 1.0]);
     }
 }

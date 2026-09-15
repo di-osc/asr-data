@@ -4,12 +4,14 @@
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
-pub(crate) mod data;
+pub(crate) mod chunk;
 pub mod decode;
 mod source;
 pub(crate) mod stream;
-pub use data::{AudioChunk, AudioChunks, AudioError, Waveform};
+pub(crate) mod waveform;
+pub use chunk::AudioChunk;
 pub use source::{AudioChannel, AudioEncoding, AudioFormat, AudioInfo, AudioSource};
+pub use waveform::{AudioError, Waveform};
 
 /// Python 加载路径上的可选重采样与转单声道。
 ///
@@ -36,7 +38,7 @@ pub(crate) fn transform_loaded_audio(
             waveform = waveform.resample(sample_rate)?;
         }
     }
-    data::sanitize_samples(&mut waveform.samples);
+    waveform::sanitize_samples(&mut waveform.samples);
     Ok(waveform)
 }
 

@@ -14,18 +14,18 @@ use rubato::{
     WindowFunction,
 };
 
-use super::{AudioChunk, AudioChunks, AudioFormat, AudioSource};
+use super::{AudioChunk, AudioFormat, AudioSource};
 
 /// 把两种源格式 PCM 拉取路径合成一个 iterator。
 ///
 /// 这是流式管线的最底层：不做重采样、不混音、不建文档，只按源采样率吐
 /// [`AudioChunk`]。编码音频走 [`DecodedAudioChunks`](super::decode::DecodedAudioChunks)
-/// 边解边切；原始 PCM 已经在内存里，走 [`AudioChunks`] 只切窗。
+/// 边解边切；原始 PCM 已经在内存里，走 [`Waveform::chunk`] 只切窗。
 enum RawAudioStream {
     /// 压缩容器：Symphonia 按 packet 解码后再切块。
     Decoded(super::decode::DecodedAudioChunks),
-    /// 原始 PCM：先整段解码成 [`Waveform`](super::Waveform)，再惰性切块。
-    Pcm(AudioChunks),
+    /// 原始 PCM：先整段解码成 [`Waveform`](super::Waveform)，再按块拉取。
+    Pcm(std::vec::IntoIter<AudioChunk>),
 }
 
 impl Iterator for RawAudioStream {
@@ -33,7 +33,7 @@ impl Iterator for RawAudioStream {
 
     /// 从当前变体拉取下一块源格式 PCM。
     ///
-    /// PCM 路径本身不会失败，因此把 [`AudioChunks`] 的输出包成 `Ok`。
+    /// PCM 路径本身不会失败，因此把已切好的块包成 `Ok`。
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Decoded(chunks) => chunks.next(),
@@ -268,7 +268,7 @@ impl SourceAudioStream {
         // PCM 没有 packet 边界，只能先变成 Waveform；编码音频可以边读边解。
         let raw = match &source {
             AudioSource::PcmS16Le { .. } => {
-                RawAudioStream::Pcm(source.decode_waveform()?.into_chunks_ms(chunk_size_ms)?)
+                RawAudioStream::Pcm(source.decode_waveform()?.chunk(chunk_size_ms)?.into_iter())
             }
             _ => RawAudioStream::Decoded(super::decode::stream_source(&source, chunk_size_ms)?),
         };
@@ -326,7 +326,7 @@ impl SourceAudioStream {
                 .expect("resampler initialized")
                 .process(&chunk.samples, frames, chunk.is_final)?
         };
-        super::data::sanitize_samples(&mut samples);
+        super::waveform::sanitize_samples(&mut samples);
         self.output.extend(samples);
         if chunk.is_final {
             self.finished = true;

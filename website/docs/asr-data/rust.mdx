@@ -225,10 +225,9 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 | `split_at_low_energy(max_duration)` | `Result<Vec<Waveform>, AudioError>` | 低能量拆分。          |
 | `to_i16_pcm()`                      | `Vec<i16>`                       | 转换为 PCM i16 样本。 |
 
-## Waveform::into_chunks_ms {id="waveform-chunks",tag="method"}
+## Waveform::chunk {id="waveform-chunks",tag="method"}
 
-消耗 `Waveform` 并返回惰性 `AudioChunks` 迭代器，适合不再需要完整波形的场景；若仍需
-保留原音频，使用借用版本 `chunks_ms()`。
+按固定时长把 `Waveform` 切成 `AudioChunk` 列表。切分按帧对齐，最后一块不补零，原波形不会被消耗。
 
 > #### Example
 >
@@ -240,7 +239,7 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 >
 > fn main() -> Result<(), Box<dyn std::error::Error>> {
 >     let audio = Waveform::from_url(URL)?;
->     for chunk in audio.into_chunks_ms(100)? {
+>     for chunk in audio.chunk(100)? {
 >         println!("{} ms, final={}", chunk.offset_ms, chunk.is_final);
 >     }
 >     Ok(())
@@ -249,14 +248,13 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 
 | Name            | Description                                             |
 | --------------- | ------------------------------------------------------- |
-| `self`          | 消耗当前 `Waveform`。                                      |
+| `self`          | 当前 `Waveform`。                                      |
 | `chunk_size_ms` | 每块目标时长，必须大于零。~~u64~~                       |
-| **RETURNS**     | 音频块迭代器。~~Result&lt;AudioChunks, AudioError&gt;~~ |
+| **RETURNS**     | 音频块列表。~~Result&lt;Vec&lt;AudioChunk&gt;, AudioError&gt;~~ |
 
 ## AudioChunk {id="audio-chunk",tag="struct"}
 
-带有原始音频中起始位置的帧对齐音频块。`Waveform::chunks_ms()`、
-`Waveform::into_chunks_ms()` 和流式加载都使用这一类型。
+带有原始音频中起始位置的帧对齐音频块。`Waveform::chunk()` 和流式加载都使用这一类型。
 
 | Field           | Description                                     |
 | --------------- | ----------------------------------------------- |

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Waveform, data, decode, local_path_from_urlish};
+use super::{Waveform, decode, local_path_from_urlish, waveform};
 use crate::doc::{Audio, AudioStream};
 
 /// 时间轴和声道选择使用的声道标识。
@@ -213,7 +213,7 @@ impl AudioSource {
             } => Waveform::from_i16_pcm_bytes_with_channels(bytes, *sample_rate, *channels)?,
         };
         let mut waveform = waveform;
-        data::sanitize_samples(&mut waveform.samples);
+        waveform::sanitize_samples(&mut waveform.samples);
         Ok(waveform)
     }
 

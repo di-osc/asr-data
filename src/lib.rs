@@ -12,7 +12,7 @@ mod timeline;
 mod utils;
 
 pub use audio::{AudioChannel, AudioEncoding, AudioFormat, AudioInfo, AudioSource};
-pub use audio::{AudioChunk, AudioChunks, AudioError, Waveform};
+pub use audio::{AudioChunk, AudioError, Waveform};
 pub use dataset::{AudioDataset, AudioDatasetError};
 pub use db::{
     AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioQuery, DEFAULT_QUERY_LIMIT,

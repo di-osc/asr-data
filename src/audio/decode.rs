@@ -18,7 +18,7 @@ use super::{AudioChunk, AudioEncoding, AudioFormat, AudioInfo, AudioSource, Wave
 /// 它不是已经切好的 chunk 列表。内部握着 Symphonia 的容器读取器和解码器，
 /// 把解码出的交错 `f32` 放进 `buffered`，再按 `chunk_size_ms` 切成
 /// [`AudioChunk`]。原始 PCM（[`AudioSource::PcmS16Le`]）不会走这条路径，
-/// 而是由 [`AudioChunks`](super::AudioChunks) 直接切窗。
+/// 而是由 [`Waveform::chunk`](super::Waveform::chunk) 直接切窗。
 pub struct DecodedAudioChunks {
     /// 当前容器的 packet 读取器。
     format: Box<dyn symphonia::core::formats::FormatReader>,
@@ -137,7 +137,7 @@ impl DecodedAudioChunks {
                 Ok(decoded) => {
                     let mut samples: Vec<f32> = Vec::new();
                     decoded.copy_to_vec_interleaved(&mut samples);
-                    crate::audio::data::sanitize_samples(&mut samples);
+                    crate::audio::waveform::sanitize_samples(&mut samples);
                     self.buffered.extend(samples);
                     return Ok(());
                 }
@@ -221,7 +221,7 @@ impl symphonia::core::io::MediaSource for HttpMediaSource {
 /// 按 `chunk_size_ms` 对流式解码 `source`，返回 [`DecodedAudioChunks`] 迭代器。
 ///
 /// 支持路径、HTTP(S) URL、`file://` URL、编码字节和 base64。原始 PCM 没有
-/// 容器可读，调用方应改走 [`Waveform::into_chunks_ms`](super::Waveform::into_chunks_ms)。
+/// 容器可读，调用方应改走 [`Waveform::chunk`](super::Waveform::chunk)。
 ///
 /// # Errors
 ///
@@ -833,7 +833,7 @@ fn decode_audio_stream(
         samples.extend_from_slice(&chunk);
     }
 
-    crate::audio::data::sanitize_samples(&mut samples);
+    crate::audio::waveform::sanitize_samples(&mut samples);
     Ok((samples, sample_rate, channels))
 }
 

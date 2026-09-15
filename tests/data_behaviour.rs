@@ -568,7 +568,7 @@ fn waveform_splits_stereo_at_low_energy_without_changing_samples() -> Result<(),
 
 #[test]
 fn audio_chunks_expose_local_audio_and_timeline_coordinates() -> Result<(), AudioError> {
-    let chunks = Waveform::new(vec![0.0; 250], 1_000).chunks_ms(100)?;
+    let chunks = Waveform::new(vec![0.0; 250], 1_000).chunk(100)?;
 
     assert_eq!(
         chunks.iter().map(|chunk| chunk.index).collect::<Vec<_>>(),
