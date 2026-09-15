@@ -644,7 +644,7 @@ impl Default for Waveform {
 
 #[cfg(test)]
 mod tests {
-    use super::{Waveform, peak_normalize_samples, sanitize_samples};
+    use super::sanitize_samples;
 
     #[test]
     fn waveform_samples_are_sanitized() {
@@ -653,26 +653,5 @@ mod tests {
         sanitize_samples(&mut samples);
 
         assert_eq!(samples, vec![0.0, 0.0, -1.0, 0.5, 1.0, 0.0]);
-    }
-
-    #[test]
-    fn peak_normalize_scales_when_peak_exceeds_one() {
-        let mut waveform = Waveform::new(vec![0.0, 2.0, -2.0], 16_000);
-        waveform.peak_normalize();
-        assert_eq!(waveform.samples, vec![0.0, 1.0, -1.0]);
-    }
-
-    #[test]
-    fn peak_normalize_leaves_in_range_samples_unchanged() {
-        let original = vec![-1.0, -0.5, 0.0, 0.25, 1.0];
-        let waveform = Waveform::new(original.clone(), 16_000).with_peak_normalize();
-        assert_eq!(waveform.samples, original);
-    }
-
-    #[test]
-    fn peak_normalize_zeros_non_finite_values_before_scaling() {
-        let mut samples = vec![f32::NAN, f32::INFINITY, 2.0, -2.0];
-        peak_normalize_samples(&mut samples);
-        assert_eq!(samples, vec![0.0, 0.0, 1.0, -1.0]);
     }
 }

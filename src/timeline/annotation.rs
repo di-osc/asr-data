@@ -212,29 +212,3 @@ impl TimeSpan {
             && self.annotation == other.annotation
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Annotation, AudioActivity, TimeSpan};
-    use crate::utils::{DurationMs, TimeRange};
-
-    #[test]
-    fn confidence_is_serialized_inside_the_annotation_payload() {
-        let span = TimeSpan::new(
-            TimeRange::new(DurationMs(0), DurationMs(1_000)),
-            Annotation::Activity(
-                AudioActivity::new()
-                    .with_event("speech")
-                    .with_confidence(0.98),
-            ),
-            Some("vad".to_owned()),
-        );
-
-        let value = serde_json::to_value(span).expect("serialize span");
-        assert!(value.get("confidence").is_none());
-        let confidence = value["annotation"]["Activity"]["confidence"]
-            .as_f64()
-            .expect("numeric confidence");
-        assert!((confidence - 0.98).abs() < 1e-6);
-    }
-}

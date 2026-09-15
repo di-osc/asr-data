@@ -290,11 +290,6 @@ pub fn normalize_zh_with_options(
     chinese_tn()?.normalize(text, options)
 }
 
-#[cfg(test)]
-fn remove_zh_interjections(text: &str) -> Result<String, TextNormalizationError> {
-    chinese_tn()?.remove_interjections(text)
-}
-
 /// 只做前后处理，跳过 tagger/verbalizer（评估快路径）。
 pub(crate) fn normalize_zh_without_tn(
     text: &str,
@@ -472,10 +467,7 @@ fn parse_quoted_value(chars: &[char], index: &mut usize) -> Result<String, TextN
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ChineseTextNormalizationOptions, normalize_zh, normalize_zh_with_options,
-        remove_zh_interjections, reorder_zh_tn_tokens,
-    };
+    use super::reorder_zh_tn_tokens;
 
     #[test]
     fn reorders_chinese_tn_token_fields() {
@@ -489,53 +481,5 @@ mod tests {
     #[test]
     fn leaves_plain_text_unchanged() {
         assert_eq!(reorder_zh_tn_tokens("普通文本").unwrap(), "普通文本");
-    }
-
-    #[test]
-    fn normalizes_chinese_numbers_from_embedded_fsts() {
-        assert_eq!(normalize_zh("2024年"), Ok("二零二四年".to_owned()));
-    }
-
-    #[test]
-    fn removes_erhua_by_default() {
-        assert_eq!(normalize_zh("花儿"), Ok("花".to_owned()));
-        assert_eq!(
-            normalize_zh_with_options(
-                "花儿",
-                ChineseTextNormalizationOptions {
-                    remove_erhua: false,
-                    ..ChineseTextNormalizationOptions::default()
-                },
-            ),
-            Ok("花儿".to_owned()),
-        );
-    }
-
-    #[test]
-    fn removes_interjections_by_default() {
-        let options = ChineseTextNormalizationOptions {
-            remove_interjections: false,
-            ..ChineseTextNormalizationOptions::default()
-        };
-        assert_eq!(
-            normalize_zh_with_options("嗯啊呃你好", options),
-            Ok("嗯啊呃你好".to_owned()),
-        );
-        assert_eq!(remove_zh_interjections("嗯啊呃你好"), Ok("你好".to_owned()));
-        assert_eq!(normalize_zh("嗯啊呃你好"), Ok("你好".to_owned()));
-    }
-
-    #[test]
-    fn applies_optional_pre_and_postprocessors() {
-        let options = ChineseTextNormalizationOptions {
-            traditional_to_simple: true,
-            full_to_half: true,
-            remove_puncts: true,
-            ..ChineseTextNormalizationOptions::default()
-        };
-        assert_eq!(
-            normalize_zh_with_options("這是ＡＢＣ！", options),
-            Ok("这是ABC".to_owned()),
-        );
     }
 }

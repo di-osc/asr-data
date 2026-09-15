@@ -226,23 +226,3 @@ impl AudioChunk {
         chunk
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::AudioChunk;
-
-    #[test]
-    fn audio_chunk_peak_normalize_matches_waveform() {
-        let mut chunk = AudioChunk {
-            samples: vec![0.5, 2.0],
-            sample_rate: 16_000,
-            channels: 1,
-            source_format: None,
-            index: 0,
-            offset_ms: 0,
-            is_final: true,
-        };
-        chunk.peak_normalize();
-        assert_eq!(chunk.samples, vec![0.25, 1.0]);
-    }
-}

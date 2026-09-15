@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use asr_data::{
-    Annotation, Audio, AudioChannel, AudioDb, AudioDbError, AudioDbMode, AudioEncoding, AudioError,
-    AudioFormat, AudioQuery, AudioSource, DurationMs, MAX_QUERY_LIMIT, Sentence, SpeakerPayload,
-    TimeRange, TimeSpan, Timeline, Token, Transcription, Waveform,
+    Annotation, Audio, AudioActivity, AudioChannel, AudioChunk, AudioDb, AudioDbError, AudioDbMode,
+    AudioEncoding, AudioError, AudioFormat, AudioQuery, AudioSource, DurationMs, MAX_QUERY_LIMIT,
+    Sentence, SpeakerPayload, TimeRange, TimeSpan, Timeline, Token, Transcription, Waveform,
 };
 
 fn pcm_source(duration_ms: usize, channels: u16) -> AudioSource {
@@ -903,4 +903,74 @@ fn audio_db_create_and_open_are_explicit() {
     ));
     AudioDb::open(&path, AudioDbMode::ReadWrite).expect("open existing database");
     std::fs::remove_file(path).ok();
+}
+
+#[test]
+fn peak_normalize_scales_when_peak_exceeds_one() {
+    let mut waveform = Waveform::new(vec![0.0, 2.0, -2.0], 16_000);
+    waveform.peak_normalize();
+    assert_eq!(waveform.samples, vec![0.0, 1.0, -1.0]);
+}
+
+#[test]
+fn peak_normalize_leaves_in_range_samples_unchanged() {
+    let original = vec![-1.0, -0.5, 0.0, 0.25, 1.0];
+    let waveform = Waveform::new(original.clone(), 16_000).with_peak_normalize();
+    assert_eq!(waveform.samples, original);
+}
+
+#[test]
+fn peak_normalize_zeros_non_finite_values_before_scaling() {
+    let mut waveform = Waveform::new(vec![f32::NAN, f32::INFINITY, 2.0, -2.0], 16_000);
+    waveform.peak_normalize();
+    assert_eq!(waveform.samples, vec![0.0, 0.0, 1.0, -1.0]);
+}
+
+#[test]
+fn stereo_samples_are_downmixed_by_averaging_channels() {
+    let stereo = Waveform::new_with_channels(
+        vec![
+            1.0, 3.0, // frame 0
+            2.0, 4.0, // frame 1
+        ],
+        16_000,
+        2,
+    );
+    let mono = stereo.to_mono().expect("downmix");
+    assert_eq!(mono.samples, vec![2.0, 3.0]);
+}
+
+#[test]
+fn audio_chunk_peak_normalize_matches_waveform() {
+    let mut chunk = AudioChunk {
+        samples: vec![0.5, 2.0],
+        sample_rate: 16_000,
+        channels: 1,
+        source_format: None,
+        index: 0,
+        offset_ms: 0,
+        is_final: true,
+    };
+    chunk.peak_normalize();
+    assert_eq!(chunk.samples, vec![0.25, 1.0]);
+}
+
+#[test]
+fn confidence_is_serialized_inside_the_annotation_payload() {
+    let span = TimeSpan::new(
+        TimeRange::new(DurationMs(0), DurationMs(1_000)),
+        Annotation::Activity(
+            AudioActivity::new()
+                .with_event("speech")
+                .with_confidence(0.98),
+        ),
+        Some("vad".to_owned()),
+    );
+
+    let value = serde_json::to_value(span).expect("serialize span");
+    assert!(value.get("confidence").is_none());
+    let confidence = value["annotation"]["Activity"]["confidence"]
+        .as_f64()
+        .expect("numeric confidence");
+    assert!((confidence - 0.98).abs() < 1e-6);
 }
