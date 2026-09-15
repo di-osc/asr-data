@@ -499,42 +499,33 @@ timeline，但波形与 timeline 只覆盖已经迭代出的范围。
 
 ## Timeline::annotate_span {id="timeline-annotate-span",tag="method"}
 
-Timeline 唯一的标注写入口。第一个参数 `is_reference` 为 `true` 时写入 reference，
-此时 TimeSpan 的 `source` 必须为 `None`；为 `false` 时写入 prediction，此时必须
-提供非空 source。内容完全相同会返回已有标注。完整规则见
+Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, annotation)` 对齐。
+默认写入 reference（相当于 `is_reference=True` 且不带 `source`）。写入 prediction
+时使用 [`annotate_span_with`](#timeline-annotate-span-with)，传入 `is_reference=false`
+和非空 `source`。内容完全相同会返回已有标注。完整规则见
 [标注校验规范](/asr-data/annotations#validation)。
 
 > #### Example
 >
 > ```rust
-> use asr_data::{
->     TimeSpan, Annotation, DurationMs,
->     TimeRange, Timeline, Transcription,
-> };
+> use asr_data::{DurationMs, Timeline, Transcription};
 >
 > fn main() -> Result<(), asr_data::TimelineSpanError> {
->     let duration = DurationMs(4_205);
->     let mut timeline = Timeline::new("example-001", duration);
->     let transcription = Transcription::new(
->         "甚至出现交易几乎停滞的情况",
->     );
->     let annotation = TimeSpan::new(
->         TimeRange::new(DurationMs(0), duration),
->         Annotation::Transcription(transcription),
->         None,
->     );
->
->     let stored = timeline.annotate_span(true, annotation)?;
+>     let mut timeline = Timeline::new("example-001", DurationMs(4_205));
+>     let stored = timeline.annotate_span(
+>         0,
+>         4_205,
+>         Transcription::new("甚至出现交易几乎停滞的情况"),
+>     )?;
 >     println!("{}", stored.id);
 >
->     let prediction = TimeSpan::new(
->         TimeRange::new(DurationMs(0), duration),
->         Annotation::Transcription(Transcription::new(
->             "甚至出现交易几乎停滞的情况",
->         )),
->         Some("whisper-large".to_owned()),
->     );
->     timeline.annotate_span(false, prediction)?;
+>     timeline.annotate_span_with(
+>         0,
+>         4_205,
+>         Transcription::new("甚至出现交易几乎停滞的情况"),
+>         false,
+>         Some("whisper-large"),
+>     )?;
 >     println!("{:?}", timeline.prediction_sources());
 >     Ok(())
 > }
@@ -543,9 +534,24 @@ Timeline 唯一的标注写入口。第一个参数 `is_reference` 为 `true` �
 | Name           | Description                                                                            |
 | -------------- | -------------------------------------------------------------------------------------- |
 | `&mut self`    | 可变借用 timeline。                                                                    |
-| `is_reference` | `true` 写 reference，`false` 写 prediction。~~bool~~                                   |
-| `annotation`   | 要加入的标注，所有权移入 timeline。~~TimeSpan~~                                        |
+| `start_ms`     | 起始时间，单位毫秒。~~u64~~                                                            |
+| `end_ms`       | 结束时间，单位毫秒。~~u64~~                                                            |
+| `annotation`   | 标注 payload，例如 `AudioActivity`、`Transcription`、`SpeakerPayload`。~~impl Into&lt;Annotation&gt;~~ |
 | **RETURNS**    | 新标注或已有重复项；source 或重叠无效时报错。~~Result&lt;&TimeSpan, TimelineSpanError&gt;~~ |
+
+## Timeline::annotate_span_with {id="timeline-annotate-span-with",tag="method"}
+
+完整签名，对应 Python `annotate_span(start_ms, end_ms, annotation, *, is_reference, source)`。
+
+| Name           | Description                                                                            |
+| -------------- | -------------------------------------------------------------------------------------- |
+| `&mut self`    | 可变借用 timeline。                                                                    |
+| `start_ms`     | 起始时间，单位毫秒。~~u64~~                                                            |
+| `end_ms`       | 结束时间，单位毫秒。~~u64~~                                                            |
+| `annotation`   | 标注 payload。~~impl Into&lt;Annotation&gt;~~                                          |
+| `is_reference` | `true` 写 reference，`false` 写 prediction。~~bool~~                                   |
+| `source`       | prediction 来源；reference 必须为 `None`。~~Option&lt;&str&gt;~~                       |
+| **RETURNS**    | 新标注或已有重复项。~~Result&lt;&TimeSpan, TimelineSpanError&gt;~~                     |
 
 ## Timeline query methods {id="timeline-query",tag="methods"}
 
@@ -554,33 +560,22 @@ Timeline 唯一的标注写入口。第一个参数 `is_reference` 为 `true` �
 > #### Example
 >
 > ```rust
-> use asr_data::{
->     Annotation, DurationMs, TimeRange, TimeSpan, Timeline,
->     Transcription,
-> };
+> use asr_data::{DurationMs, Timeline, Transcription};
 >
 > fn main() -> Result<(), asr_data::TimelineSpanError> {
 >     let duration = DurationMs(4_205);
 >     let mut timeline = Timeline::new("example-001", duration);
 >     timeline.annotate_span(
->         true,
->         TimeSpan::new(
->             TimeRange::new(DurationMs(0), duration),
->             Annotation::Transcription(Transcription::new(
->                 "甚至出现交易几乎停滞的情况",
->             )),
->             None,
->         ),
+>         0,
+>         duration.0,
+>         Transcription::new("甚至出现交易几乎停滞的情况"),
 >     )?;
->     timeline.annotate_span(
+>     timeline.annotate_span_with(
+>         0,
+>         duration.0,
+>         Transcription::new("甚至出现交易几乎停滞的情况"),
 >         false,
->         TimeSpan::new(
->             TimeRange::new(DurationMs(0), duration),
->             Annotation::Transcription(Transcription::new(
->                 "甚至出现交易几乎停滞的情况",
->             )),
->             Some("qwen-asr".to_owned()),
->         ),
+>         Some("qwen-asr"),
 >     )?;
 >
 >     assert_eq!(timeline.span_count(), 2);
@@ -828,10 +823,7 @@ reference 集合或同一 prediction source 中重叠；不同 event 可以重�
 > #### Example
 >
 > ```rust
-> use asr_data::{
->     Annotation, DurationMs, Sentence, TimeRange, TimeSpan,
->     Timeline, Token,
-> };
+> use asr_data::{DurationMs, Sentence, TimeRange, Timeline, Token};
 >
 > fn main() -> Result<(), asr_data::TimelineSpanError> {
 >     let mut sentence = Sentence::new("甚至出现交易几乎停滞的情况");
@@ -841,14 +833,7 @@ reference 集合或同一 prediction source 中重叠；不同 event 可以重�
 >     )];
 >
 >     let mut timeline = Timeline::new("example-001", DurationMs(4_205));
->     timeline.annotate_span(
->         true,
->         TimeSpan::new(
->             TimeRange::new(DurationMs(0), DurationMs(4_205)),
->             Annotation::Sentence(sentence),
->             None,
->         ),
->     )?;
+>     timeline.annotate_span(0, 4_205, sentence)?;
 >     assert_eq!(
 >         timeline.reference_transcript().text,
 >         "甚至出现交易几乎停滞的情况"
@@ -904,20 +889,11 @@ Python 目前不能新建 `Sentence`，但可以从已有数据读出。
 > #### Example
 >
 > ```rust
-> use asr_data::{
->     Annotation, DurationMs, TimeRange, TimeSpan, Timeline,
-> };
+> use asr_data::{Annotation, DurationMs, Timeline};
 >
 > fn main() -> Result<(), asr_data::TimelineSpanError> {
 >     let mut timeline = Timeline::new("example-001", DurationMs(4_205));
->     timeline.annotate_span(
->         true,
->         TimeSpan::new(
->             TimeRange::new(DurationMs(0), DurationMs(4_205)),
->             Annotation::Language("zh".to_owned()),
->             None,
->         ),
->     )?;
+>     timeline.annotate_span(0, 4_205, Annotation::Language("zh".to_owned()))?;
 >
 >     let language = timeline.reference.iter().find_map(|span| {
 >         match &span.annotation {
