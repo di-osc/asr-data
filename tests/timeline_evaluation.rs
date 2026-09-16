@@ -1,11 +1,11 @@
 use asr_data::{
-    Annotation, AudioActivity, DurationMs, Speaker, TimeRange, TimeSpan, Timeline,
-    TimelineEvalConfig, Transcription, TranscriptionNormalization,
+    Annotation, AudioActivity, Speaker, TimeRange, TimeSpan, Timeline, TimelineEvalConfig,
+    Transcription, TranscriptionNormalization,
 };
 
-fn activity(start: u64, end: u64, event: Option<&str>, source: Option<&str>) -> TimeSpan {
+fn activity(start: usize, end: usize, event: Option<&str>, source: Option<&str>) -> TimeSpan {
     TimeSpan::new(
-        TimeRange::new(DurationMs(start), DurationMs(end)),
+        TimeRange::new(start, end),
         Annotation::Activity(AudioActivity {
             event: event.map(str::to_owned),
             confidence: None,
@@ -16,7 +16,7 @@ fn activity(start: u64, end: u64, event: Option<&str>, source: Option<&str>) -> 
 
 #[test]
 fn evaluates_merged_activity_ranges() {
-    let mut timeline = Timeline::new("audio", DurationMs(1_000));
+    let mut timeline = Timeline::new("audio", 1_000);
     timeline.reference.push(activity(100, 500, None, None));
     timeline.reference.push(activity(400, 600, None, None));
     timeline
@@ -43,7 +43,7 @@ fn evaluates_merged_activity_ranges() {
 
 #[test]
 fn evaluates_activity_events_and_masks_unknown_reference_ranges() {
-    let mut timeline = Timeline::new("audio", DurationMs(1_000));
+    let mut timeline = Timeline::new("audio", 1_000);
     timeline
         .reference
         .push(activity(100, 400, Some("speech"), None));
@@ -70,7 +70,7 @@ fn evaluates_activity_events_and_masks_unknown_reference_ranges() {
 
 #[test]
 fn can_evaluate_transcription_without_normalization() {
-    let mut timeline = Timeline::new("audio", DurationMs(1_000));
+    let mut timeline = Timeline::new("audio", 1_000);
     timeline
         .annotate_span(0, 1_000, Transcription::new("交易停滞"))
         .unwrap();
@@ -94,7 +94,7 @@ fn can_evaluate_transcription_without_normalization() {
 
 #[test]
 fn automatically_evaluates_all_sources_with_references() {
-    let mut timeline = Timeline::new("audio", DurationMs(1_000));
+    let mut timeline = Timeline::new("audio", 1_000);
     timeline
         .annotate_span(0, 1_000, Transcription::new("交易停滞"))
         .unwrap();

@@ -97,7 +97,7 @@ cargo add asr-data
 >     let waveform = audio.as_waveform()?.to_mono()?.resample(16_000)?;
 >     let timeline = audio.timeline(AudioChannel::Mono)?.unwrap();
 >
->     println!("{} {}", waveform.sample_rate, timeline.duration.0);
+>     println!("{} {}", waveform.sample_rate, timeline.duration_ms());
 >     Ok(())
 > }
 > ```

@@ -6,7 +6,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::dataset::{AudioDataset as RustAudioDataset, AudioDatasetError};
 use crate::db::{AudioDb as RustAudioDb, AudioDbMode, AudioQuery};
 use crate::doc::Audio as RustAudio;
-use crate::utils::DurationMs;
 use pyo3::exceptions::{PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDateTime, PyDict};
@@ -471,8 +470,8 @@ impl PyAudioDb {
             .query(&AudioQuery {
                 limit,
                 after,
-                min_duration: min_duration_ms.map(DurationMs),
-                max_duration: max_duration_ms.map(DurationMs),
+                min_duration: min_duration_ms.map(|ms| ms as usize),
+                max_duration: max_duration_ms.map(|ms| ms as usize),
                 created_from,
                 created_until,
                 updated_from,
@@ -898,7 +897,7 @@ impl PyAudioDb {
             truncate(&self.path, 72),
             mode,
             len,
-            format_duration_ms(duration.0 as f64)
+            format_duration_ms(duration as f64)
         ))
     }
 
@@ -954,8 +953,8 @@ fn evaluation_query(
     Ok(AudioQuery {
         limit: batch_size,
         after,
-        min_duration: min_duration_ms.map(DurationMs),
-        max_duration: max_duration_ms.map(DurationMs),
+        min_duration: min_duration_ms.map(|ms| ms as usize),
+        max_duration: max_duration_ms.map(|ms| ms as usize),
         created_from,
         created_until,
         updated_from,

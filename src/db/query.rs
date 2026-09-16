@@ -5,7 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::audio::AudioChannel;
 use crate::doc::Audio;
 use crate::timeline::Timeline;
-use crate::utils::DurationMs;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, params, params_from_iter, types::Value as SqlValue,
 };
@@ -156,13 +155,13 @@ impl AudioDb {
     }
 
     /// 所有文档 `duration_ms` 之和。
-    pub(crate) fn total_duration(&self) -> Result<DurationMs, AudioDbError> {
+    pub(crate) fn total_duration(&self) -> Result<usize, AudioDbError> {
         let duration: i64 = self.connection.query_row(
             "SELECT COALESCE(SUM(duration_ms), 0) FROM audios",
             [],
             |row| row.get(0),
         )?;
-        Ok(DurationMs(u64::try_from(duration).unwrap_or_default()))
+        Ok(usize::try_from(duration).unwrap_or_default())
     }
 
     /// 写入或覆盖一条库级 metadata。
@@ -251,7 +250,7 @@ fn insert_with(
     let metadata = serde_json::to_string(&audio.metadata)?;
     let duration = audio
         .timeline_duration()
-        .map(|duration| i64::try_from(duration.0).unwrap_or(i64::MAX));
+        .map(|duration| i64::try_from(duration).unwrap_or(i64::MAX));
     connection.execute_batch("SAVEPOINT asr_write")?;
     let result = (|| {
         connection.execute(
@@ -296,7 +295,7 @@ fn update_with(
     let metadata = serde_json::to_string(&audio.metadata)?;
     let duration = audio
         .timeline_duration()
-        .map(|duration| i64::try_from(duration.0).unwrap_or(i64::MAX));
+        .map(|duration| i64::try_from(duration).unwrap_or(i64::MAX));
 
     connection.execute_batch("SAVEPOINT asr_update")?;
     let result = (|| {
@@ -406,12 +405,12 @@ fn query_with(connection: &Connection, query: &AudioQuery) -> Result<Vec<Audio>,
         predicates.push(format!("audios.audio_id > {parameter}"));
     }
     if let Some(minimum) = query.min_duration {
-        let value = i64::try_from(minimum.0).unwrap_or(i64::MAX);
+        let value = i64::try_from(minimum).unwrap_or(i64::MAX);
         let parameter = push_sql_parameter(&mut parameters, SqlValue::Integer(value));
         predicates.push(format!("audios.duration_ms >= {parameter}"));
     }
     if let Some(maximum) = query.max_duration {
-        let value = i64::try_from(maximum.0).unwrap_or(i64::MAX);
+        let value = i64::try_from(maximum).unwrap_or(i64::MAX);
         let parameter = push_sql_parameter(&mut parameters, SqlValue::Integer(value));
         predicates.push(format!("audios.duration_ms <= {parameter}"));
     }

@@ -105,11 +105,11 @@ impl AudioInfo {
     }
 
     /// 时间轴使用的整毫秒时长，对帧数向上取整。
-    pub fn timeline_duration_ms(&self) -> u64 {
+    pub fn timeline_duration_ms(&self) -> usize {
         let millis = u128::from(self.frame_count)
             .saturating_mul(1000)
             .div_ceil(u128::from(self.sample_rate));
-        millis.min(u128::from(u64::MAX)) as u64
+        millis.min(usize::MAX as u128) as usize
     }
 }
 

@@ -199,7 +199,7 @@ timeline 或 annotation 时，才需要按相应 API 的规则转换为毫秒整
 >     let mut audio = Audio::from_url(URL)?;
 >     let processed = audio.as_waveform()?.to_mono()?.resample(16_000)?;
 >     let clip = processed.slice_ms(0, 2_000);
->     let parts = processed.split_at_low_energy(asr_data::DurationMs(1_000))?;
+>     let parts = processed.split_at_low_energy(1_000)?;
 >     println!("processed: {} {}", processed.sample_rate, processed.channels);
 >     println!("clip: {:.1} ms", clip.duration_ms());
 >     println!("parts: {}", parts.len());
@@ -279,7 +279,7 @@ Python 中所有能够调用 `as_waveform()` 的对象也提供相同签名的 `
 >     while let Some(chunk) = stream.next() {
 >         let chunk = chunk?;
 >         let timeline = stream.timeline(AudioChannel::Mono)?.unwrap();
->         println!("{} {} {}", chunk.end_ms(), timeline.duration.0, chunk.frame_count());
+>         println!("{} {} {}", chunk.end_ms(), timeline.duration_ms(), chunk.frame_count());
 >     }
 >     let streamed_audio = stream.into_audio()?;
 >     println!("{}", streamed_audio.info.frame_count);

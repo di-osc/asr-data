@@ -1,54 +1,36 @@
-//! 时间与样本位置的轻量新类型。
+//! 时间区间。
 
 use serde::{Deserialize, Serialize};
 
-/// 以毫秒表示的时长或时间戳。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct DurationMs(pub u64);
-
-impl DurationMs {
-    /// 转换成秒（浮点）。
-    pub fn seconds(self) -> f64 {
-        self.0 as f64 / 1000.0
-    }
-}
-
-/// 波形中的采样帧下标。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct SampleIndex(pub u64);
-
-/// 半开时间区间 `[start, end)`，单位毫秒。
+/// 半开时间区间 `[start_ms, end_ms)`，单位毫秒。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeRange {
-    /// 区间起点（含）。
-    pub start: DurationMs,
-    /// 区间终点（不含）。
-    pub end: DurationMs,
+    /// 区间起点（含），单位毫秒。
+    #[serde(alias = "start")]
+    pub start_ms: usize,
+    /// 区间终点（不含），单位毫秒。
+    #[serde(alias = "end")]
+    pub end_ms: usize,
 }
 
 impl TimeRange {
-    /// 构造时间区间，不检查 `start <= end`。
-    pub fn new(start: DurationMs, end: DurationMs) -> Self {
-        Self { start, end }
+    /// 构造时间区间，不检查 `start_ms <= end_ms`。
+    pub fn new(start_ms: usize, end_ms: usize) -> Self {
+        Self { start_ms, end_ms }
     }
 
-    /// 用毫秒起止构造半开区间 `[start_ms, end_ms)`。
-    pub fn from_ms(start_ms: u64, end_ms: u64) -> Self {
-        Self::new(DurationMs(start_ms), DurationMs(end_ms))
-    }
-
-    /// 区间长度；若 `end < start` 则饱和为 0。
-    pub fn duration(self) -> DurationMs {
-        DurationMs(self.end.0.saturating_sub(self.start.0))
+    /// 区间长度；若 `end_ms < start_ms` 则饱和为 0。
+    pub fn duration(self) -> usize {
+        self.end_ms.saturating_sub(self.start_ms)
     }
 
     /// 两个半开区间是否相交。
     pub fn overlaps(&self, other: &TimeRange) -> bool {
-        self.start < other.end && other.start < self.end
+        self.start_ms < other.end_ms && other.start_ms < self.end_ms
     }
 
-    /// 时间点是否落在 `[start, end)` 内。
-    pub fn contains(&self, point: DurationMs) -> bool {
-        self.start <= point && point < self.end
+    /// 时间点是否落在 `[start_ms, end_ms)` 内。
+    pub fn contains(&self, point_ms: usize) -> bool {
+        self.start_ms <= point_ms && point_ms < self.end_ms
     }
 }

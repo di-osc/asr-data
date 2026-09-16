@@ -197,7 +197,7 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 > #### Example
 >
 > ```rust
-> use asr_data::{Waveform, DurationMs};
+> use asr_data::Waveform;
 >
 > const URL: &str =
 >     "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav";
@@ -207,7 +207,7 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 >     let mono = audio.to_mono()?;
 >     let resampled = mono.resample(16_000)?;
 >     let clip = resampled.slice_ms(0, 1_000);
->     let parts = resampled.split_at_low_energy(DurationMs(10_000))?;
+>     let parts = resampled.split_at_low_energy(10_000)?;
 >
 >     println!("{} samples", clip.samples.len());
 >     println!("{} parts", parts.len());
@@ -222,7 +222,7 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 | `resample(sample_rate)`             | `anyhow::Result<Waveform>`          | 重采样。              |
 | `peak_normalize()` / `with_peak_normalize()` | `()` / `Waveform`            | 峰值缩放到 `[-1, 1]`。 |
 | `slice_ms(start_ms, end_ms)`        | `Waveform`                          | 按毫秒截取。          |
-| `split_at_low_energy(max_duration)` | `Result<Vec<Waveform>, AudioError>` | 低能量拆分。          |
+| `split_at_low_energy(max_duration_ms)` | `Result<Vec<Waveform>, AudioError>` | 低能量拆分。          |
 | `to_i16_pcm()`                      | `Vec<i16>`                       | 转换为 PCM i16 样本。 |
 
 ## Waveform::chunk {id="waveform-chunks",tag="method"}
@@ -308,7 +308,7 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 | `frame_count`   | `u64`         | 每个声道的有效采样帧数。  |
 | `source_format` | `AudioFormat` | 原始音频格式。            |
 
-`duration_ms()` 返回浮点毫秒，`timeline_duration_ms()` 返回向上取整后的整数毫秒。
+`duration_ms()` 返回浮点毫秒，`timeline_duration_ms()` 返回向上取整后的 `usize` 毫秒。
 
 ## Audio {id="audio",tag="struct"}
 
@@ -406,7 +406,7 @@ timeline，但波形与 timeline 只覆盖已经迭代出的范围。
 >         println!("{}..{} ms / {} ms",
 >             chunk.offset_ms,
 >             stream.position_ms(),
->             timeline.duration.0,
+>             timeline.duration_ms(),
 >         );
 >     }
 >
@@ -460,7 +460,7 @@ timeline，但波形与 timeline 只覆盖已经迭代出的范围。
 | ----------- | ------------------------------------------------------------------------ |
 | `&mut self` | 可变借用记录。                                                           |
 | `channel`   | 规范声道。~~AudioChannel~~                                               |
-| `duration`  | timeline 时长。~~Option&lt;DurationMs&gt;~~                              |
+| `duration`  | timeline 时长，单位毫秒。~~Option&lt;usize&gt;~~                              |
 | **RETURNS** | timeline 的可变借用。~~Result&lt;&mut Timeline, AudioTimelineError&gt;~~ |
 
 ## Audio timeline methods {id="audio-timelines",tag="methods"}
@@ -472,7 +472,7 @@ timeline，但波形与 timeline 只覆盖已经迭代出的范围。
 | `mono_timeline()`          | `Option<&Timeline>`                                | 单声道便捷查询。   |
 | `timelines()`              | `&BTreeMap<AudioChannel, Timeline>`                | 全部 timeline。    |
 | `remove_timeline(channel)` | `Result<Option<Timeline>, AudioChannelError>`      | 删除并取得所有权。 |
-| `timeline_duration()`      | `Option<DurationMs>`                               | 已确定的统一时长。 |
+| `timeline_duration()`      | `Option<usize>`                               | 已确定的统一时长（毫秒）。 |
 | `validate()`               | `Result<(), AudioValidationError>`                 | 校验完整记录。     |
 
 ## Timeline {id="timeline",tag="struct"}
@@ -483,7 +483,7 @@ timeline，但波形与 timeline 只覆盖已经迭代出的范围。
 | ------------ | ------------------------------------------------- |
 | `id`         | Timeline ID。~~TimelineId~~                       |
 | `audio_id`   | 所属 Audio ID。~~AudioId~~                     |
-| `duration`   | 总时长。~~DurationMs~~                            |
+| `duration`   | 总时长，单位毫秒。~~usize~~                            |
 | `reference`  | 不带 source 的参考标注。~~Vec&lt;TimeSpan&gt;~~ |
 | `prediction` | 带 source 的预测标注。~~Vec&lt;TimeSpan&gt;~~   |
 
@@ -494,7 +494,7 @@ timeline，但波形与 timeline 只覆盖已经迭代出的范围。
 | Name        | Description                               |
 | ----------- | ----------------------------------------- |
 | `audio_id`  | 所属记录 ID。~~impl Into&lt;AudioId&gt;~~ |
-| `duration`  | 总时长。~~DurationMs~~                    |
+| `duration`  | 总时长，单位毫秒。~~usize~~                    |
 | **RETURNS** | 新 timeline。~~Timeline~~                 |
 
 ## Timeline::annotate_span {id="timeline-annotate-span",tag="method"}
@@ -508,10 +508,10 @@ Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, 
 > #### Example
 >
 > ```rust
-> use asr_data::{DurationMs, Timeline, Transcription};
+> use asr_data::{Timeline, Transcription};
 >
 > fn main() -> Result<(), asr_data::TimelineSpanError> {
->     let mut timeline = Timeline::new("example-001", DurationMs(4_205));
+>     let mut timeline = Timeline::new("example-001", 4_205);
 >     let stored = timeline.annotate_span(
 >         0,
 >         4_205,
@@ -534,8 +534,8 @@ Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, 
 | Name           | Description                                                                            |
 | -------------- | -------------------------------------------------------------------------------------- |
 | `&mut self`    | 可变借用 timeline。                                                                    |
-| `start_ms`     | 起始时间，单位毫秒。~~u64~~                                                            |
-| `end_ms`       | 结束时间，单位毫秒。~~u64~~                                                            |
+| `start_ms`     | 起始时间，单位毫秒。~~usize~~                                                            |
+| `end_ms`       | 结束时间，单位毫秒。~~usize~~                                                            |
 | `annotation`   | 标注 payload，例如 `AudioActivity`、`Transcription`、`Speaker`。~~impl Into&lt;Annotation&gt;~~ |
 | **RETURNS**    | 新标注或已有重复项；source 或重叠无效时报错。~~Result&lt;&TimeSpan, TimelineSpanError&gt;~~ |
 
@@ -546,8 +546,8 @@ Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, 
 | Name           | Description                                                                            |
 | -------------- | -------------------------------------------------------------------------------------- |
 | `&mut self`    | 可变借用 timeline。                                                                    |
-| `start_ms`     | 起始时间，单位毫秒。~~u64~~                                                            |
-| `end_ms`       | 结束时间，单位毫秒。~~u64~~                                                            |
+| `start_ms`     | 起始时间，单位毫秒。~~usize~~                                                            |
+| `end_ms`       | 结束时间，单位毫秒。~~usize~~                                                            |
 | `annotation`   | 标注 payload。~~impl Into&lt;Annotation&gt;~~                                          |
 | `is_reference` | `true` 写 reference，`false` 写 prediction。~~bool~~                                   |
 | `source`       | prediction 来源；reference 必须为 `None`。~~Option&lt;&str&gt;~~                       |
@@ -560,19 +560,19 @@ Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, 
 > #### Example
 >
 > ```rust
-> use asr_data::{DurationMs, Timeline, Transcription};
+> use asr_data::{Timeline, Transcription};
 >
 > fn main() -> Result<(), asr_data::TimelineSpanError> {
->     let duration = DurationMs(4_205);
+>     let duration = 4_205;
 >     let mut timeline = Timeline::new("example-001", duration);
 >     timeline.annotate_span(
 >         0,
->         duration.0,
+>         duration,
 >         Transcription::new("甚至出现交易几乎停滞的情况"),
 >     )?;
 >     timeline.annotate_span_with(
 >         0,
->         duration.0,
+>         duration,
 >         Transcription::new("甚至出现交易几乎停滞的情况"),
 >         false,
 >         Some("qwen-asr"),
@@ -596,6 +596,7 @@ Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, 
 | Method                                 | Returns                                  | Description              |
 | -------------------------------------- | ---------------------------------------- | ------------------------ |
 | `all_spans()`                          | `impl Iterator<Item = &TimeSpan>`        | 遍历两个集合。           |
+| `duration_ms()`                        | `usize`                                  | 总时长毫秒。             |
 | `span_count()`                         | `usize`                                  | 标注总数。               |
 | `predictions_by_source(source)`        | `impl Iterator<Item = &TimeSpan>`        | 查询某个预测来源。       |
 | `prediction_sources()`                 | `BTreeMap<&str, Vec<&str>>`              | 按类型分组的来源。       |
@@ -704,12 +705,12 @@ annotation payload 内，可通过 `annotation.confidence()` 读取。
 >
 > ```rust
 > use asr_data::{
->     Annotation, AudioActivity, DurationMs, TimeRange, TimeSpan,
+>     Annotation, AudioActivity, TimeRange, TimeSpan,
 > };
 >
 > fn main() {
 >     let span = TimeSpan::new(
->         TimeRange::new(DurationMs(0), DurationMs(1_000)),
+>         TimeRange::new(0, 1_000),
 >         Annotation::Activity(
 >             AudioActivity::new()
 >                 .with_event("speech")
@@ -784,7 +785,7 @@ reference 集合或同一 prediction source 中重叠；不同 event 可以重�
 > #### Example
 >
 > ```rust
-> use asr_data::{DurationMs, TimeRange, Token, Transcription};
+> use asr_data::{Token, Transcription};
 >
 > fn main() {
 >     let mut transcription = Transcription::new(
@@ -793,14 +794,8 @@ reference 集合或同一 prediction source 中重叠；不同 event 可以重�
 >     transcription.language = Some("zh".to_owned());
 >     transcription.confidence = Some(0.93);
 >     transcription.tokens = vec![
->         Token::new("甚至出现").with_range(TimeRange::new(
->             DurationMs(0),
->             DurationMs(1_800),
->         )),
->         Token::new("交易几乎停滞的情况").with_range(TimeRange::new(
->             DurationMs(1_800),
->             DurationMs(4_205),
->         )),
+>         Token::new("甚至出现").with_range(0, 1_800),
+>         Token::new("交易几乎停滞的情况").with_range(1_800, 4_205),
 >     ];
 >
 >     println!("{}", transcription.text);
@@ -823,16 +818,14 @@ reference 集合或同一 prediction source 中重叠；不同 event 可以重�
 > #### Example
 >
 > ```rust
-> use asr_data::{DurationMs, Sentence, TimeRange, Timeline, Token};
+> use asr_data::{Sentence, Timeline, Token};
 >
 > fn main() -> Result<(), asr_data::TimelineSpanError> {
 >     let mut sentence = Sentence::new("甚至出现交易几乎停滞的情况");
 >     sentence.language = Some("zh".to_owned());
->     sentence.tokens = vec![Token::new("甚至出现").with_range(
->         TimeRange::new(DurationMs(0), DurationMs(1_800)),
->     )];
+>     sentence.tokens = vec![Token::new("甚至出现").with_range(0, 1_800)];
 >
->     let mut timeline = Timeline::new("example-001", DurationMs(4_205));
+>     let mut timeline = Timeline::new("example-001", 4_205);
 >     timeline.annotate_span(0, 4_205, sentence)?;
 >     assert_eq!(
 >         timeline.reference_transcript().text,
@@ -889,10 +882,10 @@ Python 目前不能新建 `Sentence`，但可以从已有数据读出。
 > #### Example
 >
 > ```rust
-> use asr_data::{Annotation, DurationMs, Timeline};
+> use asr_data::{Annotation, Timeline};
 >
 > fn main() -> Result<(), asr_data::TimelineSpanError> {
->     let mut timeline = Timeline::new("example-001", DurationMs(4_205));
+>     let mut timeline = Timeline::new("example-001", 4_205);
 >     timeline.annotate_span(0, 4_205, Annotation::Language("zh".to_owned()))?;
 >
 >     let language = timeline.reference.iter().find_map(|span| {
@@ -920,14 +913,11 @@ Python 目前不能新建 `Language` annotation，但可以从已有数据读出
 > #### Example
 >
 > ```rust
-> use asr_data::{DurationMs, TimeRange, Token};
+> use asr_data::Token;
 >
 > fn main() {
 >     let token = Token::new("甚至出现")
->         .with_range(TimeRange::new(
->             DurationMs(0),
->             DurationMs(1_800),
->         ))
+>         .with_range(0, 1_800)
 >         .with_confidence(0.95);
 >
 >     println!("{}", token.text);
@@ -1211,8 +1201,8 @@ SQLite 数据库句柄。写操作借用句柄；仅 `update_many()` 因事务�
 | --------------- | ------------------------------------------------------ |
 | `limit`         | 最大返回数，默认 `DEFAULT_QUERY_LIMIT`。~~usize~~      |
 | `after`         | 上一页最后一个 audio ID。~~Option&lt;String&gt;~~      |
-| `min_duration`  | 可选最短时长。~~Option&lt;DurationMs&gt;~~             |
-| `max_duration`  | 可选最长时长。~~Option&lt;DurationMs&gt;~~             |
+| `min_duration`  | 可选最短时长，单位毫秒。~~Option&lt;usize&gt;~~             |
+| `max_duration`  | 可选最长时长，单位毫秒。~~Option&lt;usize&gt;~~             |
 | `created_from`  | 创建时间下界，包含。~~Option&lt;SystemTime&gt;~~       |
 | `created_until` | 创建时间上界，不包含。~~Option&lt;SystemTime&gt;~~     |
 | `updated_from`  | 修改时间下界，包含。~~Option&lt;SystemTime&gt;~~       |
@@ -1255,16 +1245,14 @@ speaker-time 计数。
 
 ## 时间类型 {id="time-types",tag="structs"}
 
-Rust API 用 newtype 表示时间和采样点，避免把不同单位的整数混用。
+整数毫秒使用 `usize`。半开区间用 `TimeRange` 表示。
 
-| Type                       | Description                             |
-| -------------------------- | --------------------------------------- |
-| `DurationMs(pub u64)`      | 毫秒时长；`seconds()` 转换为 `f64` 秒。 |
-| `SampleIndex(pub u64)`     | 采样点索引。                            |
-| `TimeRange { start, end }` | 半开时间范围。                          |
+| Type                             | Description                                              |
+| -------------------------------- | -------------------------------------------------------- |
+| `TimeRange { start_ms, end_ms }` | 半开时间范围 `[start_ms, end_ms)`，单位毫秒，端点为 `usize`。 |
 
 `TimeRange::duration()` 返回饱和相减后的时长；`overlaps(&other)` 判断范围重叠；
-`contains(point)` 使用 `start <= point < end`。
+`contains(point_ms)` 使用 `start_ms <= point_ms < end_ms`。
 
 ## 中文文本归一化 {id="normalize-zh",tag="function"}
 

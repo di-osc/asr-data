@@ -81,7 +81,7 @@ duration。 annotation 的所有时间范围都相对于所属 timeline 的起�
 >         AudioSource::from_url("https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"),
 >     )?;
 >     let timeline = audio.timeline(AudioChannel::Mono)?.unwrap();
->     println!("{}", timeline.duration.0);
+>     println!("{}", timeline.duration_ms());
 >     Ok(())
 > }
 > ```
@@ -139,7 +139,7 @@ Transcription 和 Token 分别保存各自语义下的 `confidence`。因此说�
 > use asr_data::{AudioActivity, Timeline, Transcription};
 >
 > fn main() -> anyhow::Result<()> {
->     let mut timeline = Timeline::new("example-001", asr_data::DurationMs(1_000));
+>     let mut timeline = Timeline::new("example-001", 1_000);
 >     timeline.annotate_span(0, 1_000, AudioActivity::new().with_event("speech"))?;
 >     timeline.annotate_span_with(
 >         0,
@@ -317,10 +317,10 @@ Rust 的 `reference` 和 `prediction` 是公开 `Vec`，可以绕过 `annotate_s
 > #### Rust Example
 >
 > ```rust
-> use asr_data::{DurationMs, Timeline, TimelineEvalConfig};
+> use asr_data::{Timeline, TimelineEvalConfig};
 >
 > fn main() -> anyhow::Result<()> {
->     let timeline = Timeline::new("example-001", DurationMs(1_000));
+>     let timeline = Timeline::new("example-001", 1_000);
 >     let evaluation = timeline.eval(&TimelineEvalConfig::new())?;
 >     println!("{}", evaluation.transcription.len());
 >     Ok(())

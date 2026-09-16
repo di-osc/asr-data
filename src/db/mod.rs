@@ -8,7 +8,6 @@ use rusqlite::Connection;
 use thiserror::Error;
 
 use crate::doc::AudioValidationError;
-use crate::utils::DurationMs;
 
 mod query;
 mod schema;
@@ -69,10 +68,10 @@ pub struct AudioQuery {
     pub limit: usize,
     /// 从该 `audio_id` 之后继续翻页（不含自身）。
     pub after: Option<String>,
-    /// 最短时长（含）。
-    pub min_duration: Option<DurationMs>,
-    /// 最长时长（含）。
-    pub max_duration: Option<DurationMs>,
+    /// 最短时长（含），单位毫秒。
+    pub min_duration: Option<usize>,
+    /// 最长时长（含），单位毫秒。
+    pub max_duration: Option<usize>,
     /// 创建时间下界（含）。
     pub created_from: Option<SystemTime>,
     /// 创建时间上界（含）。
@@ -118,5 +117,5 @@ pub struct AudioDbInfo {
     /// 已存储的音频文档数。
     pub audios: usize,
     /// 所有文档时长之和。
-    pub total_duration: DurationMs,
+    pub total_duration: usize,
 }

@@ -7,11 +7,11 @@ use asr_data::{
     AudioEncoding, AudioError, AudioFormat, AudioInfo, AudioQuery, AudioSource, AudioStream,
     CerStats, ChineseTextNormalizationOptions, DEFAULT_QUERY_LIMIT, DatasetActivityEvaluation,
     DatasetActivityEventEvaluation, DatasetEvalError, DatasetEvaluation, DatasetEvaluator,
-    DatasetSpeakerEvaluation, DatasetTranscriptionEvaluation, DurationMs, MAX_QUERY_LIMIT,
-    SampleIndex, Sentence, Speaker, TextNormalizationError, TimeRange, TimeSpan, Timeline,
-    TimelineEvalConfig, TimelineEvalError, TimelineEvaluation, Token, Transcript, Transcription,
-    TranscriptionEvaluation, TranscriptionNormalization, Waveform, compute_cer, evaluate_dataset,
-    normalize_for_cer, normalize_zh, normalize_zh_with_options, read_audio_db_info,
+    DatasetSpeakerEvaluation, DatasetTranscriptionEvaluation, MAX_QUERY_LIMIT, Sentence, Speaker,
+    TextNormalizationError, TimeRange, TimeSpan, Timeline, TimelineEvalConfig, TimelineEvalError,
+    TimelineEvaluation, Token, Transcript, Transcription, TranscriptionEvaluation,
+    TranscriptionNormalization, Waveform, compute_cer, evaluate_dataset, normalize_for_cer,
+    normalize_zh, normalize_zh_with_options, read_audio_db_info,
 };
 
 #[test]
@@ -37,8 +37,6 @@ fn stable_public_paths_compile() {
     let _: Option<AudioQuery> = None;
     let _: Option<AudioSource> = None;
     let _: Option<CerStats> = None;
-    let _: Option<DurationMs> = None;
-    let _: Option<SampleIndex> = None;
     let _: Option<Speaker> = None;
     let _: Option<Sentence> = None;
     let _: Option<TimeRange> = None;
@@ -68,7 +66,7 @@ fn stable_public_paths_compile() {
     let _ = normalize_zh("2026");
     let _ = normalize_zh_with_options("花儿", ChineseTextNormalizationOptions::default());
     let _ = evaluate_dataset([], &TimelineEvalConfig::new());
-    let timeline = Timeline::new("mono", DurationMs(1_000));
+    let timeline = Timeline::new("mono", 1_000);
     let _ = timeline.eval(&TimelineEvalConfig::new().with_transcription("asr"));
     let _: fn(&Path) -> anyhow::Result<Waveform> = decode::decode_path_audio;
     let _: usize = DEFAULT_QUERY_LIMIT;
@@ -93,7 +91,7 @@ fn audio_stream_grows_timelines_and_converts_without_redecoding() {
             .expect("valid channel")
             .expect("mono timeline")
             .duration,
-        DurationMs(0),
+        0,
     );
 
     let first = stream.next().expect("first chunk").expect("decode chunk");
@@ -105,7 +103,7 @@ fn audio_stream_grows_timelines_and_converts_without_redecoding() {
             .expect("valid channel")
             .expect("mono timeline")
             .duration,
-        DurationMs(250),
+        250,
     );
 
     let remaining = stream
@@ -137,7 +135,7 @@ fn audio_and_stream_convenience_factories_are_public() {
 
 #[test]
 fn timeline_uses_one_annotation_write_method() {
-    let mut timeline = Timeline::new("audio", DurationMs(1_000));
+    let mut timeline = Timeline::new("audio", 1_000);
     timeline
         .annotate_span(0, 1_000, AudioActivity::new().with_event("speech"))
         .expect("reference annotation");

@@ -96,7 +96,7 @@ impl<'a> AudioTerminalView<'a> {
     /// 按声道画出波形和标注轨道。
     fn write_timeline(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let plot_width = self.width.saturating_sub(LABEL_WIDTH);
-        let duration_ms = self.audio.info.timeline_duration_ms();
+        let duration_ms = self.audio.info.timeline_duration_ms() as u64;
         let ticks = timeline_ticks(duration_ms, plot_width);
 
         writeln!(formatter)?;
@@ -330,7 +330,7 @@ impl<'a> TimelineTerminalView<'a> {
     /// 画时间轴和 Reference / Prediction 标注轨道，没有波形行。
     fn write_plot(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let plot_width = self.width.saturating_sub(LABEL_WIDTH);
-        let duration_ms = self.timeline.duration.0;
+        let duration_ms = self.timeline.duration as u64;
         let ticks = timeline_ticks(duration_ms, plot_width);
 
         writeln!(formatter)?;
@@ -401,7 +401,7 @@ impl fmt::Display for TimelineTerminalView<'_> {
 fn timeline_info_line(timeline: &Timeline) -> String {
     format!(
         "{:.3} s  ·  {} reference  ·  {} prediction",
-        timeline.duration.0 as f64 / 1000.0,
+        timeline.duration as f64 / 1000.0,
         grouped_number(timeline.reference.len() as u64),
         grouped_number(timeline.prediction.len() as u64),
     )
@@ -625,9 +625,9 @@ fn annotation_track(
     let duration = duration_ms.max(1) as u128;
 
     for span in annotations {
-        let start = ((u128::from(span.range.start.0) * width as u128) / duration)
+        let start = ((span.range.start_ms as u128 * width as u128) / duration)
             .min(width.saturating_sub(1) as u128) as usize;
-        let end = ((u128::from(span.range.end.0) * width as u128).div_ceil(duration))
+        let end = ((span.range.end_ms as u128 * width as u128).div_ceil(duration))
             .max((start + 2) as u128)
             .min(width as u128) as usize;
         track[start] = '╰';
@@ -752,8 +752,8 @@ fn annotation_label(span: &TimeSpan) -> String {
 fn annotation_detail_lines(span: &TimeSpan) -> Vec<String> {
     let mut lines = vec![format!(
         "{}–{}  {}",
-        format_time(span.range.start.0),
-        format_time(span.range.end.0),
+        format_time(span.range.start_ms as u64),
+        format_time(span.range.end_ms as u64),
         annotation_label(span),
     )];
     match &span.annotation {
@@ -895,7 +895,6 @@ fn overlay(target: &mut [char], start: usize, value: &str) {
 mod tests {
     use crate::audio::{AudioEncoding, AudioFormat, AudioSource, Waveform};
     use crate::timeline::{AudioActivity, Speaker, Timeline, Token, Transcription};
-    use crate::utils::DurationMs;
 
     use super::{Audio, AudioTerminalView, TimelineTerminalView, WaveformTerminalView};
 
@@ -995,7 +994,7 @@ mod tests {
     }
 
     fn test_timeline() -> Timeline {
-        let mut timeline = Timeline::new("audio_test", DurationMs(1_000));
+        let mut timeline = Timeline::new("audio_test", 1_000);
         timeline
             .annotate_span(
                 0,
@@ -1039,7 +1038,7 @@ mod tests {
 
     #[test]
     fn timeline_terminal_view_renders_empty_state() {
-        let timeline = Timeline::new("audio_test", DurationMs(1_000));
+        let timeline = Timeline::new("audio_test", 1_000);
         let output = format!("{}", TimelineTerminalView::new(&timeline, 64, false));
 
         assert!(output.contains("1.000 s  ·  0 reference  ·  0 prediction"));

@@ -764,7 +764,11 @@ fn speaker_span(span: &crate::timeline::TimeSpan) -> Option<(&str, u64, u64)> {
     let Annotation::Speaker(speaker) = &span.annotation else {
         return None;
     };
-    Some((speaker.name.as_str(), span.range.start.0, span.range.end.0))
+    Some((
+        speaker.name.as_str(),
+        span.range.start_ms as u64,
+        span.range.end_ms as u64,
+    ))
 }
 
 /// 匈牙利算法求二分图最大权和，用于说话人对齐。

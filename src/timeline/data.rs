@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::annotation::{Annotation, AudioId, TimeSpan, TimeSpanId, TimelineId};
 use super::segment::{Sentence, Transcript};
-use crate::utils::{DurationMs, TimeRange};
+use crate::utils::TimeRange;
 
 /// 不允许重叠的标注类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,8 +27,8 @@ pub struct Timeline {
     pub id: TimelineId,
     /// 所属音频文档 ID。
     pub audio_id: AudioId,
-    /// 覆盖的音频时长。
-    pub duration: DurationMs,
+    /// 覆盖的音频时长，单位毫秒。
+    pub duration: usize,
     /// 人工 / 参考标注，`source` 必须为空。
     pub reference: Vec<TimeSpan>,
     /// 模型预测，必须带非空 `source`。
@@ -99,7 +99,7 @@ impl Timeline {
     }
 
     /// 构造空时间轴，生成随机 ID。
-    pub fn new(audio_id: impl Into<AudioId>, duration: DurationMs) -> Self {
+    pub fn new(audio_id: impl Into<AudioId>, duration: usize) -> Self {
         Self {
             id: format!("tl_{}", Uuid::new_v4().simple()),
             audio_id: audio_id.into(),
@@ -107,6 +107,13 @@ impl Timeline {
             reference: Vec::new(),
             prediction: Vec::new(),
         }
+    }
+
+    /// 时间轴覆盖时长，单位毫秒。
+    ///
+    /// 与 Python `Timeline.duration_ms` 对齐，便于和 `usize` 下标一起做分段计算。
+    pub fn duration_ms(&self) -> usize {
+        self.duration
     }
 
     /// 写入一条标注。
@@ -122,8 +129,8 @@ impl Timeline {
     /// source 约束不满足或与已有 span 非法重叠时返回错误。
     pub fn annotate_span(
         &mut self,
-        start_ms: u64,
-        end_ms: u64,
+        start_ms: usize,
+        end_ms: usize,
         annotation: impl Into<Annotation>,
     ) -> Result<&TimeSpan, TimelineSpanError> {
         self.annotate_span_with(start_ms, end_ms, annotation, true, None)
@@ -141,14 +148,14 @@ impl Timeline {
     /// source 约束不满足或与已有 span 非法重叠时返回错误。
     pub fn annotate_span_with(
         &mut self,
-        start_ms: u64,
-        end_ms: u64,
+        start_ms: usize,
+        end_ms: usize,
         annotation: impl Into<Annotation>,
         is_reference: bool,
         source: Option<&str>,
     ) -> Result<&TimeSpan, TimelineSpanError> {
         let annotation = TimeSpan::new(
-            TimeRange::new(DurationMs(start_ms), DurationMs(end_ms)),
+            TimeRange::new(start_ms, end_ms),
             annotation.into(),
             source.map(str::to_owned),
         );
@@ -271,7 +278,7 @@ impl Timeline {
     }
 
     /// 把时间轴时长延长到至少 `duration`；不会缩短。
-    pub(crate) fn extend_to(&mut self, duration: DurationMs) {
+    pub(crate) fn extend_to(&mut self, duration: usize) {
         if duration > self.duration {
             self.duration = duration;
         }
@@ -411,17 +418,17 @@ fn transcript_from_annotations<'a>(annotations: impl Iterator<Item = &'a TimeSpa
     let mut segments = annotations
         .filter_map(|annotation| match &annotation.annotation {
             Annotation::Transcription(transcription) => Some((
-                annotation.range.start,
+                annotation.range.start_ms,
                 Sentence {
                     text: transcription.text.clone(),
                     tokens: transcription.tokens.clone(),
                     language: transcription.language.clone(),
                 },
             )),
-            Annotation::Sentence(segment) => Some((annotation.range.start, segment.clone())),
+            Annotation::Sentence(segment) => Some((annotation.range.start_ms, segment.clone())),
             Annotation::Speaker(speaker) => speaker.transcription.as_ref().map(|value| {
                 (
-                    annotation.range.start,
+                    annotation.range.start_ms,
                     Sentence {
                         text: value.text.clone(),
                         tokens: value.tokens.clone(),
@@ -431,7 +438,7 @@ fn transcript_from_annotations<'a>(annotations: impl Iterator<Item = &'a TimeSpa
             }),
             _ => None,
         })
-        .collect::<Vec<(DurationMs, Sentence)>>();
+        .collect::<Vec<(usize, Sentence)>>();
 
     segments.sort_by_key(|(start, _)| *start);
     let segments = segments
@@ -455,6 +462,6 @@ fn transcript_from_annotations<'a>(annotations: impl Iterator<Item = &'a TimeSpa
 
 impl Default for Timeline {
     fn default() -> Self {
-        Self::new(String::new(), DurationMs(0))
+        Self::new(String::new(), 0)
     }
 }

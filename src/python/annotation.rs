@@ -2,7 +2,7 @@ use crate::timeline::{
     AudioActivity as RustAudioActivity, Speaker, Token as RustToken,
     Transcription as RustTranscription,
 };
-use crate::utils::{DurationMs, TimeRange};
+use crate::utils::TimeRange;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -106,7 +106,7 @@ impl PyToken {
         let range = match (start_ms, end_ms) {
             (None, None) => None,
             (Some(start), Some(end)) if end >= start => {
-                Some(TimeRange::new(DurationMs(start), DurationMs(end)))
+                Some(TimeRange::new(start as usize, end as usize))
             }
             (Some(_), Some(_)) => {
                 return Err(PyValueError::new_err("end_ms must be >= start_ms"));
@@ -134,14 +134,14 @@ impl PyToken {
 
     /// 可选起始时间，单位为毫秒。
     #[getter]
-    fn start_ms(&self) -> Option<u64> {
-        self.inner.range.map(|range| range.start.0)
+    fn start_ms(&self) -> Option<usize> {
+        self.inner.range.map(|range| range.start_ms)
     }
 
     /// 可选结束时间，单位为毫秒。
     #[getter]
-    fn end_ms(&self) -> Option<u64> {
-        self.inner.range.map(|range| range.end.0)
+    fn end_ms(&self) -> Option<usize> {
+        self.inner.range.map(|range| range.end_ms)
     }
 
     /// 可选 token 级置信度。
@@ -152,7 +152,7 @@ impl PyToken {
 
     fn __repr__(&self) -> String {
         let range = match self.inner.range {
-            Some(range) => format!(", range={}..{}ms", range.start.0, range.end.0),
+            Some(range) => format!(", range={}..{}ms", range.start_ms, range.end_ms),
             None => String::new(),
         };
         let confidence = self

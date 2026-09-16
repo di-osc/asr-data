@@ -68,9 +68,9 @@ impl Token {
         }
     }
 
-    /// 附上时间范围。
-    pub fn with_range(mut self, range: TimeRange) -> Self {
-        self.range = Some(range);
+    /// 附上时间范围，参数与 Python `Token(..., start_ms, end_ms)` 对齐。
+    pub fn with_range(mut self, start_ms: usize, end_ms: usize) -> Self {
+        self.range = Some(TimeRange::new(start_ms, end_ms));
         self
     }
 

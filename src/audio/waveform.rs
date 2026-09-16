@@ -7,7 +7,6 @@ use thiserror::Error;
 
 use super::chunk::AudioChunk;
 use super::{AudioEncoding, AudioFormat, AudioSource};
-use crate::utils::DurationMs;
 
 /// 低能量切分时，在目标切点之前回看的最大窗口（毫秒）。
 const LOW_ENERGY_SEARCH_WINDOW_MS: u64 = 5_000;
@@ -358,14 +357,14 @@ impl Waveform {
 
     /// 在低能量边界切开超长波形，不改动样本本身。
     ///
-    /// 每段不超过 `max_duration`，且保持完整帧。切点优先选目标时长附近能量最低
+    /// 每段不超过 `max_duration_ms`，且保持完整帧。切点优先选目标时长附近能量最低
     /// 的位置，避免把说话人截在音节中间。
     ///
     /// # Errors
     ///
-    /// `max_duration`、采样率或声道数无效时返回错误。
-    pub fn split_at_low_energy(&self, max_duration: DurationMs) -> Result<Vec<Self>, AudioError> {
-        if max_duration.0 == 0 {
+    /// `max_duration_ms`、采样率或声道数无效时返回错误。
+    pub fn split_at_low_energy(&self, max_duration_ms: usize) -> Result<Vec<Self>, AudioError> {
+        if max_duration_ms == 0 {
             return Err(AudioError::InvalidChunkSize);
         }
         if self.sample_rate == 0 {
@@ -379,7 +378,7 @@ impl Waveform {
         if total_frames == 0 {
             return Ok(Vec::new());
         }
-        let max_frames = frames_for_ms(max_duration.0, self.sample_rate);
+        let max_frames = frames_for_ms(max_duration_ms as u64, self.sample_rate);
         if total_frames <= max_frames {
             return Ok(vec![self.clone()]);
         }

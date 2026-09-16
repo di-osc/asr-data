@@ -3,7 +3,6 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::audio::{AudioChannel as RustAudioChannel, AudioSource as RustAudioSource};
 use crate::doc::Audio as RustAudio;
-use crate::utils::DurationMs;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict};
@@ -385,12 +384,12 @@ impl PyAudio {
         let channel = audio_channel(channel)?;
         let duration_ms = duration_ms
             .map(|value| {
-                if !value.is_finite() || value < 0.0 || value.ceil() > u64::MAX as f64 {
+                if !value.is_finite() || value < 0.0 || value.ceil() > usize::MAX as f64 {
                     return Err(PyValueError::new_err(
                         "duration_ms must be a finite non-negative number",
                     ));
                 }
-                Ok(DurationMs(value.ceil() as u64))
+                Ok(value.ceil() as usize)
             })
             .transpose()?;
         self.inner
@@ -494,7 +493,7 @@ impl PyAudio {
         if let Some(duration) = audio.timeline_duration() {
             fields.push(format!(
                 "duration={:?}",
-                format_duration_ms(duration.0 as f64)
+                format_duration_ms(duration as f64)
             ));
         }
         let span_count = audio

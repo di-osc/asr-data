@@ -11,7 +11,6 @@ use crate::audio::{
     AudioChannel, AudioChunk, AudioEncoding, AudioFormat, AudioInfo, AudioSource, Waveform,
 };
 use crate::timeline::{Timeline, TimelineSpanError};
-use crate::utils::DurationMs;
 
 /// An audio source together with all annotations and per-audio metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -178,7 +177,7 @@ impl Audio {
             metadata: BTreeMap::new(),
             waveform: None,
         };
-        let duration = DurationMs(info.timeline_duration_ms());
+        let duration = info.timeline_duration_ms();
         if info.channels == 1 {
             doc.timelines
                 .insert(AudioChannel::Mono, Timeline::new(doc.id.clone(), duration));
@@ -206,7 +205,7 @@ impl Audio {
     ) -> Result<Self, crate::audio::AudioError> {
         let mut audio = Self::with_id_from_info(audio_id, source, info);
         for timeline in audio.timelines.values_mut() {
-            timeline.duration = DurationMs(0);
+            timeline.duration = 0;
         }
         audio.waveform = Some(
             Waveform::try_new_with_channels(Vec::new(), info.sample_rate, info.channels)?
@@ -312,10 +311,10 @@ impl Audio {
     pub fn ensure_timeline(
         &mut self,
         channel: AudioChannel,
-        duration: Option<DurationMs>,
+        duration: Option<usize>,
     ) -> Result<&mut Timeline, AudioTimelineError> {
         validate_channel(channel).map_err(AudioTimelineError::InvalidChannel)?;
-        let expected = Some(DurationMs(self.info.timeline_duration_ms()));
+        let expected = Some(self.info.timeline_duration_ms());
         let duration = match (expected, duration) {
             (None, None) => return Err(AudioTimelineError::MissingDuration),
             (None, Some(duration)) | (Some(duration), None) => duration,
@@ -385,8 +384,8 @@ impl Audio {
     }
 
     /// 文档时间轴应覆盖的整毫秒时长。
-    pub fn timeline_duration(&self) -> Option<DurationMs> {
-        Some(DurationMs(self.info.timeline_duration_ms()))
+    pub fn timeline_duration(&self) -> Option<usize> {
+        Some(self.info.timeline_duration_ms())
     }
 
     /// 校验 ID、info、timeline 时长以及标注边界 / source 约束。
@@ -444,11 +443,11 @@ impl Audio {
                 }
             }
             for annotation in timeline.all_spans() {
-                if annotation.range.end > timeline.duration {
+                if annotation.range.end_ms > timeline.duration {
                     return Err(AudioValidationError::AnnotationOutOfBounds {
                         channel: *channel,
                         annotation_id: annotation.id.clone(),
-                        end: annotation.range.end,
+                        end: annotation.range.end_ms,
                         duration: timeline.duration,
                     });
                 }
@@ -571,12 +570,12 @@ impl AudioStream {
         let id = audio_id.into();
         let mut timelines = BTreeMap::new();
         if info.channels == 1 {
-            timelines.insert(AudioChannel::Mono, Timeline::new(id.clone(), DurationMs(0)));
+            timelines.insert(AudioChannel::Mono, Timeline::new(id.clone(), 0));
         } else {
             for index in 0..info.channels {
                 timelines.insert(
                     AudioChannel::from_index(index),
-                    Timeline::new(id.clone(), DurationMs(0)),
+                    Timeline::new(id.clone(), 0),
                 );
             }
         }
@@ -714,7 +713,7 @@ impl Iterator for AudioStream {
             .offset_ms
             .saturating_add(chunk.duration_ms().ceil() as u64);
         for timeline in self.timelines.values_mut() {
-            timeline.extend_to(DurationMs(self.position_ms));
+            timeline.extend_to(self.position_ms as usize);
         }
         if chunk.is_final {
             self.complete = true;
@@ -743,8 +742,8 @@ pub enum AudioValidationError {
     #[error("timeline {channel:?} duration mismatch: expected {expected:?}, found {found:?}")]
     TimelineDurationMismatch {
         channel: AudioChannel,
-        expected: DurationMs,
-        found: DurationMs,
+        expected: usize,
+        found: usize,
     },
     #[error(
         "annotation {annotation_id:?} on {channel:?} ends at {end:?}, past audio duration {duration:?}"
@@ -752,8 +751,8 @@ pub enum AudioValidationError {
     AnnotationOutOfBounds {
         channel: AudioChannel,
         annotation_id: String,
-        end: DurationMs,
-        duration: DurationMs,
+        end: usize,
+        duration: usize,
     },
     #[error("reference annotation {annotation_id:?} on {channel:?} must not have a source")]
     ReferenceAnnotationHasSource {
@@ -787,10 +786,7 @@ pub enum AudioTimelineError {
     #[error("duration is required when creating the first timeline")]
     MissingDuration,
     #[error("timeline duration mismatch: expected {expected:?}, found {found:?}")]
-    DurationMismatch {
-        expected: DurationMs,
-        found: DurationMs,
-    },
+    DurationMismatch { expected: usize, found: usize },
 }
 
 /// 拒绝把 0/1 声道写成 [`AudioChannel::Channel`]，必须用 `Left` / `Right`。

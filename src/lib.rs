@@ -34,4 +34,4 @@ pub use timeline::{
     TimelineSpanError, Token, Transcript, Transcription, TranscriptionEvaluation,
     TranscriptionNormalization,
 };
-pub use utils::{DurationMs, SampleIndex, TimeRange};
+pub use utils::TimeRange;

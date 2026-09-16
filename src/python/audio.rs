@@ -7,7 +7,6 @@ use crate::audio::{
     AudioFormat as RustAudioFormat, AudioInfo as RustAudioInfo, AudioSource as RustAudioSource,
     Waveform as RustWaveform,
 };
-use crate::utils::DurationMs;
 use numpy::{IntoPyArray, PyArray1, PyArrayMethods, ndarray::ArrayView1};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -623,7 +622,7 @@ impl PyWaveform {
     ///     3
     fn split_at_low_energy(&self, py: Python<'_>, max_duration_ms: u64) -> PyResult<Vec<Self>> {
         self.materialize(py)?
-            .split_at_low_energy(DurationMs(max_duration_ms))
+            .split_at_low_energy(max_duration_ms as usize)
             .map(|chunks| chunks.into_iter().map(Self::from_rust).collect())
             .map_err(py_error)
     }
@@ -1613,7 +1612,7 @@ impl PyAudioStream {
                 .samples
                 .extend_from_slice(&inner.samples);
             for timeline in audio.timelines.values_mut() {
-                timeline.extend_to(DurationMs(self.position_ms));
+                timeline.extend_to(self.position_ms as usize);
             }
         }
         if inner.is_final {

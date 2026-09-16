@@ -7,7 +7,7 @@ use crate::timeline::{
     Transcript as RustTranscript, Transcription as RustTranscription,
     TranscriptionEvaluation as RustTranscriptionEvaluation, TranscriptionNormalization,
 };
-use crate::utils::{DurationMs, TimeRange};
+use crate::utils::TimeRange;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
@@ -45,14 +45,14 @@ impl PyTimeSpan {
 
     /// 起始时间，单位为毫秒，包含该位置。
     #[getter]
-    fn start_ms(&self) -> PyResult<u64> {
-        Ok(self.snapshot()?.range.start.0)
+    fn start_ms(&self) -> PyResult<usize> {
+        Ok(self.snapshot()?.range.start_ms)
     }
 
     /// 结束时间，单位为毫秒，不包含该位置。
     #[getter]
-    fn end_ms(&self) -> PyResult<u64> {
-        Ok(self.snapshot()?.range.end.0)
+    fn end_ms(&self) -> PyResult<usize> {
+        Ok(self.snapshot()?.range.end_ms)
     }
 
     /// Prediction 来源；reference 始终为 None。
@@ -107,7 +107,8 @@ impl PyTimeSpan {
                     .extract::<PyRef<'_, PyToken>>()
                     .map_err(|_| PyValueError::new_err("a token annotation must be Token"))?;
                 if let Some(range) = token.inner.range
-                    && (range.start < annotation_range.start || range.end > annotation_range.end)
+                    && (range.start_ms < annotation_range.start_ms
+                        || range.end_ms > annotation_range.end_ms)
                 {
                     return Err(PyValueError::new_err(
                         "token range must be within the token annotation range",
@@ -173,7 +174,7 @@ impl PyTimeSpan {
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
         let waveform = audio
             .waveform_for_channel(self.channel)
-            .map(|waveform| waveform.slice_ms(span.range.start.0, span.range.end.0))
+            .map(|waveform| waveform.slice_ms(span.range.start_ms as u64, span.range.end_ms as u64))
             .map_err(py_error)?;
         Ok(PyWaveform::from_rust(waveform))
     }
@@ -212,7 +213,7 @@ impl PyTimeSpan {
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
         let waveform = audio
             .waveform_for_channel(self.channel)
-            .map(|waveform| waveform.slice_ms(span.range.start.0, span.range.end.0))
+            .map(|waveform| waveform.slice_ms(span.range.start_ms as u64, span.range.end_ms as u64))
             .map_err(py_error)?;
         display_rust_waveform(py, waveform, start_ms, end_ms, autoplay)
     }
@@ -263,8 +264,8 @@ impl PyTimeSpan {
             "TimeSpan(id={:?}, annotation={}, range={}..{}ms{event}{speaker}{text}{confidence})",
             truncate(&annotation.id, 20),
             annotation_kind(&annotation.annotation),
-            annotation.range.start.0,
-            annotation.range.end.0,
+            annotation.range.start_ms,
+            annotation.range.end_ms,
         ))
     }
 
@@ -283,8 +284,8 @@ impl PyTimeSpan {
         Ok(format!(
             "{} [{}..{}ms]{text}",
             annotation_kind(&annotation.annotation),
-            annotation.range.start.0,
-            annotation.range.end.0
+            annotation.range.start_ms,
+            annotation.range.end_ms
         ))
     }
 }
@@ -336,7 +337,7 @@ fn annotation_from_py(value: &Bound<'_, PyAny>, range: TimeRange) -> PyResult<An
     }
     if let Ok(token) = value.extract::<PyRef<'_, PyToken>>() {
         if let Some(token_range) = token.inner.range
-            && (token_range.start < range.start || token_range.end > range.end)
+            && (token_range.start_ms < range.start_ms || token_range.end_ms > range.end_ms)
         {
             return Err(PyValueError::new_err(
                 "token range must be within the time span",
@@ -366,7 +367,8 @@ fn validate_transcription_range(
 ) -> PyResult<()> {
     for token in &transcription.tokens {
         if let Some(range) = token.range
-            && (range.start < annotation_range.start || range.end > annotation_range.end)
+            && (range.start_ms < annotation_range.start_ms
+                || range.end_ms > annotation_range.end_ms)
         {
             return Err(PyValueError::new_err(format!(
                 "token range must be within the {annotation_kind} range"
@@ -815,9 +817,9 @@ impl PyTimeline {
 
     /// Timeline 总时长，单位为毫秒。
     #[getter]
-    fn duration_ms(&self) -> PyResult<u64> {
+    fn duration_ms(&self) -> PyResult<usize> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
-        Ok(self.selected(&audio)?.duration.0)
+        Ok(self.selected(&audio)?.duration_ms())
     }
 
     /// 返回当前声道的完整波形。
@@ -983,7 +985,7 @@ impl PyTimeline {
             validate_source(source)?;
             SpanGroup::Prediction
         };
-        let range = TimeRange::new(DurationMs(start_ms), DurationMs(end_ms));
+        let range = TimeRange::new(start_ms as usize, end_ms as usize);
         SpanCollectionCore::new(self, group).annotate_span_inner(
             start_ms,
             end_ms,
@@ -1076,7 +1078,7 @@ impl PyTimeline {
     fn __repr__(&self) -> PyResult<String> {
         let audio = self.audio.read().map_err(|_| poisoned("audio"))?;
         let timeline = self.selected(&audio)?;
-        let duration = format!("{:?}", format_duration_ms(timeline.duration.0 as f64));
+        let duration = format!("{:?}", format_duration_ms(timeline.duration as f64));
         Ok(format!(
             "Timeline(id={:?}, audio_id={:?}, duration={}, reference={}, prediction={})",
             truncate(&timeline.id, 24),
@@ -1207,16 +1209,16 @@ impl SpanCollectionCore {
         }
         let mut audio = self.audio.write().map_err(|_| poisoned("audio"))?;
         let timeline = self.selected_mut(&mut audio)?;
-        if end_ms > timeline.duration.0 {
+        if end_ms > timeline.duration_ms() as u64 {
             return Err(PyValueError::new_err(format!(
                 "annotation end_ms ({end_ms}) must not exceed timeline duration_ms ({})",
-                timeline.duration.0
+                timeline.duration_ms()
             )));
         }
         let annotation_id = timeline
             .annotate_span_with(
-                start_ms,
-                end_ms,
+                start_ms as usize,
+                end_ms as usize,
                 annotation,
                 matches!(self.group, SpanGroup::Reference),
                 source,

@@ -438,7 +438,7 @@ impl Timeline {
                 prediction_source: source.to_owned(),
             });
         }
-        let overall = interval_counts(&reference, &prediction, self.duration.0);
+        let overall = interval_counts(&reference, &prediction, self.duration as u64);
         let reference_events = activity_events(self.reference.iter());
         let prediction_events = activity_events(self.predictions_by_source(source));
         let unknown_reference = merged_unknown_activity_ranges(self.reference.iter());
@@ -460,7 +460,7 @@ impl Timeline {
                     &reference,
                     &prediction,
                     &unknown_reference,
-                    self.duration.0,
+                    self.duration as u64,
                 );
                 (
                     event.clone(),
@@ -595,15 +595,15 @@ fn merged_activity_ranges<'a>(
             }
             _ => None,
         })
-        .filter(|range| range.end > range.start)
+        .filter(|range| range.end_ms > range.start_ms)
         .collect::<Vec<_>>();
-    ranges.sort_by_key(|range| (range.start, range.end));
+    ranges.sort_by_key(|range| (range.start_ms, range.end_ms));
     let mut merged: Vec<TimeRange> = Vec::new();
     for range in ranges {
         if let Some(previous) = merged.last_mut()
-            && range.start <= previous.end
+            && range.start_ms <= previous.end_ms
         {
-            previous.end = previous.end.max(range.end);
+            previous.end_ms = previous.end_ms.max(range.end_ms);
         } else {
             merged.push(range);
         }
@@ -645,14 +645,14 @@ fn activity_events<'a>(annotations: impl Iterator<Item = &'a TimeSpan>) -> BTree
 
 /// 把相交或相邻的区间合并。
 fn merge_ranges(ranges: &mut Vec<TimeRange>) -> Vec<TimeRange> {
-    ranges.retain(|range| range.end > range.start);
-    ranges.sort_by_key(|range| (range.start, range.end));
+    ranges.retain(|range| range.end_ms > range.start_ms);
+    ranges.sort_by_key(|range| (range.start_ms, range.end_ms));
     let mut merged: Vec<TimeRange> = Vec::new();
     for range in ranges.drain(..) {
         if let Some(previous) = merged.last_mut()
-            && range.start <= previous.end
+            && range.start_ms <= previous.end_ms
         {
-            previous.end = previous.end.max(range.end);
+            previous.end_ms = previous.end_ms.max(range.end_ms);
         } else {
             merged.push(range);
         }
@@ -722,11 +722,17 @@ fn subtract_ranges(ranges: &[TimeRange], masks: &[TimeRange]) -> Vec<TimeRange> 
                     next.push(fragment);
                     continue;
                 }
-                if fragment.start < mask.start {
-                    next.push(TimeRange::new(fragment.start, fragment.end.min(mask.start)));
+                if fragment.start_ms < mask.start_ms {
+                    next.push(TimeRange::new(
+                        fragment.start_ms,
+                        fragment.end_ms.min(mask.start_ms),
+                    ));
                 }
-                if mask.end < fragment.end {
-                    next.push(TimeRange::new(fragment.start.max(mask.end), fragment.end));
+                if mask.end_ms < fragment.end_ms {
+                    next.push(TimeRange::new(
+                        fragment.start_ms.max(mask.end_ms),
+                        fragment.end_ms,
+                    ));
                 }
             }
             fragments = next;
@@ -743,7 +749,7 @@ fn subtract_ranges(ranges: &[TimeRange], masks: &[TimeRange]) -> Vec<TimeRange> 
 fn ranges_duration(ranges: &[TimeRange]) -> u64 {
     ranges
         .iter()
-        .map(|range| range.end.0.saturating_sub(range.start.0))
+        .map(|range| range.end_ms.saturating_sub(range.start_ms) as u64)
         .sum()
 }
 
@@ -753,10 +759,10 @@ fn intersection_duration(left: &[TimeRange], right: &[TimeRange]) -> u64 {
     let mut right_index = 0;
     let mut duration = 0u64;
     while left_index < left.len() && right_index < right.len() {
-        let start = left[left_index].start.max(right[right_index].start);
-        let end = left[left_index].end.min(right[right_index].end);
-        duration += end.0.saturating_sub(start.0);
-        if left[left_index].end <= right[right_index].end {
+        let start = left[left_index].start_ms.max(right[right_index].start_ms);
+        let end = left[left_index].end_ms.min(right[right_index].end_ms);
+        duration += end.saturating_sub(start) as u64;
+        if left[left_index].end_ms <= right[right_index].end_ms {
             left_index += 1;
         } else {
             right_index += 1;
