@@ -16,14 +16,14 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
-modelhub = "=0.1.1"
+modelhub = { version = "=0.1.1", optional = true }
 numpy = { version = "0.27", optional = true }
 pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
 pythonize = { version = "0.27", optional = true }
 reqwest = { version = "0.13", features = ["blocking", "rustls"], default-features = false }
-rmp-serde = "1"
-rustfst = "1"
-rusqlite = { version = "0.38", features = ["bundled"] }
+rmp-serde = { version = "1", optional = true }
+rustfst = { version = "1", optional = true }
+rusqlite = { version = "0.38", features = ["bundled"], optional = true }
 rubato = "3"
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
@@ -31,14 +31,41 @@ serde_json = "1"
 symphonia = { version = "0.6", features = ["all-codecs", "all-formats"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
-unicode-general-category = "1.1.0"
+unicode-general-category = { version = "1.1.0", optional = true }
 unicode-width = "0.2.2"
 urlencoding = "2"
 uuid = { version = "1", features = ["v4"] }
 
 [features]
-default = []
-python-bindings = ["dep:numpy", "dep:pyo3", "dep:pythonize"]
+default = ["db", "metrics", "dataset"]
+db = ["dep:rusqlite", "dep:rmp-serde"]
+metrics = ["dep:rustfst", "dep:unicode-general-category"]
+dataset = ["db", "dep:modelhub"]
+python-bindings = ["db", "metrics", "dataset", "dep:numpy", "dep:pyo3", "dep:pythonize"]
+
+[[test]]
+name = "data_behaviour"
+required-features = ["db"]
+
+[[test]]
+name = "db_timestamps"
+required-features = ["db"]
+
+[[test]]
+name = "metrics"
+required-features = ["metrics"]
+
+[[test]]
+name = "timeline_evaluation"
+required-features = ["metrics"]
+
+[[test]]
+name = "dataset_evaluation"
+required-features = ["db", "metrics", "dataset"]
+
+[[test]]
+name = "public_api"
+required-features = ["db", "metrics", "dataset"]
 
 [lints.rust]
 unsafe_code = "deny"

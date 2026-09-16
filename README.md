@@ -36,6 +36,12 @@ pip install asr-data
 cargo add asr-data
 ```
 
+默认开启 SQLite、评测指标和 ModelScope 数据集。只要波形和时间轴时：
+
+```toml
+asr-data = { version = "0.1.1", default-features = false }
+```
+
 ## 文档
 
 完整的使用指南、API 参考、数据模型、评测说明和示例请查看在线文档：

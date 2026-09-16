@@ -2,6 +2,7 @@
 
 mod annotation;
 mod data;
+#[cfg(feature = "metrics")]
 mod evaluation;
 mod segment;
 
@@ -10,7 +11,9 @@ pub use annotation::{
     TimelineId, Token, Transcription,
 };
 pub use data::{TimeSpanConflictKind, TimeSpanOverlap, Timeline, TimelineSpanError};
+#[cfg(all(feature = "db", feature = "metrics"))]
 pub(crate) use evaluation::normalize_transcription_text;
+#[cfg(feature = "metrics")]
 pub use evaluation::{
     ActivityEvaluation, ActivityEventEvaluation, TimelineEvalConfig, TimelineEvalError,
     TimelineEvaluation, TranscriptionEvaluation, TranscriptionNormalization,
