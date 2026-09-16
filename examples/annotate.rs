@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
         .into_iter()
         .enumerate()
         .map(|(index, character)| {
-            Token::new(character.to_string()).with_range(
+            Token::new(character).with_range(
                 duration_ms * index / token_count,
                 duration_ms * (index + 1) / token_count,
             )
