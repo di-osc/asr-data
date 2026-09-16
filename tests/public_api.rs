@@ -8,10 +8,10 @@ use asr_data::{
     CerStats, ChineseTextNormalizationOptions, DEFAULT_QUERY_LIMIT, DatasetActivityEvaluation,
     DatasetActivityEventEvaluation, DatasetEvalError, DatasetEvaluation, DatasetEvaluator,
     DatasetSpeakerEvaluation, DatasetTranscriptionEvaluation, MAX_QUERY_LIMIT, Sentence, Speaker,
-    TextNormalizationError, TimeRange, TimeSpan, Timeline, TimelineEvalConfig, TimelineEvalError,
-    TimelineEvaluation, Token, Transcript, Transcription, TranscriptionEvaluation,
-    TranscriptionNormalization, Waveform, compute_cer, evaluate_dataset, normalize_for_cer,
-    normalize_zh, normalize_zh_with_options, read_audio_db_info,
+    StreamingResampler, TextNormalizationError, TimeRange, TimeSpan, Timeline, TimelineEvalConfig,
+    TimelineEvalError, TimelineEvaluation, Token, Transcript, Transcription,
+    TranscriptionEvaluation, TranscriptionNormalization, Waveform, compute_cer, evaluate_dataset,
+    normalize_for_cer, normalize_zh, normalize_zh_with_options, read_audio_db_info,
 };
 
 #[test]
@@ -24,6 +24,7 @@ fn stable_public_paths_compile() {
     let _: Option<AudioChunk> = None;
     let _: Option<Audio> = None;
     let _: Option<AudioStream> = None;
+    let _: Option<StreamingResampler> = None;
     let _: Option<TimeSpan> = None;
     let _: Option<Annotation> = None;
     let _: Option<AudioChannel> = None;

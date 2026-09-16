@@ -14,7 +14,7 @@ use rubato::{
     WindowFunction,
 };
 
-use super::{AudioChunk, AudioFormat, AudioSource};
+use super::{AudioChunk, AudioFormat, AudioInfo, AudioSource};
 
 /// 把两种源格式 PCM 拉取路径合成一个 iterator。
 ///
@@ -47,7 +47,7 @@ impl Iterator for RawAudioStream {
 /// `rubato::Async` 需要固定大小的输入窗，并且开头有输出延迟。本类型把不足一块的
 /// 样本缓存在 `input` 里，丢掉延迟帧，并在最后一个输入块上冲刷尾巴，使输出帧数
 /// 对齐 `ceil(input_frames * to_hz / from_hz)`。
-struct StreamingResampler {
+pub struct StreamingResampler {
     /// rubato 异步 sinc 重采样器，按固定输入帧数工作。
     inner: Async<f32>,
     /// 交错样本的声道数。
@@ -97,7 +97,7 @@ impl StreamingResampler {
     /// # Errors
     ///
     /// rubato 无法按给定参数创建重采样器时返回错误。
-    fn new(from_hz: u32, to_hz: u32, channels: u16) -> Result<Self> {
+    pub fn new(from_hz: u32, to_hz: u32, channels: u16) -> Result<Self> {
         let params = SincInterpolationParameters {
             sinc_len: 256,
             f_cutoff: 0.95,
@@ -127,6 +127,11 @@ impl StreamingResampler {
         })
     }
 
+    /// 交错 PCM 的声道数。
+    pub fn channels(&self) -> u16 {
+        u16::try_from(self.channels).unwrap_or(u16::MAX)
+    }
+
     /// 处理一段交错输入，返回本次可以交出的输出样本。
     ///
     /// 输入先进入 `self.input`；凑够 rubato 当前要求的帧数才真正调用一次
@@ -136,7 +141,12 @@ impl StreamingResampler {
     /// # Errors
     ///
     /// 单次重采样失败时返回错误。
-    fn process(&mut self, samples: &[f32], frames: usize, final_chunk: bool) -> Result<Vec<f32>> {
+    pub fn process(
+        &mut self,
+        samples: &[f32],
+        frames: usize,
+        final_chunk: bool,
+    ) -> Result<Vec<f32>> {
         self.total_input_frames = self.total_input_frames.saturating_add(frames);
         self.input.extend(samples.iter().copied());
         let mut output = Vec::new();
@@ -210,6 +220,37 @@ impl StreamingResampler {
         }
         Ok(output_samples)
     }
+}
+
+/// 按流式变换调整 probe 得到的 [`AudioInfo`]（输出采样率 / 声道数 / 估算帧数）。
+///
+/// `source_format` 保持探测结果，表示解码前的源格式。
+///
+/// # Errors
+///
+/// 目标采样率为 0 时返回错误。
+pub(crate) fn stream_output_info(
+    mut info: AudioInfo,
+    sample_rate: Option<u32>,
+    mono: Option<bool>,
+) -> Result<AudioInfo> {
+    if sample_rate == Some(0) {
+        bail!("sample rate must be greater than zero");
+    }
+    if mono == Some(true) {
+        info.channels = 1;
+    }
+    if let Some(target) = sample_rate
+        && target != info.sample_rate
+    {
+        if info.sample_rate == 0 {
+            bail!("sample rate must be greater than zero");
+        }
+        info.frame_count = (u128::from(info.frame_count) * u128::from(target))
+            .div_ceil(u128::from(info.sample_rate)) as u64;
+        info.sample_rate = target;
+    }
+    Ok(info)
 }
 
 /// [`crate::doc::AudioStream`] 使用的按需 PCM 生产器。

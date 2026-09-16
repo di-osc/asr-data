@@ -21,6 +21,7 @@ from asr_data import (
     AudioDataset,
     Audio,
     AudioSource,
+    StreamingResampler,
     Waveform,
 )
 from asr_data.annotation import (
@@ -751,6 +752,31 @@ def test_audio_stream_lifecycle_growing_timeline_and_conversion():
         "to_global_span",
     ):
         assert not hasattr(first, name)
+
+
+def test_audio_stream_can_resample_without_downmix():
+    # 8 kHz stereo 250 ms → 16 kHz stereo, still two named channels.
+    stream = AudioSource.from_pcm(b"\0\0" * 4000, sample_rate=8000, channels=2).stream(
+        chunk_size_ms=250,
+        sample_rate=16000,
+    )
+    assert "left" in stream.timelines
+    assert "right" in stream.timelines
+    assert "mono" not in stream.timelines
+    chunks = list(stream)
+    assert chunks
+    assert all(chunk.sample_rate == 16000 for chunk in chunks)
+    assert all(chunk.channels == 2 for chunk in chunks)
+    assert stream.as_waveform().sample_rate == 16000
+    assert stream.as_waveform().channels == 2
+
+
+def test_streaming_resampler_can_flush_across_chunks():
+    # 8 kHz 静音分成两块，最后一块冲刷后应对齐 16 kHz 帧数。
+    resampler = StreamingResampler(8000, 16000)
+    first = resampler.process([0.0] * 4000, is_final=False)
+    rest = resampler.process([0.0] * 4000, is_final=True)
+    assert len(first) + len(rest) == 16000
 
 
 def test_audio_stream_close_prevents_conversion():
@@ -1967,6 +1993,22 @@ def test_audio_and_audio_stream_convenience_factories(tmp_path):
     assert "╭─ Audio " not in rendered_file
     assert "WAV  ·  8 kHz  ·  Mono  ·  0.001 s" in rendered_file
     assert str(wav_path)[:40] in rendered_file
+
+
+def test_from_path_accepts_str_and_pathlib_path(tmp_path):
+    wav_path = tmp_path / "audio.wav"
+    with wave.open(str(wav_path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(8000)
+        writer.writeframes(struct.pack("<h", 0) * 80)
+
+    from_path = Audio.from_path(wav_path)
+    from_str = Audio.from_path(str(wav_path))
+    assert from_path.as_waveform().frame_count == from_str.as_waveform().frame_count
+    assert AudioSource.from_path(wav_path).path == str(wav_path)
+    stream = asr_data.AudioStream.from_path(wav_path, 100)
+    assert list(stream)
 
 
 def test_timeline_has_one_annotation_write_api():

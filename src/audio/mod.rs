@@ -8,6 +8,8 @@ pub(crate) mod chunk;
 pub mod decode;
 mod source;
 pub(crate) mod stream;
+pub use stream::StreamingResampler;
+pub(crate) use stream::stream_output_info;
 pub(crate) mod waveform;
 pub use chunk::AudioChunk;
 pub use source::{AudioChannel, AudioEncoding, AudioFormat, AudioInfo, AudioSource};

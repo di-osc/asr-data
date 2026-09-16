@@ -18,6 +18,7 @@ from ._native import DatasetSpeakerEvaluation as DatasetSpeakerEvaluation
 from ._native import DatasetTranscriptionEvaluation as DatasetTranscriptionEvaluation
 from ._native import PredictionSpans as PredictionSpans
 from ._native import ReferenceSpans as ReferenceSpans
+from ._native import StreamingResampler as StreamingResampler
 from ._native import TimeSpan as TimeSpan
 from ._native import Timeline as Timeline
 from ._native import TimelineEvaluation as TimelineEvaluation

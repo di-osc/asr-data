@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::audio::{
     AudioChannel, AudioChunk, AudioEncoding, AudioFormat, AudioInfo, AudioSource, Waveform,
 };
-use crate::timeline::{Timeline, TimelineSpanError};
+use crate::timeline::{TimeSpan, Timeline, TimelineSpanError};
 
 /// An audio source together with all annotations and per-audio metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -254,6 +254,31 @@ impl Audio {
     /// 解码失败时返回错误。
     pub fn as_waveform(&mut self) -> anyhow::Result<Waveform> {
         Ok(self.ensure_waveform()?.clone())
+    }
+
+    /// 按已有 timeline 声道分别取出波形，把检测结果写成 prediction activity。
+    ///
+    /// 每个声道单独调用 `detect`，不把多声道平均成单声道。`detect` 返回的 span 必须带
+    /// 非空 `source`，写入对应 timeline 的 prediction。
+    ///
+    /// # Errors
+    ///
+    /// 解码失败、缺少 timeline，或写入 span 违反 source / 重叠约束时返回错误。
+    pub fn annotate_activity<F>(&mut self, mut detect: F) -> anyhow::Result<()>
+    where
+        F: FnMut(AudioChannel, &Waveform) -> anyhow::Result<Vec<TimeSpan>>,
+    {
+        let channels = self.timelines.keys().copied().collect::<Vec<_>>();
+        for channel in channels {
+            let waveform = self.waveform_for_channel(channel)?;
+            let spans = detect(channel, &waveform)?;
+            let audio_id = self.id.clone();
+            let timeline = self.timeline_mut(channel)?.ok_or_else(|| {
+                anyhow::anyhow!("audio {audio_id} is missing timeline for {channel:?}")
+            })?;
+            write_prediction_spans(timeline, spans)?;
+        }
+        Ok(())
     }
 
     /// 抽出指定声道的波形；尚未解码时会先加载。
@@ -509,6 +534,24 @@ impl AudioStream {
         AudioSource::from_path(path.as_ref().to_path_buf()).stream(chunk_size_ms)
     }
 
+    /// 从本地文件创建流，并可指定输出采样率或转单声道。
+    ///
+    /// # Errors
+    ///
+    /// 探测失败、目标采样率为 0，或 `chunk_size_ms` 为 0 时返回错误。
+    pub fn from_path_with(
+        path: impl AsRef<Path>,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> anyhow::Result<Self> {
+        AudioSource::from_path(path.as_ref().to_path_buf()).stream_with(
+            chunk_size_ms,
+            sample_rate,
+            mono,
+        )
+    }
+
     /// 从 URL 创建流。
     ///
     /// # Errors
@@ -516,6 +559,20 @@ impl AudioStream {
     /// 下载、探测失败或 `chunk_size_ms` 为 0 时返回错误。
     pub fn from_url(url: impl Into<String>, chunk_size_ms: u64) -> anyhow::Result<Self> {
         AudioSource::from_url(url).stream(chunk_size_ms)
+    }
+
+    /// 从 URL 创建流，并可指定输出采样率或转单声道。
+    ///
+    /// # Errors
+    ///
+    /// 下载、探测失败、目标采样率为 0，或 `chunk_size_ms` 为 0 时返回错误。
+    pub fn from_url_with(
+        url: impl Into<String>,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> anyhow::Result<Self> {
+        AudioSource::from_url(url).stream_with(chunk_size_ms, sample_rate, mono)
     }
 
     /// 从带容器的编码字节创建流。
@@ -553,10 +610,30 @@ impl AudioStream {
         AudioSource::from_pcm_s16le(bytes, sample_rate, channels).stream(chunk_size_ms)
     }
 
-    /// 用已探测的 [`AudioInfo`] 构造流：timeline 从 0 时长开始增长。
+    /// 从 PCM S16LE 字节创建流，并可指定输出采样率或转单声道。
     ///
-    /// `chunks` 字段被初始化为源格式 PCM 生产器；`sample_rate` / `mono` 变换
-    /// 由 Python 绑定在另一条路径上注入，Rust 公开构造保持源格式。
+    /// # Errors
+    ///
+    /// PCM 无法对齐、目标采样率为 0，或 `chunk_size_ms` 为 0 时返回错误。
+    pub fn from_pcm_s16le_with(
+        bytes: impl Into<Vec<u8>>,
+        sample_rate: u32,
+        channels: u16,
+        chunk_size_ms: u64,
+        output_sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> anyhow::Result<Self> {
+        AudioSource::from_pcm_s16le(bytes, sample_rate, channels).stream_with(
+            chunk_size_ms,
+            output_sample_rate,
+            mono,
+        )
+    }
+
+    /// 用已探测并变换后的 [`AudioInfo`] 构造流：timeline 从 0 时长开始增长。
+    ///
+    /// `info` 必须是输出格式（含目标采样率和声道）。`sample_rate` / `mono` 传给
+    /// 上游 PCM 生产器做有状态重采样 / 转单声道。
     ///
     /// # Errors
     ///
@@ -566,6 +643,8 @@ impl AudioStream {
         source: AudioSource,
         info: AudioInfo,
         chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
     ) -> anyhow::Result<Self> {
         let id = audio_id.into();
         let mut timelines = BTreeMap::new();
@@ -585,8 +664,8 @@ impl AudioStream {
         let chunks = crate::audio::stream::SourceAudioStream::new(
             source.clone(),
             chunk_size_ms,
-            None,
-            None,
+            sample_rate,
+            mono,
         )?;
         Ok(Self {
             id,
@@ -623,6 +702,59 @@ impl AudioStream {
     ) -> Result<Option<&mut Timeline>, AudioChannelError> {
         validate_channel(channel)?;
         Ok(self.timelines.get_mut(&channel))
+    }
+
+    /// 消费尚未读取的 chunk，按声道调用 `detect`，把返回的 span 写入 prediction。
+    ///
+    /// 每次 `detect` 收到的是**本块**该声道波形，不是累计波形。`is_final` 在来源
+    /// 最后一块为 `true`，有状态检测器应在此时 flush。
+    ///
+    /// 需要在块与块之间使用中间结果时，请自行 `next` 再调用
+    /// [`Self::annotate_activity_chunk`]。
+    ///
+    /// # Errors
+    ///
+    /// 解码、声道抽取或写入 span 失败时返回错误。
+    pub fn annotate_activity<F>(&mut self, mut detect: F) -> anyhow::Result<()>
+    where
+        F: FnMut(AudioChannel, &Waveform, bool) -> anyhow::Result<Vec<TimeSpan>>,
+    {
+        while let Some(chunk) = self.next() {
+            self.annotate_activity_chunk(&chunk?, &mut detect)?;
+        }
+        Ok(())
+    }
+
+    /// 用已经拉下来的一块音频做 activity 标注，不继续消费后续 chunk。
+    ///
+    /// 调用方应先 [`Iterator::next`] 得到 `chunk`，再把中间结果和后续逻辑穿插
+    /// 在各块之间。每次 `detect` 收到的是**本块**该声道波形；最后一块
+    /// `is_final` 为真。
+    ///
+    /// # Errors
+    ///
+    /// 声道抽取或写入 span 失败时返回错误。
+    pub fn annotate_activity_chunk<F>(
+        &mut self,
+        chunk: &AudioChunk,
+        mut detect: F,
+    ) -> anyhow::Result<Vec<TimeSpan>>
+    where
+        F: FnMut(AudioChannel, &Waveform, bool) -> anyhow::Result<Vec<TimeSpan>>,
+    {
+        let channels = self.timelines.keys().copied().collect::<Vec<_>>();
+        let mut written = Vec::new();
+        for channel in channels {
+            let waveform = channel_chunk_waveform(chunk, channel)?;
+            let spans = detect(channel, &waveform, chunk.is_final)?;
+            let audio_id = self.id.clone();
+            let timeline = self.timeline_mut(channel)?.ok_or_else(|| {
+                anyhow::anyhow!("audio {audio_id} is missing timeline for {channel:?}")
+            })?;
+            write_prediction_spans(timeline, spans.clone())?;
+            written.extend(spans);
+        }
+        Ok(written)
     }
 
     /// 返回当前全部 timeline，时长等于已经迭代到的位置。
@@ -717,6 +849,9 @@ impl Iterator for AudioStream {
         }
         if chunk.is_final {
             self.complete = true;
+            self.info.sample_rate = self.waveform.sample_rate;
+            self.info.channels = self.waveform.channels;
+            self.info.frame_count = self.waveform.frame_count() as u64;
         }
         Some(Ok(chunk))
     }
@@ -795,6 +930,41 @@ fn validate_channel(channel: AudioChannel) -> Result<(), AudioChannelError> {
         AudioChannel::Channel(index @ 0..=1) => Err(AudioChannelError { index }),
         _ => Ok(()),
     }
+}
+
+/// 把检测得到的 activity span 写入 timeline 的 prediction。
+///
+/// # Errors
+///
+/// source 约束不满足或与已有 span 非法重叠时返回错误。
+fn write_prediction_spans(timeline: &mut Timeline, spans: Vec<TimeSpan>) -> anyhow::Result<()> {
+    for span in spans {
+        let source = span.source.clone();
+        timeline.annotate_span_with(
+            span.range.start_ms,
+            span.range.end_ms,
+            span.annotation,
+            false,
+            source.as_deref(),
+        )?;
+    }
+    Ok(())
+}
+
+/// 从交错 chunk 抽出指定声道，变成单声道 [`Waveform`]。
+///
+/// # Errors
+///
+/// 声道不规范或下标越界时返回错误。
+fn channel_chunk_waveform(chunk: &AudioChunk, channel: AudioChannel) -> anyhow::Result<Waveform> {
+    validate_channel(channel)?;
+    let extracted = match channel {
+        AudioChannel::Mono => chunk.to_mono()?,
+        AudioChannel::Left => chunk.channel(0)?,
+        AudioChannel::Right => chunk.channel(1)?,
+        AudioChannel::Channel(index) => chunk.channel(index)?,
+    };
+    Ok(extracted.as_waveform())
 }
 
 /// 生成随机文档 ID：32 位小写 UUID，不含 `audio_` 前缀。

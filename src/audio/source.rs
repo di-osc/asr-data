@@ -246,7 +246,24 @@ impl AudioSource {
     ///
     /// 探测来源或创建流失败时返回错误。
     pub fn stream(&self, chunk_size_ms: u64) -> anyhow::Result<AudioStream> {
-        self.stream_with_id(new_audio_id(), chunk_size_ms)
+        self.stream_with(chunk_size_ms, None, None)
+    }
+
+    /// 创建 [`AudioStream`]，并可在吐块前重采样或转单声道。
+    ///
+    /// `sample_rate` 为 `None` 时保持源采样率。`mono` 为 `Some(true)` 时把多声道
+    /// 平均成单声道；默认保持原声道，便于按声道标注。
+    ///
+    /// # Errors
+    ///
+    /// 探测失败、目标采样率为 0，或 `chunk_size_ms` 无效时返回错误。
+    pub fn stream_with(
+        &self,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> anyhow::Result<AudioStream> {
+        self.open_stream(new_audio_id(), chunk_size_ms, sample_rate, mono)
     }
 
     /// 创建指定 ID 的 [`AudioStream`]。
@@ -261,8 +278,30 @@ impl AudioSource {
         audio_id: impl Into<String>,
         chunk_size_ms: u64,
     ) -> anyhow::Result<AudioStream> {
-        let info = self.probe()?;
-        AudioStream::new(audio_id, self.clone(), info, chunk_size_ms)
+        self.open_stream(audio_id, chunk_size_ms, None, None)
+    }
+
+    /// 探测并构造文档流，把输出格式变换传给 PCM 生产器。
+    ///
+    /// # Errors
+    ///
+    /// 探测失败、目标采样率为 0，或无法创建上游生产器时返回错误。
+    fn open_stream(
+        &self,
+        audio_id: impl Into<String>,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> anyhow::Result<AudioStream> {
+        let info = crate::audio::stream_output_info(self.probe()?, sample_rate, mono)?;
+        AudioStream::new(
+            audio_id,
+            self.clone(),
+            info,
+            chunk_size_ms,
+            sample_rate,
+            mono,
+        )
     }
 
     /// 探测采样率、声道和帧数，不把波形整段读进内存（PCM 除外）。

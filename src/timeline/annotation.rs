@@ -45,6 +45,11 @@ impl AudioActivity {
         self.confidence = Some(confidence);
         self
     }
+
+    /// 把活动标注包成一条带 `source` 的 prediction span。
+    pub fn into_span(self, range: TimeRange, source: impl Into<String>) -> TimeSpan {
+        TimeSpan::new(range, self.into(), Some(source.into()))
+    }
 }
 
 /// 词级转写 token，可带局部时间和置信度。

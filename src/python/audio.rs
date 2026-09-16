@@ -1,11 +1,10 @@
-use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::audio::{
     AudioChunk as RustAudioChunk, AudioEncoding as RustAudioEncoding,
     AudioFormat as RustAudioFormat, AudioInfo as RustAudioInfo, AudioSource as RustAudioSource,
-    Waveform as RustWaveform,
+    StreamingResampler as RustStreamingResampler, Waveform as RustWaveform,
 };
 use numpy::{IntoPyArray, PyArray1, PyArrayMethods, ndarray::ArrayView1};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -14,7 +13,7 @@ use pyo3::types::{PyAny, PyBytes, PyDict};
 
 use super::AsrDataError;
 use super::common::{
-    SharedAudio, audio_channel, encoding_name, format_duration_ms, poisoned, py_error,
+    SharedAudio, audio_channel, encoding_name, format_duration_ms, poisoned, py_error, py_path,
     summarize_url, terminal_view_html, truncate,
 };
 use super::doc::PyAudio;
@@ -274,7 +273,8 @@ impl PyWaveform {
     ///     ...     _ = urlretrieve(url, file.name)
     ///     ...     audio = Waveform.from_path(file.name)
     #[staticmethod]
-    fn from_path(py: Python<'_>, path: PathBuf) -> PyResult<Self> {
+    fn from_path(py: Python<'_>, path: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let path = py_path(path)?;
         py.detach(move || RustWaveform::from_path(path))
             .map(Self::from_rust)
             .map_err(py_error)
@@ -408,8 +408,8 @@ impl PyWaveform {
     }
 
     #[staticmethod]
-    fn _start_aload_from_path(path: PathBuf) -> PyResult<PyAudioLoadTask> {
-        spawn_source_aload(RustAudioSource::from_path(path), None, None)
+    fn _start_aload_from_path(path: &Bound<'_, PyAny>) -> PyResult<PyAudioLoadTask> {
+        spawn_source_aload(RustAudioSource::from_path(py_path(path)?), None, None)
     }
 
     #[staticmethod]
@@ -1174,6 +1174,8 @@ impl PyAudioStream {
     ///     path: 音频文件路径，可以是 `str` 或 `pathlib.Path`。
     ///     chunk_size_ms: 每个 chunk 的目标时长。
     ///     id: 可选的文档 ID。
+    ///     sample_rate: 输出采样率；缺省保持源采样率。
+    ///     mono: 为 True 时把多声道平均成单声道。
     ///
     /// Returns:
     ///     尚未开始迭代的 AudioStream。
@@ -1185,14 +1187,23 @@ impl PyAudioStream {
     /// Examples:
     ///     >>> stream = AudioStream.from_path("audio.wav", 100)
     #[staticmethod]
-    #[pyo3(signature = (path, chunk_size_ms=100, *, id=None))]
+    #[pyo3(signature = (path, chunk_size_ms=100, *, id=None, sample_rate=None, mono=None))]
     fn from_path(
         py: Python<'_>,
-        path: PathBuf,
+        path: &Bound<'_, PyAny>,
         chunk_size_ms: u64,
         id: Option<String>,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
     ) -> PyResult<Self> {
-        create_audio_stream(py, RustAudioSource::from_path(path), id, chunk_size_ms)
+        create_audio_stream(
+            py,
+            RustAudioSource::from_path(py_path(path)?),
+            id,
+            chunk_size_ms,
+            sample_rate,
+            mono,
+        )
     }
 
     /// 从 URL 创建 AudioStream。
@@ -1212,14 +1223,23 @@ impl PyAudioStream {
     /// Examples:
     ///     >>> stream = AudioStream.from_url("https://example.com/audio.wav", 100)
     #[staticmethod]
-    #[pyo3(signature = (url, chunk_size_ms=100, *, id=None))]
+    #[pyo3(signature = (url, chunk_size_ms=100, *, id=None, sample_rate=None, mono=None))]
     fn from_url(
         py: Python<'_>,
         url: String,
         chunk_size_ms: u64,
         id: Option<String>,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
     ) -> PyResult<Self> {
-        create_audio_stream(py, RustAudioSource::from_url(url), id, chunk_size_ms)
+        create_audio_stream(
+            py,
+            RustAudioSource::from_url(url),
+            id,
+            chunk_size_ms,
+            sample_rate,
+            mono,
+        )
     }
 
     /// 从带容器或编码信息的音频字节创建 AudioStream。
@@ -1239,18 +1259,22 @@ impl PyAudioStream {
     /// Examples:
     ///     >>> stream = AudioStream.from_bytes(encoded_audio, 100)
     #[staticmethod]
-    #[pyo3(signature = (data, chunk_size_ms=100, *, id=None))]
+    #[pyo3(signature = (data, chunk_size_ms=100, *, id=None, sample_rate=None, mono=None))]
     fn from_bytes(
         py: Python<'_>,
         data: &Bound<'_, PyBytes>,
         chunk_size_ms: u64,
         id: Option<String>,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
     ) -> PyResult<Self> {
         create_audio_stream(
             py,
             RustAudioSource::from_encoded_bytes(data.as_bytes().to_vec()),
             id,
             chunk_size_ms,
+            sample_rate,
+            mono,
         )
     }
 
@@ -1271,14 +1295,23 @@ impl PyAudioStream {
     /// Examples:
     ///     >>> stream = AudioStream.from_base64(encoded, 100)
     #[staticmethod]
-    #[pyo3(signature = (data, chunk_size_ms=100, *, id=None))]
+    #[pyo3(signature = (data, chunk_size_ms=100, *, id=None, sample_rate=None, mono=None))]
     fn from_base64(
         py: Python<'_>,
         data: String,
         chunk_size_ms: u64,
         id: Option<String>,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
     ) -> PyResult<Self> {
-        create_audio_stream(py, RustAudioSource::from_base64(data), id, chunk_size_ms)
+        create_audio_stream(
+            py,
+            RustAudioSource::from_base64(data),
+            id,
+            chunk_size_ms,
+            sample_rate,
+            mono,
+        )
     }
 
     /// 从 PCM S16LE 字节创建 AudioStream。
@@ -1289,6 +1322,8 @@ impl PyAudioStream {
     ///     channels: 声道数，默认为 1。
     ///     chunk_size_ms: 每个 chunk 的目标时长。
     ///     id: 可选的文档 ID。
+    ///     target_sample_rate: 输出采样率；缺省保持 PCM 声明的采样率。
+    ///     mono: 为 True 时把多声道平均成单声道。
     ///
     /// Returns:
     ///     尚未开始迭代的 AudioStream。
@@ -1300,7 +1335,8 @@ impl PyAudioStream {
     /// Examples:
     ///     >>> stream = AudioStream.from_pcm(b"\0\0" * 16000, 16000)
     #[staticmethod]
-    #[pyo3(signature = (data, sample_rate, channels=1, chunk_size_ms=100, *, id=None))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (data, sample_rate, channels=1, chunk_size_ms=100, *, id=None, target_sample_rate=None, mono=None))]
     fn from_pcm(
         py: Python<'_>,
         data: &Bound<'_, PyBytes>,
@@ -1308,12 +1344,16 @@ impl PyAudioStream {
         channels: u16,
         chunk_size_ms: u64,
         id: Option<String>,
+        target_sample_rate: Option<u32>,
+        mono: Option<bool>,
     ) -> PyResult<Self> {
         create_audio_stream(
             py,
             RustAudioSource::from_pcm_s16le(data.as_bytes().to_vec(), sample_rate, channels),
             id,
             chunk_size_ms,
+            target_sample_rate,
+            mono,
         )
     }
 
@@ -1631,6 +1671,8 @@ fn create_audio_stream(
     source: RustAudioSource,
     id: Option<String>,
     chunk_size_ms: u64,
+    sample_rate: Option<u32>,
+    mono: Option<bool>,
 ) -> PyResult<PyAudioStream> {
     if chunk_size_ms == 0 {
         return Err(PyValueError::new_err(
@@ -1640,15 +1682,15 @@ fn create_audio_stream(
     let source_for_decode = source.clone();
     let (audio, chunks) = py
         .detach(move || {
-            let info = source.probe()?;
+            let info = crate::audio::stream_output_info(source.probe()?, sample_rate, mono)?;
             let audio_id = id.unwrap_or_else(crate::doc::new_audio_id);
             let audio =
                 crate::doc::Audio::with_id_from_stream_info(audio_id, source.clone(), &info)?;
             let chunks = crate::audio::stream::SourceAudioStream::new(
                 source_for_decode,
                 chunk_size_ms,
-                None,
-                None,
+                sample_rate,
+                mono,
             )?;
             Ok::<_, anyhow::Error>((audio, chunks))
         })
@@ -1709,10 +1751,10 @@ impl PyAudioSource {
     ///     >>> AudioSource.from_path("audio.wav").path
     ///     'audio.wav'
     #[staticmethod]
-    fn from_path(path: PathBuf) -> Self {
-        Self {
-            inner: RustAudioSource::from_path(path),
-        }
+    fn from_path(path: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(Self {
+            inner: RustAudioSource::from_path(py_path(path)?),
+        })
     }
 
     /// 从 HTTP 或 HTTPS URL 创建来源。
@@ -1900,12 +1942,14 @@ impl PyAudioSource {
         PyAudio::from_rust(py, audio)
     }
 
-    #[pyo3(signature = (chunk_size_ms=100, *, id=None))]
+    #[pyo3(signature = (chunk_size_ms=100, *, id=None, sample_rate=None, mono=None))]
     /// 创建与 Audio 平级、timeline 会随 chunk 迭代增长的 AudioStream。
     ///
     /// Args:
     ///     chunk_size_ms: 每个 AudioChunk 的目标时长，单位为毫秒。
     ///     id: 可选的文档 ID。
+    ///     sample_rate: 输出采样率；缺省保持源采样率。
+    ///     mono: 为 True 时把多声道平均成单声道。
     ///
     /// Returns:
     ///     可同步或异步迭代的 AudioStream。
@@ -1925,8 +1969,10 @@ impl PyAudioSource {
         py: Python<'_>,
         chunk_size_ms: u64,
         id: Option<String>,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
     ) -> PyResult<PyAudioStream> {
-        create_audio_stream(py, self.inner.clone(), id, chunk_size_ms)
+        create_audio_stream(py, self.inner.clone(), id, chunk_size_ms, sample_rate, mono)
     }
 
     /// 读取格式和时长信息，但不解码为浮点采样。
@@ -1999,6 +2045,100 @@ pub(super) fn py_source_from_rust(py: Python<'_>, source: &RustAudioSource) -> P
     .into_any())
 }
 
+/// 跨块复用的有状态 PCM 重采样器。
+///
+/// 适合流式路径：输入窗和滤波器延迟会跨 `process` 调用保留，
+/// 最后一块把 `is_final=True` 传入以冲刷尾巴。
+///
+/// Args:
+///     from_hz: 输入采样率。
+///     to_hz: 输出采样率。
+///     channels: 交错 PCM 的声道数，默认为 1。
+///
+/// Raises:
+///     AsrDataError: 无法按给定参数创建重采样器。
+///
+/// Examples:
+///     >>> from asr_data import StreamingResampler
+///     >>> resampler = StreamingResampler(8000, 16000)
+///     >>> len(resampler.process([0.0] * 8000, is_final=True))
+///     16000
+#[pyclass(name = "StreamingResampler")]
+struct PyStreamingResampler {
+    inner: Mutex<RustStreamingResampler>,
+}
+
+#[pymethods]
+impl PyStreamingResampler {
+    /// 创建从 `from_hz` 到 `to_hz` 的 sinc 重采样器。
+    ///
+    /// Args:
+    ///     from_hz: 输入采样率。
+    ///     to_hz: 输出采样率。
+    ///     channels: 交错 PCM 的声道数，默认为 1。
+    ///
+    /// Raises:
+    ///     AsrDataError: 无法按给定参数创建重采样器。
+    #[new]
+    #[pyo3(signature = (from_hz, to_hz, channels=1))]
+    fn new(from_hz: u32, to_hz: u32, channels: u16) -> PyResult<Self> {
+        Ok(Self {
+            inner: Mutex::new(
+                RustStreamingResampler::new(from_hz, to_hz, channels).map_err(py_error)?,
+            ),
+        })
+    }
+
+    /// 处理一块交错 PCM，返回本次可以交出的输出样本。
+    ///
+    /// Args:
+    ///     samples: 一维 float32 兼容数组；多声道按帧交错。
+    ///     is_final: 最后一块时为真，冲刷滤波器尾巴。
+    ///
+    /// Returns:
+    ///     本次输出的 float32 样本；可能为空（还在凑输入窗）。
+    ///
+    /// Raises:
+    ///     ValueError: 样本不是一维 C 连续 float32，或不能整除声道数。
+    ///     AsrDataError: 单次重采样失败。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import StreamingResampler
+    ///     >>> resampler = StreamingResampler(8000, 16000)
+    ///     >>> first = resampler.process([0.0] * 4000, is_final=False)
+    ///     >>> rest = resampler.process([0.0] * 4000, is_final=True)
+    ///     >>> len(first) + len(rest)
+    ///     16000
+    #[pyo3(signature = (samples, *, is_final=false))]
+    fn process(&self, samples: &Bound<'_, PyAny>, is_final: bool) -> PyResult<Vec<f32>> {
+        let py = samples.py();
+        let numpy = py.import("numpy")?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dtype", numpy.getattr("float32")?)?;
+        kwargs.set_item("order", "C")?;
+        let array = numpy
+            .getattr("asarray")?
+            .call((samples,), Some(&kwargs))?
+            .cast_into::<PyArray1<f32>>()?;
+        let readonly = array.readonly();
+        let slice = readonly.as_slice().map_err(|_| {
+            PyValueError::new_err("samples must be a one-dimensional C-contiguous float32 array")
+        })?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| poisoned("streaming resampler"))?;
+        let channels = usize::from(inner.channels());
+        if channels == 0 || !slice.len().is_multiple_of(channels) {
+            return Err(PyValueError::new_err(
+                "samples must contain complete audio frames",
+            ));
+        }
+        let frames = slice.len() / channels;
+        inner.process(slice, frames, is_final).map_err(py_error)
+    }
+}
+
 /// 把本模块的 Python 类型和函数注册进 `_native`。
 pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAudioFormat>()?;
@@ -2010,5 +2150,6 @@ pub(super) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyAudioProbeTask>()?;
     module.add_class::<PyAudioStreamTask>()?;
     module.add_class::<PyAudioStream>()?;
+    module.add_class::<PyStreamingResampler>()?;
     Ok(())
 }

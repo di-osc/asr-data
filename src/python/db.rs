@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -10,7 +9,9 @@ use pyo3::exceptions::{PyKeyError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDateTime, PyDict};
 
-use super::common::{format_duration_ms, poisoned, py_db_error, py_error, truncate};
+use super::common::{
+    format_duration_ms, poisoned, py_db_error, py_error, py_path, py_path_opt, truncate,
+};
 use super::doc::PyAudio;
 use super::evaluation::{
     PyDatasetActivityEvaluation, PyDatasetSpeakerEvaluation, PyDatasetTranscriptionEvaluation,
@@ -108,8 +109,9 @@ impl PyAudioDataset {
         py: Python<'_>,
         repo_id: String,
         revision: Option<String>,
-        cache_dir: Option<PathBuf>,
+        cache_dir: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let cache_dir = py_path_opt(cache_dir)?;
         let dataset = py
             .detach(move || {
                 RustAudioDataset::from_modelscope(
@@ -288,7 +290,9 @@ impl PyAudioDb {
     ///     >>> with TemporaryDirectory() as directory:
     ///     ...     db = AudioDB.create(f"{directory}/dataset.db")
     #[staticmethod]
-    fn create(path: String) -> PyResult<Self> {
+    fn create(path: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let path = py_path(path)?;
+        let path = path.to_string_lossy().into_owned();
         let db = RustAudioDb::create(&path);
         Ok(Self {
             inner: Arc::new(Mutex::new(db.map_err(py_db_error)?)),
@@ -319,7 +323,9 @@ impl PyAudioDb {
     ///     ...     db = AudioDB.open(path)
     #[staticmethod]
     #[pyo3(signature = (path, read_only=false))]
-    fn open(path: String, read_only: bool) -> PyResult<Self> {
+    fn open(path: &Bound<'_, PyAny>, read_only: bool) -> PyResult<Self> {
+        let path = py_path(path)?;
+        let path = path.to_string_lossy().into_owned();
         let mode = if read_only {
             AudioDbMode::ReadOnly
         } else {

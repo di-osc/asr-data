@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::audio::{AudioChannel as RustAudioChannel, AudioSource as RustAudioSource};
@@ -13,7 +12,7 @@ use super::audio::{
 };
 use super::common::{
     SharedAudio, audio_channel, audio_channel_name, format_duration_ms, format_source_field,
-    poisoned, py_error, terminal_view_html, truncate,
+    poisoned, py_error, py_path, terminal_view_html, truncate,
 };
 use super::timeline::PyTimeline;
 
@@ -142,7 +141,8 @@ impl PyAudio {
     ///     >>> audio = Audio.from_path("audio.wav", id="sample")
     #[staticmethod]
     #[pyo3(signature = (path, *, id=None))]
-    fn from_path(py: Python<'_>, path: PathBuf, id: Option<String>) -> PyResult<Self> {
+    fn from_path(py: Python<'_>, path: &Bound<'_, PyAny>, id: Option<String>) -> PyResult<Self> {
+        let path = py_path(path)?;
         Self::build(py, RustAudioSource::from_path(path), id)
     }
 

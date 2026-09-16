@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::audio::{
@@ -5,7 +6,7 @@ use crate::audio::{
 };
 use crate::db::AudioDbError as RustAudioDbError;
 use pyo3::exceptions::{
-    PyFileExistsError, PyFileNotFoundError, PyKeyError, PyRuntimeError, PyValueError,
+    PyFileExistsError, PyFileNotFoundError, PyKeyError, PyRuntimeError, PyTypeError, PyValueError,
 };
 use pyo3::prelude::*;
 
@@ -17,6 +18,29 @@ pub(super) type SharedAudio = Arc<RwLock<crate::doc::Audio>>;
 /// 把任意错误转成 Python `AsrDataError`。
 pub(super) fn py_error(error: impl std::fmt::Display) -> PyErr {
     AsrDataError::new_err(error.to_string())
+}
+
+/// 把 Python 的 `str` 或 `os.PathLike` 转成 [`PathBuf`]。
+///
+/// `pathlib.Path` 不是 Python `str`，PyO3 的 [`PathBuf`] 提取器只接受字符串。
+/// 这里走 `os.fspath`，与类型桩里的 `str | PathLike[str]` 对齐。
+pub(super) fn py_path(value: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
+    let fspath = value
+        .py()
+        .import("os")?
+        .getattr("fspath")?
+        .call1((value,))?;
+    if let Ok(path) = fspath.extract::<String>() {
+        return Ok(PathBuf::from(path));
+    }
+    Err(PyTypeError::new_err(
+        "path must be a str or os.PathLike[str] object",
+    ))
+}
+
+/// 可选路径参数的 [`py_path`] 版本。
+pub(super) fn py_path_opt(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<PathBuf>> {
+    value.map(py_path).transpose()
 }
 
 /// 把数据库错误映射成更具体的 Python 异常。

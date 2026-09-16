@@ -16,7 +16,7 @@ mod timeline;
 mod utils;
 
 pub use audio::{AudioChannel, AudioEncoding, AudioFormat, AudioInfo, AudioSource};
-pub use audio::{AudioChunk, AudioError, Waveform};
+pub use audio::{AudioChunk, AudioError, StreamingResampler, Waveform};
 #[cfg(feature = "dataset")]
 pub use dataset::{AudioDataset, AudioDatasetError};
 #[cfg(feature = "db")]

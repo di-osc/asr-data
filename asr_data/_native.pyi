@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import Iterator
 from datetime import datetime
 from os import PathLike
 from typing import Any, Awaitable, Literal
@@ -523,7 +523,7 @@ class AudioChunk:
     @property
     def info(self) -> AudioInfo: ...
     @property
-    def metadata(self) -> dict[str, JsonValue]: ...
+    def metadata(self) -> dict[str, Any]: ...
     @property
     def timelines(self) -> dict[str, Timeline]: ...
     @property
@@ -596,6 +596,47 @@ class AudioChunk:
 
         Examples:
             >>> timeline = chunk.timeline("mono")
+        """
+
+class StreamingResampler:
+    """跨块复用的有状态 PCM 重采样器。
+
+    Args:
+        from_hz: 输入采样率。
+        to_hz: 输出采样率。
+        channels: 交错 PCM 的声道数，默认为 1。
+
+    Raises:
+        AsrDataError: 无法按给定参数创建重采样器。
+
+    Examples:
+        >>> from asr_data import StreamingResampler
+        >>> resampler = StreamingResampler(8000, 16000)
+        >>> len(resampler.process([0.0] * 8000, is_final=True))
+        16000
+    """
+    def __init__(self, from_hz: int, to_hz: int, channels: int = 1) -> None: ...
+    def process(self, samples: npt.ArrayLike, *, is_final: bool = False) -> list[float]:
+        """处理一块交错 PCM，返回本次可以交出的输出样本。
+
+        Args:
+            samples: 一维 float32 兼容数组；多声道按帧交错。
+            is_final: 最后一块时为真，冲刷滤波器尾巴。
+
+        Returns:
+            本次输出的 float32 样本；可能为空（还在凑输入窗）。
+
+        Raises:
+            ValueError: 样本不是一维 C 连续 float32，或不能整除声道数。
+            AsrDataError: 单次重采样失败。
+
+        Examples:
+            >>> from asr_data import StreamingResampler
+            >>> resampler = StreamingResampler(8000, 16000)
+            >>> first = resampler.process([0.0] * 4000, is_final=False)
+            >>> rest = resampler.process([0.0] * 4000, is_final=True)
+            >>> len(first) + len(rest)
+            16000
         """
 
 class AudioStream:
