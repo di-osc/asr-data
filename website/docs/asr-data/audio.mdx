@@ -13,7 +13,7 @@ menu:
 音频处理从 [`AudioSource`](/asr-data/api#audio-source) 开始。它只描述数据来自哪
 里；`load()` 产生完整 [`Audio`](/asr-data/api#audio)，`stream()` 产生与其平级的
 [`AudioStream`](/asr-data/api#audio-stream)。模型通过 Audio、AudioStream、
-Timeline、TimeSpan 或 AudioChunk 的波形视图取得所需样本。
+Timeline 或 AudioChunk 的波形视图取得所需样本。
 
 右侧 Example 按页面顺序连续执行，后面的示例会直接使用前面创建的变量。
 
@@ -171,6 +171,20 @@ AudioSource，也可以直接使用 `Audio.from_path()`、`from_url()`、`from_b
 `duration_ms` 可能包含小数毫秒，这是采样帧数除以采样率的自然结果。只有创建
 timeline 或 annotation 时，才需要按相应 API 的规则转换为毫秒整数。
 
+### 卡片渲染 {id="rendering"}
+
+[`Audio`](/asr-data/api#audio) 和 [`Waveform`](/asr-data/api#waveform) 也可以直接展
+示成卡片：终端里打印 `terminal_view()`，Jupyter 中由 `_repr_html_` 画出 HTML 卡片。
+Rust 通过 `Display`（`println!("{audio}")`）或 `terminal_view()` 输出，Python 则是
+`str(audio)` / `str(waveform)` 和 notebook 的富文本输出。
+
+- 卡片顶部是标题和信息行，依次是编码、采样率、声道、时长和帧数；`Audio` 的卡片另
+  有一行来源，类型标成 `path`、`url`、`base64`、`encoded`、`pcm s16le` 或
+  `modelscope`。
+- 每个声道一张卡片：波形画在时间刻度上方，下面依次是时间文字和标尺。
+- `Audio` 的声道卡片在刻度下继续画 reference / prediction 事件条和转写轨道，写法
+  与 [`Timeline`](/asr-data/api#timeline) 卡片一致。
+
 ## 音频处理 {id="processing"}
 
 `Waveform` 的转换方法不会原地修改已有对象，而是返回新的 `Waveform`。这种设计可以保留原
@@ -222,9 +236,8 @@ timeline 或 annotation 时，才需要按相应 API 的规则转换为毫秒整
 
 Python 中所有能够调用 `as_waveform()` 的对象也提供相同签名的 `display()`：
 [`Audio`](/asr-data/api#audio)、[`AudioStream`](/asr-data/api#audio-stream)、
-[`AudioChunk`](/asr-data/api#audio-chunk)、[`Timeline`](/asr-data/api#timeline) 和
-[`TimeSpan`](/asr-data/api#time-span)。Rust 中可直接取得相同时间范围的波形；播放由
-调用侧的音频输出工具负责。
+[`AudioChunk`](/asr-data/api#audio-chunk) 和 [`Timeline`](/asr-data/api#timeline)。
+Rust 中可直接取得相同时间范围的波形；播放由调用侧的音频输出工具负责。
 
 > #### Python Example
 >

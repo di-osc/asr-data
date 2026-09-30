@@ -51,7 +51,7 @@ timeline、annotation 和业务元数据，不复制解码后的浮点样本。
 
 `create()` 在文件已经存在时抛出 `FileExistsError`；`open()` 在文件不存在时抛出
 `FileNotFoundError`。推荐使用 `.db` 后缀，以便工具和使用者识别文件类型。数据库包含专用 SQLite
-application ID 和 schema version。当前仅接受 schema v11；打开普通 SQLite 文件或其
+application ID 和 schema version。当前仅接受 schema v12；打开普通 SQLite 文件或其
 他版本时会立即报错，而不是尝试迁移或按错误结构读写。
 
 一个数据库可以包含大量 [`Audio`](/asr-data/api#audio)，但每个文档 ID 必须

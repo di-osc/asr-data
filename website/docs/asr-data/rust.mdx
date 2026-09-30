@@ -13,12 +13,13 @@ menu:
   - ['Timeline', 'timeline']
   - ['评测', 'evaluation']
   - ['数据集评测', 'dataset-evaluation']
-  - ['TimeSpan', 'time-span']
-  - ['Annotation', 'annotation']
-  - ['AudioActivity', 'audio-activity']
+  - ['AudioEvent', 'audio-event']
+  - ['Speech', 'speech']
+  - ['EventOverlap', 'event-overlap']
   - ['Transcription', 'transcription']
   - ['Sentence', 'sentence']
   - ['Speaker', 'speaker']
+  - ['Gender', 'gender']
   - ['LanguageTag', 'language-tag']
   - ['Token', 'token']
   - ['Transcript', 'transcript']
@@ -481,15 +482,15 @@ timeline，但波形与 timeline 只覆盖已经迭代出的范围。
 
 ## Timeline {id="timeline",tag="struct"}
 
-一个声道的时间轴。Rust API 使用两个 `Vec<TimeSpan>` 明确分离参考真值和预测。
+一个声道的时间轴。Rust API 使用两个 `Vec<AudioEvent>` 明确分离参考真值和预测。
 
 | Field        | Description                                       |
 | ------------ | ------------------------------------------------- |
 | `id`         | Timeline ID。~~TimelineId~~                       |
-| `audio_id`   | 所属 Audio ID。~~AudioId~~                     |
-| `duration`   | 总时长，单位毫秒。~~usize~~                            |
-| `reference`  | 不带 source 的参考标注。~~Vec&lt;TimeSpan&gt;~~ |
-| `prediction` | 带 source 的预测标注。~~Vec&lt;TimeSpan&gt;~~   |
+| `audio_id`   | 所属 Audio ID。~~AudioId~~                        |
+| `duration`   | 总时长，单位毫秒。~~usize~~                        |
+| `reference`  | 不带 source 的参考事件。~~Vec&lt;AudioEvent&gt;~~  |
+| `prediction` | 带 source 的预测事件。~~Vec&lt;AudioEvent&gt;~~    |
 
 ## Timeline::new {id="timeline-new",tag="associated function"}
 
@@ -501,34 +502,36 @@ timeline，但波形与 timeline 只覆盖已经迭代出的范围。
 | `duration`  | 总时长，单位毫秒。~~usize~~                    |
 | **RETURNS** | 新 timeline。~~Timeline~~                 |
 
-## Timeline::annotate_span {id="timeline-annotate-span",tag="method"}
+## Timeline::annotate {id="timeline-annotate",tag="method"}
 
-Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, annotation)` 对齐。
-默认写入 reference（相当于 `is_reference=True` 且不带 `source`）。写入 prediction
-时使用 [`annotate_span_with`](#timeline-annotate-span-with)，传入 `is_reference=false`
-和非空 `source`。内容完全相同会返回已有标注。完整规则见
+Timeline 的标注写入口。默认写入 reference（相当于 `is_reference=true` 且不带
+`source`）。写入 prediction 时使用 [`annotate_with`](#timeline-annotate-with)，传入
+`is_reference=false` 和非空 `source`。`event` 接受 [`AudioEvent`](#audio-event) 或派生
+的 [`Speech`](#speech)。内容完全相同会返回已有事件。完整规则见
 [标注校验规范](/asr-data/annotations#validation)。
 
 > #### Example
 >
 > ```rust
-> use asr_data::{Timeline, Transcription};
+> use asr_data::{AudioEvent, Speech, Timeline, TimelineEventError, Transcription};
 >
-> fn main() -> Result<(), asr_data::TimelineSpanError> {
+> fn main() -> Result<(), TimelineEventError> {
 >     let mut timeline = Timeline::new("example-001", 4_205);
->     let stored = timeline.annotate_span(
+>     let stored = timeline.annotate(
 >         0,
 >         4_205,
->         Transcription::new("甚至出现交易几乎停滞的情况"),
+>         Speech::new().with_transcription(
+>             Transcription::new("甚至出现交易几乎停滞的情况"),
+>         ),
 >     )?;
->     println!("{}", stored.id);
+>     assert_eq!(stored.name(), "speech");
 >
->     timeline.annotate_span_with(
+>     timeline.annotate_with(
 >         0,
 >         4_205,
->         Transcription::new("甚至出现交易几乎停滞的情况"),
+>         AudioEvent::new("music").with_confidence(0.9),
 >         false,
->         Some("whisper-large"),
+>         Some("vad-model"),
 >     )?;
 >     println!("{:?}", timeline.prediction_sources());
 >     Ok(())
@@ -540,22 +543,22 @@ Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, 
 | `&mut self`    | 可变借用 timeline。                                                                    |
 | `start_ms`     | 起始时间，单位毫秒。~~usize~~                                                            |
 | `end_ms`       | 结束时间，单位毫秒。~~usize~~                                                            |
-| `annotation`   | 标注 payload，例如 `AudioActivity`、`Transcription`、`Speaker`。~~impl Into&lt;Annotation&gt;~~ |
-| **RETURNS**    | 新标注或已有重复项；source 或重叠无效时报错。~~Result&lt;&TimeSpan, TimelineSpanError&gt;~~ |
+| `event`        | 事件内容，[`AudioEvent`](#audio-event) 或 [`Speech`](#speech)。~~impl Into&lt;AudioEvent&gt;~~ |
+| **RETURNS**    | 新事件或已有重复项；source、内容或重叠无效时报错。~~Result&lt;&AudioEvent, TimelineEventError&gt;~~ |
 
-## Timeline::annotate_span_with {id="timeline-annotate-span-with",tag="method"}
+## Timeline::annotate_with {id="timeline-annotate-with",tag="method"}
 
-完整签名，对应 Python `annotate_span(start_ms, end_ms, annotation, *, is_reference, source)`。
+完整签名；参考禁止携带 `source`，预测必须有非空 `source`。
 
 | Name           | Description                                                                            |
 | -------------- | -------------------------------------------------------------------------------------- |
 | `&mut self`    | 可变借用 timeline。                                                                    |
 | `start_ms`     | 起始时间，单位毫秒。~~usize~~                                                            |
 | `end_ms`       | 结束时间，单位毫秒。~~usize~~                                                            |
-| `annotation`   | 标注 payload。~~impl Into&lt;Annotation&gt;~~                                          |
+| `event`        | 事件内容。~~impl Into&lt;AudioEvent&gt;~~                                              |
 | `is_reference` | `true` 写 reference，`false` 写 prediction。~~bool~~                                   |
 | `source`       | prediction 来源；reference 必须为 `None`。~~Option&lt;&str&gt;~~                       |
-| **RETURNS**    | 新标注或已有重复项。~~Result&lt;&TimeSpan, TimelineSpanError&gt;~~                     |
+| **RETURNS**    | 新事件或已有重复项。~~Result&lt;&AudioEvent, TimelineEventError&gt;~~                  |
 
 ## Timeline query methods {id="timeline-query",tag="methods"}
 
@@ -564,23 +567,16 @@ Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, 
 > #### Example
 >
 > ```rust
-> use asr_data::{Timeline, Transcription};
+> use asr_data::{Speech, Timeline, TimelineEventError, Transcription};
 >
-> fn main() -> Result<(), asr_data::TimelineSpanError> {
+> fn main() -> Result<(), TimelineEventError> {
 >     let duration = 4_205;
 >     let mut timeline = Timeline::new("example-001", duration);
->     timeline.annotate_span(
->         0,
->         duration,
+>     let speech = Speech::new().with_transcription(
 >         Transcription::new("甚至出现交易几乎停滞的情况"),
->     )?;
->     timeline.annotate_span_with(
->         0,
->         duration,
->         Transcription::new("甚至出现交易几乎停滞的情况"),
->         false,
->         Some("qwen-asr"),
->     )?;
+>     );
+>     timeline.annotate(0, duration, speech.clone())?;
+>     timeline.annotate_with(0, duration, speech, false, Some("qwen-asr"))?;
 >
 >     assert_eq!(timeline.span_count(), 2);
 >     assert_eq!(
@@ -599,20 +595,24 @@ Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, 
 
 | Method                                 | Returns                                  | Description              |
 | -------------------------------------- | ---------------------------------------- | ------------------------ |
-| `all_spans()`                          | `impl Iterator<Item = &TimeSpan>`        | 遍历两个集合。           |
+| `all_spans()`                          | `impl Iterator<Item = &AudioEvent>`      | 遍历两个集合。           |
 | `duration_ms()`                        | `usize`                                  | 总时长毫秒。             |
-| `span_count()`                         | `usize`                                  | 标注总数。               |
-| `predictions_by_source(source)`        | `impl Iterator<Item = &TimeSpan>`        | 查询某个预测来源。       |
+| `span_count()`                         | `usize`                                  | 事件总数。               |
+| `predictions_by_source(source)`        | `impl Iterator<Item = &AudioEvent>`      | 查询某个预测来源。       |
 | `prediction_sources()`                 | `BTreeMap<&str, Vec<&str>>`              | 按类型分组的来源。       |
+| `transcription_sources()`              | `BTreeSet<String>`                       | 出现过的转写来源。       |
+| `activity_sources()`                   | `BTreeSet<String>`                       | 出现过的活动来源。       |
 | `reference_transcript()`               | `Transcript`                             | 组合参考转写。           |
 | `prediction_transcript(source)`        | `Transcript`                             | 组合指定来源的预测转写。 |
+| `remove_event(id)`                     | `bool`                                   | 按 ID 删除事件。         |
 | `remove_predictions_by_source(source)` | `usize`                                  | 删除来源并返回数量。     |
-| `relabel_prediction_source(from, to)`  | `Result<usize, TimelineSpanError>`       | 原子重命名来源。         |
-| `validate_spans()`                     | `Result<(), TimelineSpanError>`          | 校验全部标注。           |
+| `relabel_prediction_source(from, to)`  | `Result<usize, TimelineEventError>`      | 原子重命名来源。         |
+| `validate_spans()`                     | `Result<(), TimelineEventError>`         | 校验全部事件。           |
 
-`reference_transcript()` / `prediction_transcript()` 会合并
-[`Transcription`](#transcription)、[`Sentence`](#sentence)，以及带 transcription 的
-[`Speaker`](#speaker)。
+`reference_transcript()` / `prediction_transcript()` 按语音起点合并各 [`Speech`](#speech)
+的 [`Transcription`](#transcription) 全文，并把其中的 [`Sentence`](#sentence) 收集为
+`segments`；语种取第一段带转写且标了语种的语音。
+
 ## Timeline::eval {id="evaluation",tag="method"}
 
 按照 reference 评测一个或多个 prediction source。空的 `TimelineEvalConfig::new()` 会
@@ -657,10 +657,10 @@ Timeline 的标注写入口，参数与 Python `annotate_span(start_ms, end_ms, 
 | `with_transcription_normalization(value)`  | 选择中文 TN 或不做标准化。         |
 
 `TimelineEvaluation.transcription` 和 `activity` 都是
-`BTreeMap<String, ...Evaluation>`。转写自动发现包含 Transcription、Sentence 及带
-transcription 的 Speaker；Activity reference 为空时视为未标注，不参与自动评测。
-`ActivityEvaluation.events` 进一步按 event 保存 one-vs-rest 结果；reference 中
-event 为 `None` 的范围会参与整体活动评测，并从事件级评测中遮罩。
+`BTreeMap<String, ...Evaluation>`。转写自动发现来自带 transcription 的
+[`Speech`](#speech)；Activity 覆盖全部 [`AudioEvent`](#audio-event)，语音计入
+`speech` 事件。Activity reference 为空时视为未标注，不参与自动评测。
+`ActivityEvaluation.events` 进一步按事件名（语音为 `speech`）保存 one-vs-rest 结果。
 
 ## 数据集评测 {id="dataset-evaluation",tag="functions"}
 
@@ -689,148 +689,182 @@ event 为 `None` 的范围会参与整体活动评测，并从事件级评测中
 活动与各 event 的 TP、TN、FP、FN 毫秒数；两者都记录参与评测、未标注、缺少预测
 的 timeline 数量和 ID，以及 `coverage()`。
 
-## TimeSpan {id="time-span",tag="struct"}
+## AudioEvent {id="audio-event",tag="enum"}
 
-带时间范围、来源和 [`Annotation`](#annotation) 的记录。置信度保存在具体
-annotation payload 内，可通过 `annotation.confidence()` 读取。
+时间轴上的一条音频事件。`AudioEvent` 是 enum：基类 `Base` 表示音乐、噪声、静音等
+非语音事件，`name` 不能为空、也不能是 `speech`；派生变体 `Speech` 表示一段语音，
+见 [`Speech`](#speech)。两种值都能直接传给 [`Timeline::annotate`](#timeline-annotate)。
+`id`、`range` 和 `source` 由时间轴在写入时覆盖；置信度保存在事件自身，可通过
+`confidence()` 读取。
 
-| Field        | Description                                             |
-| ------------ | ------------------------------------------------------- |
-| `id`         | 自动生成的标注 ID。~~TimeSpanId~~                       |
-| `range`      | 时间范围。~~TimeRange~~                                 |
-| `source`     | 预测来源；reference 为 `None`。~~Option&lt;String&gt;~~ |
-| `annotation` | 标注内容。~~Annotation~~                                |
+| Variant | Description |
+| ------- | ----------- |
+| `Base { id, range, source, name, confidence }` | 基类非语音事件。 |
+| `Speech(Speech)` | 语音事件，详见 [`Speech`](#speech)。 |
 
-## TimeSpan::new {id="time-span-new",tag="associated function"}
+| Method | Returns | Description |
+| --- | --- | --- |
+| `new(name)` | `AudioEvent` | 构造还没有身份的基类事件。 |
+| `with_confidence(confidence)` | `AudioEvent` | 附上检测置信度。 |
+| `id()` | `&str` | 事件 ID；尚未写入时为空串。 |
+| `range()` | `TimeRange` | 事件覆盖的绝对时间。 |
+| `source()` | `Option<&str>` | 预测来源；参考事件为 `None`。 |
+| `name()` | `&str` | 事件名；语音固定为 `"speech"`（`SPEECH_EVENT_NAME`）。 |
+| `confidence()` | `Option<f32>` | 事件自身的检测置信度。 |
+| `language()` | `Option<&str>` | 语音语种；基类事件为 `None`。 |
+| `speaker()` | `Option<&Speaker>` | 语音说话人；基类事件为 `None`。 |
+| `transcription()` | `Option<&Transcription>` | 语音转写；基类事件为 `None`。 |
+| `is_speech()` | `bool` | 是否为派生的 `Speech`。 |
+| `content_eq(&other)` | `bool` | 比较业务内容并忽略自动生成的 ID。 |
 
-创建标注并生成 ID。
+`impl From<Speech> for AudioEvent` 让语音可以直接传入写入接口。
 
-> #### Example
->
-> ```rust
-> use asr_data::{
->     Annotation, AudioActivity, TimeRange, TimeSpan,
-> };
->
-> fn main() {
->     let span = TimeSpan::new(
->         TimeRange::new(0, 1_000),
->         Annotation::Activity(
->             AudioActivity::new()
->                 .with_event("speech")
->                 .with_confidence(0.98),
->         ),
->         Some("silero-vad".to_owned()),
->     );
->     assert_eq!(span.annotation.confidence(), Some(0.98));
->     println!("{}", span.id);
-> }
-> ```
+## AudioEvent::new {id="audio-event-new",tag="associated function"}
 
-| Name         | Description                            |
-| ------------ | -------------------------------------- |
-| `range`      | 时间范围。~~TimeRange~~                |
-| `annotation` | 标注内容。~~Annotation~~               |
-| `source`     | 可选预测来源。~~Option&lt;String&gt;~~ |
-| **RETURNS**  | 新标注。~~TimeSpan~~                   |
-
-`content_eq(&other)` 比较业务内容并忽略自动生成的 ID，用于实现 annotation 去重。
-
-## Annotation {id="annotation",tag="enum"}
-
-`Annotation` 是 `TimeSpan.annotation` 的实际标注内容。相关实现统一位于
-`timeline::annotation` 模块，并从 crate root 公开导出。
-
-| Variant                        | Description            |
-| ------------------------------ | ---------------------- |
-| `Activity(AudioActivity)`      | 声音活动与可选 event。 |
-| `Token(Token)`                 | 单个细粒度文本单元。   |
-| `Transcription(Transcription)` | 完整转写。             |
-| `Sentence(Sentence)`           | 句子级文本片段。       |
-| `Speaker(Speaker)`             | 说话人发话。           |
-| `Language(LanguageTag)`        | 语言信息。             |
-
-`confidence()` 从 Activity、Token、Transcription、Speaker 读取可选置信度；
-[`Sentence`](#sentence) 与 [`Language`](#language-tag) 始终返回 `None`。
-
-## AudioActivity {id="audio-activity",tag="struct"}
-
-声音活动 payload。`event: Option<String>` 用于保存可选的事件类别；`None` 表示只确
-认区间内存在活动，但类别未知。
+构造还没有身份的基类事件；语音请改用 `Speech::new()`。
 
 > #### Example
 >
 > ```rust
-> use asr_data::AudioActivity;
+> use asr_data::AudioEvent;
 >
 > fn main() {
->     let speech = AudioActivity::new()
->         .with_event("speech")
->         .with_confidence(0.98);
->     let unknown = AudioActivity::new();
->     assert_eq!(speech.event.as_deref(), Some("speech"));
->     assert_eq!(unknown.event, None);
+>     let music = AudioEvent::new("music").with_confidence(0.9);
+>     assert_eq!(music.name(), "music");
+>     assert_eq!(music.confidence(), Some(0.9));
+>     assert!(!music.is_speech());
 > }
 > ```
 
-添加到 Timeline 时，空白 event 会被拒绝。相同 event 的 Activity 不能在同一
-reference 集合或同一 prediction source 中重叠；不同 event 可以重叠。
+| Name        | Description                          |
+| ----------- | ------------------------------------ |
+| `name`      | 事件名。~~impl Into&lt;String&gt;~~  |
+| **RETURNS** | 还没有身份的基类事件。~~AudioEvent~~ |
 
-| Field        | Description                               |
-| ------------ | ----------------------------------------- |
-| `event`      | 可选活动类别。~~Option&lt;String&gt;~~    |
-| `confidence` | 可选活动检测置信度。~~Option&lt;f32&gt;~~ |
+## Speech {id="speech",tag="struct"}
+
+从 [`AudioEvent`](#audio-event) 派生的语音事件，事件名固定为
+`SPEECH_EVENT_NAME`（`"speech"`）。语种、说话人和转写都可以空着，所以只有活动区间
+的 VAD 结果也是一条合法语音。`id`、`range` 和 `source` 由时间轴在写入时覆盖。
+
+> #### Example
+>
+> ```rust
+> use asr_data::{AudioEvent, Speech, Speaker, Transcription};
+>
+> fn main() {
+>     let speech = Speech::new()
+>         .with_confidence(0.98)
+>         .with_language("zh")
+>         .with_speaker(Speaker::new("agent"))
+>         .with_transcription(Transcription::new("甚至出现交易几乎停滞的情况"));
+>     assert_eq!(speech.language.as_deref(), Some("zh"));
+>     assert_eq!(speech.confidence, Some(0.98));
+>
+>     let event = AudioEvent::from(speech);
+>     assert_eq!(event.name(), "speech");
+>     assert!(event.is_speech());
+> }
+> ```
+
+| Field           | Description                                            |
+| --------------- | ------------------------------------------------------ |
+| `id`            | 写入时生成的事件 ID。~~EventId~~                       |
+| `range`         | 语音在时间轴上的绝对时间。~~TimeRange~~                |
+| `source`        | 预测来源；参考事件为 `None`。~~Option&lt;String&gt;~~  |
+| `confidence`    | 可选活动检测置信度。~~Option&lt;f32&gt;~~              |
+| `language`      | 可选 BCP-47 语种标签。~~Option&lt;LanguageTag&gt;~~    |
+| `speaker`       | 这段语音的唯一说话人。~~Option&lt;Speaker&gt;~~        |
+| `transcription` | 这段语音的转写。~~Option&lt;Transcription&gt;~~        |
+
+| Method | Description |
+| --- | --- |
+| `new()` | 构造还没有身份的语音。 |
+| `with_confidence(confidence)` | 附上活动检测置信度。 |
+| `with_language(language)` | 附上语种。~~impl Into&lt;LanguageTag&gt;~~ |
+| `with_speaker(speaker)` | 附上说话人；一段语音只有一个。 |
+| `with_transcription(transcription)` | 附上转写。 |
+
+相同事件名的非语音事件不能在同一 reference 集合或同一 prediction source 中重叠；
+语音只有在双方都有说话人、且姓名不同时才可以重叠。
+
+## EventOverlap {id="event-overlap",tag="struct"}
+
+一次非法重叠的详细信息，由 [`TimelineEventError`](#errors) 的 `Overlap` variant 携带。
+
+| Field          | Description                                   |
+| -------------- | --------------------------------------------- |
+| `kind`         | 冲突类别。~~EventConflictKind~~               |
+| `source`       | 冲突事件的预测来源。~~Option&lt;String&gt;~~  |
+| `speaker`      | 涉及冲突的说话人。~~Option&lt;String&gt;~~    |
+| `first_id`     | 先写入的事件 ID。~~EventId~~                  |
+| `first_range`  | 先写入事件的时间范围。~~TimeRange~~           |
+| `second_id`    | 后写入的事件 ID。~~EventId~~                  |
+| `second_range` | 后写入事件的时间范围。~~TimeRange~~           |
+
+`EventConflictKind` 取 `Event`（同名非语音区间重叠）或 `Speech`（语音区间重叠：
+同一说话人，或至少一段没有说话人）。
 
 ## Transcription {id="transcription",tag="struct"}
 
-完整转写 payload，可以包含 [`Token`](#token) 列表。`Transcription::new(text)` 提
-供合理默认值；再按需修改公开字段是 Rust 中最直接的构造方式。
+一段语音里的转写。全文 `text` 是最小内容，单独存在即可；句级 [`Sentence`](#sentence)
+切分可以为空。`Transcription::new(text)` 提供合理默认值，再按需修改公开字段是
+Rust 中最直接的构造方式。
 
 > #### Example
 >
 > ```rust
-> use asr_data::{Token, Transcription};
+> use asr_data::{Sentence, Token, Transcription};
 >
 > fn main() {
->     let mut transcription = Transcription::new(
+>     let sentence = Sentence::new("甚至出现交易几乎停滞的情况", 0, 4_205)
+>         .with_tokens(vec![
+>             Token::new("甚至出现").with_range(0, 1_800),
+>             Token::new("交易几乎停滞的情况").with_range(1_800, 4_205),
+>         ]);
+>     let transcription = Transcription::new(
 >         "甚至出现交易几乎停滞的情况",
->     );
->     transcription.language = Some("zh".to_owned());
->     transcription.confidence = Some(0.93);
->     transcription.tokens = vec![
->         Token::new("甚至出现").with_range(0, 1_800),
->         Token::new("交易几乎停滞的情况").with_range(1_800, 4_205),
->     ];
+>     )
+>     .with_sentences(vec![sentence])
+>     .with_confidence(0.93);
 >
 >     println!("{}", transcription.text);
 > }
 > ```
 
-| Field        | Description                             |
-| ------------ | --------------------------------------- |
-| `text`       | 完整转写文本。~~String~~                |
-| `tokens`     | 细粒度 token。~~Vec&lt;Token&gt;~~      |
-| `language`   | 可选语言标签。~~Option&lt;String&gt;~~  |
-| `confidence` | 可选转写级置信度。~~Option&lt;f32&gt;~~ |
+| Field        | Description                                    |
+| ------------ | ---------------------------------------------- |
+| `text`       | 整段转写文本。~~String~~                       |
+| `sentences`  | 句级切分。~~Vec&lt;Sentence&gt;~~              |
+| `confidence` | 可选整段置信度。~~Option&lt;f32&gt;~~          |
+
+| Method | Description |
+| --- | --- |
+| `new(text)` | 用整段文本构造转写；句子和置信度留空。 |
+| `with_sentences(sentences)` | 附上句级切分；空列表等于不切分。 |
+| `with_confidence(confidence)` | 附上整段置信度。 |
 
 ## Sentence {id="sentence",tag="struct"}
 
-句子级文本片段。与 [`Transcription`](#transcription) 类似，但不携带
-`confidence`；组合 transcript 时会与 Transcription、Speaker 内转写一起按开始时间
-排序合并。
+一句转写。时间是时间轴上的绝对毫秒，并且必须落在所属语音区间内。
 
 > #### Example
 >
 > ```rust
-> use asr_data::{Sentence, Timeline, Token};
+> use asr_data::{
+>     Sentence, Speech, Timeline, TimelineEventError, Token, Transcription,
+> };
 >
-> fn main() -> Result<(), asr_data::TimelineSpanError> {
->     let mut sentence = Sentence::new("甚至出现交易几乎停滞的情况");
->     sentence.language = Some("zh".to_owned());
->     sentence.tokens = vec![Token::new("甚至出现").with_range(0, 1_800)];
+> fn main() -> Result<(), TimelineEventError> {
+>     let sentence = Sentence::new("甚至出现交易几乎停滞的情况", 0, 4_205)
+>         .with_tokens(vec![Token::new("甚至出现").with_range(0, 1_800)]);
+>     let speech = Speech::new().with_transcription(
+>         Transcription::new("甚至出现交易几乎停滞的情况")
+>             .with_sentences(vec![sentence]),
+>     );
 >
 >     let mut timeline = Timeline::new("example-001", 4_205);
->     timeline.annotate_span(0, 4_205, sentence)?;
+>     timeline.annotate(0, 4_205, speech)?;
 >     assert_eq!(
 >         timeline.reference_transcript().text,
 >         "甚至出现交易几乎停滞的情况"
@@ -839,76 +873,84 @@ reference 集合或同一 prediction source 中重叠；不同 event 可以重�
 > }
 > ```
 
-| Field      | Description                            |
-| ---------- | -------------------------------------- |
-| `text`     | 句子文本。~~String~~                   |
-| `tokens`   | 细粒度 token。~~Vec&lt;Token&gt;~~     |
-| `language` | 可选语言标签。~~Option&lt;String&gt;~~ |
+| Field    | Description                                |
+| -------- | ------------------------------------------ |
+| `text`   | 整句文本。~~String~~                       |
+| `range`  | 这句覆盖的绝对时间范围。~~TimeRange~~      |
+| `tokens` | 词级 token，可以为空。~~Vec&lt;Token&gt;~~ |
 
-当前重叠校验不约束 `Sentence`；它仍会进入 transcript 组合与转写评测来源发现。
-Python 目前不能新建 `Sentence`，但可以从已有数据读出。
+| Method | Description |
+| --- | --- |
+| `new(text, start_ms, end_ms)` | 用文本和绝对时间构造句子，token 列表为空。 |
+| `with_tokens(tokens)` | 附上词级 token。 |
+
+非空句子的时间必须落在所属语音区间内且互不重叠；token 时间必须落在句子内。
+
 ## Speaker {id="speaker",tag="struct"}
 
-一次说话人发话，由名称和可选 [`Transcription`](#transcription) 组成。
+一段语音上的说话人。一段 [`Speech`](#speech) 最多挂一个说话人；两人同时说话时写成
+两段重叠的语音。
 
 > #### Example
 >
 > ```rust
-> use asr_data::{Speaker, Transcription};
+> use asr_data::{Gender, Speaker};
 >
 > fn main() {
->     let mut speaker = Speaker::new("agent").with_confidence(0.96);
->     speaker.transcription = Some(Transcription::new(
->         "甚至出现交易几乎停滞的情况",
->     ));
->
->     let text = speaker
->         .transcription
->         .as_ref()
->         .map(|value| value.text.as_str())
->         .unwrap_or_default();
->     println!("{}: {}", speaker.name, text);
+>     let speaker = Speaker::new("agent").with_gender(Gender::Female);
+>     assert_eq!(speaker.name, "agent");
+>     assert_eq!(speaker.gender, Some(Gender::Female));
+>     assert_eq!(Gender::parse("female"), Some(Gender::Female));
 > }
 > ```
 
-| Field           | Description                                         |
-| --------------- | --------------------------------------------------- |
-| `name`          | 说话人名称或业务 ID。~~SpeakerId~~                  |
-| `transcription` | 该次发话的完整转写。~~Option&lt;Transcription&gt;~~ |
-| `confidence`    | 可选说话人识别置信度。~~Option&lt;f32&gt;~~         |
+| Field    | Description                                            |
+| -------- | ------------------------------------------------------ |
+| `name`   | 说话人名称或业务 ID。~~SpeakerId~~                     |
+| `gender` | 可选性别；`None` 表示还没标。~~Option&lt;Gender&gt;~~  |
+
+| Method | Description |
+| --- | --- |
+| `new(name)` | 用说话人名称构造标注，性别留空。 |
+| `with_gender(gender)` | 附上性别。 |
+
+## Gender {id="gender",tag="enum"}
+
+说话人性别。未标注时用 `Option` 的 `None`，不要用 `Gender::Unknown` 代替。
+
+| Variant   | Description          |
+| --------- | -------------------- |
+| `Male`    | 男性。               |
+| `Female`  | 女性。               |
+| `Unknown` | 已标注，但性别未知。 |
+
+| Method | Returns | Description |
+| --- | --- | --- |
+| `parse(value)` | `Option<Gender>` | 解析 `male` / `female` / `unknown`。 |
+| `as_str()` | `&'static str` | 稳定的小写标签，与 serde 和 Python 绑定一致。 |
 
 ## LanguageTag {id="language-tag",tag="type"}
 
-语言标签类型别名，等价于 `String`。通过 `Annotation::Language` 挂到
-[`TimeSpan`](#time-span) 上，用于保存区间级语言信息；不参与 transcript 组合，也
-没有 payload 级置信度。
+语言标签类型别名，等价于 `String`（BCP-47）。语种只挂在 [`Speech`](#speech) 上，
+通过 `Speech::with_language` 设置；不参与 transcript 组合，也没有 payload 级置信度。
 
 > #### Example
 >
 > ```rust
-> use asr_data::{Annotation, Timeline};
+> use asr_data::{Speech, Transcription};
 >
-> fn main() -> Result<(), asr_data::TimelineSpanError> {
->     let mut timeline = Timeline::new("example-001", 4_205);
->     timeline.annotate_span(0, 4_205, Annotation::Language("zh".to_owned()))?;
->
->     let language = timeline.reference.iter().find_map(|span| {
->         match &span.annotation {
->             Annotation::Language(tag) => Some(tag.as_str()),
->             _ => None,
->         }
->     });
->     assert_eq!(language, Some("zh"));
->     Ok(())
+> fn main() {
+>     let speech = Speech::new()
+>         .with_language("zh")
+>         .with_transcription(Transcription::new("甚至出现交易几乎停滞的情况"));
+>     assert_eq!(speech.language.as_deref(), Some("zh"));
 > }
 > ```
 
 | Name        | Description                                      |
 | ----------- | ------------------------------------------------ |
 | **ALIAS**   | `type LanguageTag = String`                      |
-| **USAGE**   | `Annotation::Language(LanguageTag)`              |
-
-Python 目前不能新建 `Language` annotation，但可以从已有数据读出。
+| **USAGE**   | `Speech::with_language(LanguageTag)`             |
 
 ## Token {id="token",tag="struct"}
 
@@ -937,12 +979,12 @@ Python 目前不能新建 `Language` annotation，但可以从已有数据读出
 ## Transcript {id="transcript",tag="struct"}
 
 `Timeline::reference_transcript()` 或 `prediction_transcript()` 生成的组合结果。
-每个 segment 都规范化为 [`Sentence`](#sentence)。
+每个 segment 都来自 [`Speech`](#speech) 转写里的 [`Sentence`](#sentence)。
 
 | Field      | Description                                |
 | ---------- | ------------------------------------------ |
 | `text`     | 按开始时间组合的文本。~~String~~           |
-| `language` | 首个可用语言标签。~~Option&lt;String&gt;~~ |
+| `language` | 第一段带转写且标了语种的语音的语种。~~Option&lt;String&gt;~~ |
 | `segments` | 参与组合的文本片段。~~Vec&lt;Sentence&gt;~~ |
 
 ## AudioDataset {id="audio-dataset",tag="struct"}
@@ -1349,11 +1391,14 @@ speaker-time 计数。
 | `AudioChannelError`       | 非规范声道。                               |
 | `AudioTimelineError`      | timeline duration 创建约束。               |
 | `AudioValidationError`    | Audio 完整性校验。                         |
-| `TimelineSpanError`       | 标注 source、activity event 与重叠冲突。   |
+| `TimelineEventError`      | 事件 source、事件名、语音内部时间与重叠冲突。 |
 | `TimelineEvalError`       | 单条 timeline 评测配置或执行错误。         |
 | `DatasetEvalError`        | 数据集评测聚合错误。                       |
 | `TextNormalizationError`  | 中文 TN FST 归一化失败。                   |
 
-`TimelineSpanError` 常见 variant 包括 `ReferenceHasSource`、
-`PredictionMissingSource`、`InvalidPredictionSource`、`InvalidActivityEvent` 和
-`Overlap`。完整定义以本地 crate 源码与生成的 rustdoc 为准。
+`TimelineEventError` 常见 variant 包括 `ReferenceHasSource`、
+`PredictionMissingSource`、`InvalidPredictionSource`、`InvalidEventName`、
+`SpeechEventName`、`InvalidSpeakerName`、`InvalidSentenceRange`、
+`InvalidTokenRange`、`SentenceOutsideSpeech`、`TokenOutsideSentence`、
+`OverlappingSentences` 和 `Overlap`（携带 [`EventOverlap`](#event-overlap)）。完整定义
+以本地 crate 源码与生成的 rustdoc 为准。

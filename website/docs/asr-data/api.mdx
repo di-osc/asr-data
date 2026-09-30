@@ -10,6 +10,9 @@ menu:
   - ['Waveform', 'waveform']
   - ['AudioChunk', 'audio-chunk']
   - ['Timeline', 'timeline']
+  - ['Timeline.reference', 'timeline-reference']
+  - ['Timeline.prediction', 'timeline-prediction']
+  - ['Timeline.annotate', 'timeline-annotate']
   - ['TimelineEvaluation', 'timeline-evaluation']
   - ['TranscriptionEvaluation', 'transcription-evaluation']
   - ['ActivityEvaluation', 'activity-evaluation']
@@ -17,17 +20,15 @@ menu:
   - ['evaluate_dataset', 'evaluate-dataset']
   - ['DatasetEvaluation', 'dataset-evaluation']
   - ['DatasetSpeakerEvaluation', 'dataset-speaker-evaluation']
-  - ['ReferenceSpans', 'reference-spans']
-  - ['PredictionSpans', 'prediction-spans']
-  - ['AudioActivity', 'audio-activity']
+  - ['AudioEvent', 'audio-event']
+  - ['Speech', 'speech']
   - ['Token', 'token']
   - ['Transcription', 'transcription']
+  - ['Sentence', 'sentence']
   - ['Speaker', 'speaker']
   - ['Transcript', 'transcript']
-  - ['TimeSpan', 'time-span']
   - ['AudioDataset', 'audio-dataset']
   - ['AudioDB', 'audio-db']
-  - ['Annotation', 'annotation-alias']
   - ['AsrDataError', 'asr-data-error']
   - ['normalize_zh', 'normalize-zh']
 ---
@@ -350,7 +351,7 @@ chunk 时，可以读取包括当前块在内的累计波形，并给任意已�
 >
 > ```python
 > from asr_data import AudioStream
-> from asr_data.annotation import Transcription
+> from asr_data.annotation import Speech, Transcription
 >
 > URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
 > stream = AudioStream.from_url(URL, chunk_size_ms=1_000, id="call-001")
@@ -359,12 +360,12 @@ chunk 时，可以读取包括当前块在内的累计波形，并给任意已�
 >     timeline = chunk.timeline("mono")
 >     print(stream.position_ms, timeline.duration_ms)
 >
->     timeline.annotate_span(
->           0,
->           timeline.duration_ms,
->           Transcription("甚至出现交易几乎停滞的情况", language="zh"),
->           is_reference=True,
->           )
+>     timeline.annotate(
+>         0,
+>         timeline.duration_ms,
+>         Speech(transcription=Transcription("甚至出现交易几乎停滞的情况")),
+>         is_reference=True,
+>     )
 > audio = stream.to_audio()
 > ```
 
@@ -527,38 +528,50 @@ source 约束。
 
 ## Timeline {id="timeline",tag="class"}
 
-某个声道上的时间轴。它将参考真值与模型预测分成两个独立集合。
+某个声道上的时间轴。参考真值保存在 `reference`，模型预测保存在 `prediction`，两者
+都是 [`AudioEvent`](#audio-event) 列表，其中语音是 [`Speech`](#speech)。
 
-| Name             | Description                                                             |
-| ---------------- | ----------------------------------------------------------------------- |
-| `id`             | Timeline 唯一 ID。~~str~~                                               |
-| `audio_id`       | 所属 Audio ID，可修改。~~str~~                                          |
-| `duration_ms`    | Timeline 总时长。~~int~~                                                |
-| `reference`      | 不带 source 的参考标注。~~ReferenceSpans~~                              |
-| `prediction`     | 必须带 source 的预测标注。~~PredictionSpans~~                           |
-| `transcriptions` | reference 与 prediction 中的顶层转写 payload。~~List[Transcription]~~   |
-| `activities`     | reference 与 prediction 中的顶层活动 payload。~~List[AudioActivity]~~  |
-| `speakers`       | reference 与 prediction 中的顶层说话人 payload。~~List[Speaker]~~      |
+| Name          | Description                                                        |
+| ------------- | ------------------------------------------------------------------ |
+| `id`          | Timeline 唯一 ID。~~str~~                                          |
+| `audio_id`    | 所属 Audio ID，可修改。~~str~~                                     |
+| `duration_ms` | Timeline 总时长。~~int~~                                           |
+| `reference`   | 参考事件列表。语音是 `Speech`，其余是 `AudioEvent`。~~List[AudioEvent]~~ |
+| `prediction`  | 预测事件列表，每条都带非空 `source`。~~List[AudioEvent]~~          |
 
-`as_waveform()` 返回该声道的完整波形；`display()` 可直接播放该声道的全部或部分
-音频。`annotate_span()` 会立即校验
-`0 <= start_ms <= end_ms <= timeline.duration_ms`；内容完全相同的重复添加会返回
-已有 `TimeSpan`，不会插入第二条记录。
+`as_waveform()` 返回该声道的完整波形；`display()` 可直接播放该声道的全部或部分音频。
+写入事件用 [`Timeline.annotate()`](#timeline-annotate)，删除单条事件用
+[`Timeline.remove()`](#timeline-remove)。参考转写由 `reference_transcript` 提供；
+预测来源的转写、删除与改名分别由
+[`prediction_transcript()`](#timeline-prediction-transcript)、
+[`remove_predictions()`](#timeline-remove-predictions) 和
+[`relabel_prediction_source()`](#timeline-relabel-prediction-source) 提供。
 
-三个类型便捷属性直接返回 annotation payload，而不是 [`TimeSpan`](#time-span)。
-它们先按原顺序返回 reference，再返回 prediction；需要时间范围、ID 或 prediction
-source 时，应改用 `timeline.reference` 或 `timeline.prediction`。
+事件直接暴露自己的 `id`、`name`、`start_ms`、`end_ms`、`source` 和 `confidence`；
+语音额外暴露 `language`、`speaker` 和 `transcription`，不再有独立的包裹对象，也没有
+`transcriptions`、`activities`、`speakers` 这类顶层便捷属性。
 
 > #### Example
 >
 > ```python
-> texts = [item.text for item in timeline.transcriptions]
-> events = [item.event for item in timeline.activities]
-> speaker_names = [item.name for item in timeline.speakers]
+> from asr_data import AudioSource
+> from asr_data.annotation import Speech, Transcription
+>
+> URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
+> timeline = AudioSource.from_url(URL).load().timeline("mono")
+> timeline.annotate(
+>     0,
+>     timeline.duration_ms,
+>     Speech(transcription=Transcription("甚至出现交易几乎停滞的情况")),
+>     is_reference=True,
+> )
+>
+> for event in timeline.reference:
+>     print(event.id, event.start_ms, event.end_ms, event.name)
+>
+> for event in timeline.prediction:
+>     print(event.source, event.name)
 > ```
-
-Timeline 不提供顶层 `tokens`、`sentences` 或 `languages` 属性。Token 与 language
-属于 [`Transcription`](#transcription) payload，应从转写对象读取。
 
 ## Timeline.eval {id="timeline-eval",tag="method"}
 
@@ -569,30 +582,26 @@ Timeline 不提供顶层 `tokens`、`sentences` 或 `languages` 属性。Token �
 >
 > ```python
 > from asr_data import AudioSource
-> from asr_data.annotation import AudioActivity, Transcription
+> from asr_data.annotation import Speech, Transcription
 >
 > URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
 > doc = AudioSource.from_url(URL).load()
 > timeline = doc.timeline("mono")
 > text = "甚至出现交易几乎停滞的情况"
 >
-> timeline.annotate_span(
->     0, timeline.duration_ms, AudioActivity(event="speech"), is_reference=True
-> )
-> timeline.annotate_span(
->     0, timeline.duration_ms, Transcription(text, language="zh"), is_reference=True
-> )
-> timeline.annotate_span(
+> timeline.annotate(
 >     0,
 >     timeline.duration_ms,
->     AudioActivity(event="speech"),
->     is_reference=False,
->     source="silero-vad",
+>     Speech(language="zh", transcription=Transcription(text)),
+>     is_reference=True,
 > )
-> timeline.annotate_span(
+> timeline.annotate(
+>     0, timeline.duration_ms, Speech(), is_reference=False, source="silero-vad"
+> )
+> timeline.annotate(
 >     0,
 >     timeline.duration_ms,
->     Transcription(text, language="zh"),
+>     Speech(language="zh", transcription=Transcription(text)),
 >     is_reference=False,
 >     source="qwen-asr",
 > )
@@ -657,8 +666,8 @@ Timeline 不提供顶层 `tokens`、`sentences` 或 `languages` 属性。Token �
 
 ## ActivityEvaluation {id="activity-evaluation",tag="class"}
 
-基于毫秒区间计算的声音活动检测结果。整体指标忽略 event，并在评测前合并全部重叠或
-首尾相接的活动区间。
+基于毫秒区间计算的声音事件检测结果。整体指标忽略事件名称，并在评测前合并全部重叠或
+首尾相接的事件区间；语音（事件名 `"speech"`）和非语音事件都参与。
 
 | Name                | Description                               |
 | ------------------- | ----------------------------------------- |
@@ -675,14 +684,14 @@ Timeline 不提供顶层 `tokens`、`sentences` 或 `languages` 属性。Token �
 | `iou`               | reference 与 prediction 的 IoU。~~float~~ |
 | `events`            | 按事件名称分组的事件级结果。~~Dict[str, ActivityEventEvaluation]~~ |
 
-reference 至少有一条 Activity annotation 才表示该 timeline 已完成活动标注；区间
-之外的部分视为无活动。没有 reference Activity 时自动模式不会评测该任务。
+reference 至少有一条事件才表示该 timeline 已完成事件标注；区间之外的部分视为无事件。
+没有 reference 时自动模式不会评测该任务。
 
 ## ActivityEventEvaluation {id="activity-event-evaluation",tag="class"}
 
 单个 `event` 的 one-vs-rest 区间评测结果，字段与 `ActivityEvaluation` 的混淆矩阵
-和指标一致，并额外提供 `event`。reference 中 `event=None` 的区间只参与整体活动
-评测；事件级评测会遮罩这些区间。
+和指标一致，并额外提供 `event`。事件名称来自 reference 与 prediction 中出现的
+[`AudioEvent.name`](#audio-event-properties)；语音固定为 `"speech"`。
 
 | Name                | Description                                  |
 | ------------------- | -------------------------------------------- |
@@ -706,8 +715,8 @@ reference 至少有一条 Activity annotation 才表示该 timeline 已完成活
 > #### Example
 >
 > ```python
-> from asr_data import Audio, AudioSource, evaluate_dataset
-> from asr_data.annotation import Transcription
+> from asr_data import AudioSource, evaluate_dataset
+> from asr_data.annotation import Speech, Transcription
 >
 > URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
 > text = "甚至出现交易几乎停滞的情况"
@@ -718,13 +727,16 @@ reference 至少有一条 Activity annotation 才表示该 timeline 已完成活
 > ]:
 >     doc = AudioSource.from_url(URL).load(id=audio_id)
 >     timeline = doc.timeline("mono")
->     timeline.annotate_span(
->         0, timeline.duration_ms, Transcription(text), is_reference=True
->     )
->     timeline.annotate_span(
+>     timeline.annotate(
 >         0,
 >         timeline.duration_ms,
->         Transcription(prediction),
+>         Speech(transcription=Transcription(text)),
+>         is_reference=True,
+>     )
+>     timeline.annotate(
+>         0,
+>         timeline.duration_ms,
+>         Speech(transcription=Transcription(prediction)),
 >         is_reference=False,
 >         source="qwen-asr",
 >     )
@@ -797,87 +809,148 @@ prediction speaker label 做最佳一一映射，因此 `alice/bob` 与
 | `der`                  | `(missed + false_alarm + confusion) / reference`。~~float~~ |
 | `coverage`             | 有 prediction 的已标注 timeline 比例。~~float~~  |
 
-## ReferenceSpans {id="reference-spans",tag="class"}
+## Timeline.reference {id="timeline-reference",tag="property"}
 
-参考真值只读集合；新标注统一通过 [`Timeline.annotate_span()`](#timeline-annotate-span)
-写入。Reference annotation 的 `source` 始终为 `None`。相同 event 的
-Activity 之间不得重叠；不同 event 可以重叠。同名 Speaker 之间不得重叠；顶层
-Transcription 之间不得重叠，且不得与携带 transcription 的 Speaker 重叠。时间范围
-采用 `[start_ms, end_ms)`，首尾相接不算重叠。完整规则见
+参考真值事件列表，元素是 [`AudioEvent`](#audio-event)，其中语音是 [`Speech`](#speech)。
+Reference 事件的 `source` 始终为 `None`。相同 `name` 的非语音事件不得重叠；两段语音
+只有在双方都有说话人且名字不同时才允许重叠；时间范围采用 `[start_ms, end_ms)`，首尾
+相接不算重叠。完整规则见
 [标注校验规范](/asr-data/annotations#validation)。
 
-## Timeline.annotate_span {id="timeline-annotate-span",tag="method"}
+> #### Example
+>
+> ```python
+> from asr_data import AudioSource
+> from asr_data.annotation import Speech
+>
+> URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
+> timeline = AudioSource.from_url(URL).load().timeline("mono")
+> timeline.annotate(0, timeline.duration_ms, Speech())
+>
+> for event in timeline.reference:
+>     print(event.id, event.start_ms, event.end_ms, event.name)
+> ```
+
+| Name        | Description                        |
+| ----------- | ---------------------------------- |
+| **RETURNS** | 参考事件列表。~~List[AudioEvent]~~ |
+
+需要筛选时直接在 Python 侧遍历 `timeline.reference` 并按事件属性过滤；不存在独立的
+`spans` 集合对象。
+
+## Timeline.prediction {id="timeline-prediction",tag="property"}
+
+模型或处理流程输出的预测事件列表，元素同样是 [`AudioEvent`](#audio-event) 或
+[`Speech`](#speech)。每条预测事件的 `source` 都非空。每个 `source` 独立应用与
+reference 相同的事件重叠规则；不同 `source` 之间可以重叠。`source` 区分大小写且不会
+自动去除首尾空白。完整规则见
+[标注校验规范](/asr-data/annotations#validation)。
+
+> #### Example
+>
+> ```python
+> from asr_data import AudioSource
+> from asr_data.annotation import Speech
+>
+> URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
+> timeline = AudioSource.from_url(URL).load().timeline("mono")
+> timeline.annotate(
+>     0, timeline.duration_ms, Speech(), is_reference=False, source="silero-vad"
+> )
+>
+> for event in timeline.prediction:
+>     print(event.source, event.name, event.start_ms, event.end_ms)
+>
+> vad = [event for event in timeline.prediction if event.source == "silero-vad"]
+> ```
+
+| Name        | Description                        |
+| ----------- | ---------------------------------- |
+| **RETURNS** | 预测事件列表。~~List[AudioEvent]~~ |
+
+没有按来源分组的 `sources` 字典或 `by_source()` 方法；需要某个来源的事件时，直接遍历
+`timeline.prediction` 并按 `event.source` 过滤。
+
+## Timeline.annotate {id="timeline-annotate",tag="method"}
 
 Timeline 唯一的标注写入口。`is_reference=True` 写入参考答案，此时必须省略
-`source`；`is_reference=False` 写入模型预测，此时必须提供非空 `source`。
-第三个参数接受 [`AudioActivity`](#audio-activity)、[`Speaker`](#speaker)、
-[`Transcription`](#transcription) 或 [`Token`](#token)，不接受纯字符串。
+`source`；`is_reference=False` 写入模型预测，此时必须提供非空 `source`。第三个参数
+接受 [`AudioEvent`](#audio-event) 或派生的 [`Speech`](#speech)，不接受纯字符串。
+时间范围必须满足 `0 <= start_ms` 且 `start_ms < end_ms <= timeline.duration_ms`。
 
 > #### Example
 >
 > ```python
 > from asr_data import Audio
-> from asr_data.annotation import AudioActivity, Speaker, Transcription
+> from asr_data.annotation import AudioEvent, Speech, Speaker, Transcription
 >
 > URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
 > timeline = Audio.from_url(URL).timeline("mono")
 >
-> activity = timeline.annotate_span(
->     0,
->     timeline.duration_ms,
->     AudioActivity(event="speech", confidence=0.98),
->     is_reference=True,
+> music = timeline.annotate(
+>     0, timeline.duration_ms, AudioEvent("music", confidence=0.98), is_reference=True
 > )
-> prediction = timeline.annotate_span(
+> speech = timeline.annotate(
 >     0,
 >     timeline.duration_ms,
->     Speaker(
->         "agent",
+>     Speech(
+>         language="zh",
+>         speaker=Speaker("agent", gender="female"),
 >         transcription=Transcription("甚至出现交易几乎停滞的情况"),
 >     ),
 >     is_reference=False,
 >     source="diarization-v2",
 > )
-> print(activity.annotation.event, prediction.source)
+> print(music.name, speech.source, speech.speaker.name)
 > ```
 
-| Name             | Description                                                     |
-| ---------------- | --------------------------------------------------------------- |
-| `start_ms`       | 起始时间。~~int~~                                               |
-| `end_ms`         | 结束时间，不得超过 timeline duration。~~int~~                   |
-| `annotation`     | 具体标注 payload。~~Annotation~~                                |
-| _keyword-only_   |                                                                 |
-| `is_reference`   | 是否写入参考答案。~~bool~~                                      |
-| `source`         | Prediction 的模型或流程；reference 必须省略。~~Optional[str]~~  |
-| **RETURNS**      | 新建或去重后已有的标注句柄。~~TimeSpan~~                        |
+| Name             | Description                                                       |
+| ---------------- | ----------------------------------------------------------------- |
+| `start_ms`       | 起始时间，`0 <= start_ms`。~~int~~                                |
+| `end_ms`         | 结束时间，`start_ms < end_ms <= duration_ms`。~~int~~             |
+| `event`          | 基类事件或语音事件。~~AudioEvent~~                                |
+| _keyword-only_   |                                                                   |
+| `is_reference`   | 是否写入参考答案，默认为 `True`。~~bool~~                         |
+| `source`         | Prediction 的模型或流程；reference 必须省略。~~Optional[str]~~    |
+| **RETURNS**      | 写入后的事件；语音返回 `Speech`。~~AudioEvent~~                   |
 
-`timeline.reference` 和 `timeline.prediction` 只负责读取、筛选、组合 transcript
-以及来源管理，不提供第二套标注写方法。带时间范围的 token 必须完全位于所属
-Transcription 或 Speaker annotation 的范围内。
+返回值是写入后事件的副本，不是可回写的活动句柄；需要改内容时先
+[`Timeline.remove()`](#timeline-remove) 再重新写入，或对预测来源使用
+[`relabel_prediction_source()`](#timeline-relabel-prediction-source)。带时间范围的
+token 必须完全位于所属 [`Speech`](#speech) 的范围内。
 
-## ReferenceSpans.transcript {id="reference-transcript",tag="method"}
+## Timeline.remove {id="timeline-remove",tag="method"}
 
-按开始时间组合 Transcription、Speaker 内的 Transcription，以及从 Rust 读取到的
-Sentence。Python 目前不提供 Sentence 的创建方法。
+按事件 ID 删除一条 reference 或 prediction 事件。
+
+| Name        | Description                     |
+| ----------- | ------------------------------- |
+| `event_id`  | 要删除的事件 ID。~~str~~        |
+| **RETURNS** | 找到并删除时为 `True`。~~bool~~ |
+
+## Timeline.reference_transcript {id="timeline-reference-transcript",tag="property"}
+
+按语音开始时间组合参考语音事件中的转写全文，得到 [`Transcript`](#transcript)。没有
+语音或语音没有转写时文本为空。
 
 > #### Example
 >
 > ```python
-> from asr_data import Audio, AudioSource
-> from asr_data.annotation import Transcription
+> from asr_data import AudioSource
+> from asr_data.annotation import Speech, Transcription
 >
 > URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
-> source = AudioSource.from_url(URL)
-> doc = source.load()
-> timeline = doc.timeline("mono")
-> timeline.annotate_span(
+> timeline = AudioSource.from_url(URL).load().timeline("mono")
+> timeline.annotate(
 >     0,
 >     timeline.duration_ms,
->     Transcription("甚至出现交易几乎停滞的情况", language="zh"),
->     is_reference=True,
+>     Speech(
+>         language="zh",
+>         transcription=Transcription("甚至出现交易几乎停滞的情况"),
+>     ),
 > )
 >
-> result = timeline.reference.transcript()
+> result = timeline.reference_transcript
 > print(result.text)
 > print(result.language)
 > ```
@@ -886,45 +959,27 @@ Sentence。Python 目前不提供 Sentence 的创建方法。
 | ----------- | ---------------------------- |
 | **RETURNS** | 组合后的转写。~~Transcript~~ |
 
-`reference.spans` 返回全部时间范围，`len(reference)` 返回标注数量。
+## Timeline.prediction_transcript {id="timeline-prediction-transcript",tag="method"}
 
-## PredictionSpans {id="prediction-spans",tag="class"}
-
-模型或处理流程输出的只读集合。通过 [`Timeline.annotate_span()`](#timeline-annotate-span)
-写入 prediction 时必须提供非空 `source`。每个 source 独立应用与 reference 相同
-的重叠规则；不同 source 可以重叠。source 区分大小写且不会自动去除空白。完整规则见
-[标注校验规范](/asr-data/annotations#validation)。
-
-## PredictionSpans.by_source {id="prediction-by-source",tag="method"}
-
-查询指定来源的全部 prediction annotation。
-
-| Name        | Description                          |
-| ----------- | ------------------------------------ |
-| `source`    | 来源名称。~~str~~                    |
-| **RETURNS** | 匹配的标注列表。~~List[TimeSpan]~~ |
-
-## PredictionSpans.transcript {id="prediction-transcript",tag="method"}
-
-组合指定来源的转写。
+组合指定预测来源的转写。
 
 > #### Example
 >
 > ```python
 > from asr_data import AudioSource
-> from asr_data.annotation import Transcription
+> from asr_data.annotation import Speech, Transcription
 >
 > URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
 > timeline = AudioSource.from_url(URL).load().timeline("mono")
-> timeline.annotate_span(
+> timeline.annotate(
 >     0,
 >     timeline.duration_ms,
->     Transcription("甚至出现交易几乎停滞的情况", language="zh"),
+>     Speech(transcription=Transcription("甚至出现交易几乎停滞的情况")),
 >     is_reference=False,
 >     source="whisper-large",
 > )
 >
-> result = timeline.prediction.transcript("whisper-large")
+> result = timeline.prediction_transcript("whisper-large")
 > print(result.text)
 > ```
 
@@ -933,83 +988,148 @@ Sentence。Python 目前不提供 Sentence 的创建方法。
 | `source`    | 来源名称。~~str~~            |
 | **RETURNS** | 组合后的转写。~~Transcript~~ |
 
-## PredictionSpans.remove_by_source {id="prediction-remove-source",tag="method"}
+没有对应来源时文本为空；`source` 为空白字符串时抛出 `ValueError`。
 
-删除指定来源的全部预测。
+## Timeline.remove_predictions {id="timeline-remove-predictions",tag="method"}
+
+删除指定来源的全部预测事件，并返回删除的事件条数。
 
 | Name        | Description             |
 | ----------- | ----------------------- |
 | `source`    | 要删除的来源。~~str~~   |
-| **RETURNS** | 删除的标注数量。~~int~~ |
+| **RETURNS** | 删除的事件数量。~~int~~ |
 
-## PredictionSpans.relabel_source {id="prediction-relabel-source",tag="method"}
+## Timeline.relabel_prediction_source {id="timeline-relabel-prediction-source",tag="method"}
 
-批量重命名 prediction 来源。若新来源会造成重叠冲突，操作报错且不会修改任何标注。
+批量把预测来源从 `from_source` 改成 `to_source`。若改名后同一来源里的事件会重叠，
+操作报错且不会修改任何事件。
 
 > #### Example
 >
 > ```python
 > from asr_data import AudioSource
-> from asr_data.annotation import Transcription
+> from asr_data.annotation import Speech, Transcription
 >
 > URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
 > timeline = AudioSource.from_url(URL).load().timeline("mono")
-> timeline.annotate_span(
+> timeline.annotate(
 >     0,
 >     timeline.duration_ms,
->     Transcription("甚至出现交易几乎停滞的情况"),
+>     Speech(transcription=Transcription("甚至出现交易几乎停滞的情况")),
 >     is_reference=False,
 >     source="whisper-raw",
 > )
 >
-> changed = timeline.prediction.relabel_source(
->     "whisper-raw",
->     "whisper-large-v2",
-> )
-> print(changed, timeline.prediction.sources["transcription"])
+> changed = timeline.relabel_prediction_source("whisper-raw", "whisper-large-v2")
+> print(changed)
 > ```
 
 | Name          | Description             |
 | ------------- | ----------------------- |
 | `from_source` | 原来源名称。~~str~~     |
 | `to_source`   | 新来源名称。~~str~~     |
-| **RETURNS**   | 修改的标注数量。~~int~~ |
+| **RETURNS**   | 修改的事件数量。~~int~~ |
 
-`prediction.spans` 返回全部预测；`prediction.sources` 返回按 annotation
-类型分组的来源字典，每组内排序并去重；`len(prediction)` 返回标注数量。例如：
+## AudioEvent {id="audio-event",tag="class"}
 
-```python
-{
-    "activity": ["silero-vad"],
-    "transcription": ["whisper-large-v2"],
-    "speaker": [],
-}
-```
-
-字典键是 annotation 类型名称，没有对应预测的类型返回空列表。
-
-## AudioActivity {id="audio-activity",tag="class"}
-
-声音活动 payload。`event` 可用于表达 `"speech"`、`"music"`、`"cough"`、`"noise"`
-等业务需要的声音类别；省略时表示只确认该区间存在活动，但事件类别未知。
+音频事件基类。音乐、噪声、静音以及其他非语音事件都用它；语音使用派生类
+[`Speech`](#speech)，事件名固定为 `"speech"`。直接构造时事件名不能是 `"speech"`。
+`Annotation` 是 `AudioEvent` 的类型别名，两者可互换。
 
 > #### Example
 >
 > ```python
-> from asr_data.annotation import AudioActivity
+> from asr_data.annotation import AudioEvent
 >
-> known = AudioActivity(event="speech", confidence=0.98)
-> unknown = AudioActivity()
-> print(known.event, known.confidence, unknown.event)
+> event = AudioEvent("music", confidence=0.98)
+> print(event.name, event.confidence)
 > ```
 
-| Name         | Description                                      |
-| ------------ | ------------------------------------------------ |
-| `event`      | 可选事件类别；空白字符串无效。~~Optional[str]~~ |
-| `confidence` | 可选活动检测置信度。~~Optional[float]~~          |
+| Name           | Description                                              |
+| -------------- | -------------------------------------------------------- |
+| `name`         | 事件名，例如 `"music"`、`"noise"`、`"silence"`。~~str~~ |
+| _keyword-only_ |                                                          |
+| `confidence`   | 可选检测置信度。~~Optional[float]~~                      |
 
-属性只读。不同 event 的活动允许重叠；相同 event 在同一 reference 集合或同一
+属性只读。不同 `name` 的事件允许重叠；相同 `name` 在同一 reference 集合或同一
 prediction source 中不得重叠。
+
+## AudioEvent properties {id="audio-event-properties",tag="properties"}
+
+| Name         | Description                                             |
+| ------------ | ------------------------------------------------------- |
+| `id`         | 写入 timeline 时生成的事件 ID。~~str~~                  |
+| `name`       | 事件名。~~str~~                                         |
+| `start_ms`   | 起始时间。~~int~~                                       |
+| `end_ms`     | 结束时间。~~int~~                                       |
+| `source`     | Prediction 来源；reference 为 `None`。~~Optional[str]~~ |
+| `confidence` | 可选检测置信度。~~Optional[float]~~                     |
+
+## AudioEvent.annotation {id="audio-event-annotation",tag="property"}
+
+事件自身就是标注内容，不再有独立的 `annotation` 包裹字段：基类通过 `name` 表达事件
+类别，[`Speech`](#speech) 通过 `language`、`speaker` 和 `transcription` 表达语音内容。
+需要读取某个声道的音频时，使用 `timeline.as_waveform()`；事件本身不提供
+`as_waveform()` 或 `display()`。
+
+> #### Example
+>
+> ```python
+> from asr_data.annotation import AudioEvent, Speech, Speaker, Transcription
+>
+> music = AudioEvent("music")
+> speech = Speech(
+>     language="zh",
+>     speaker=Speaker("agent"),
+>     transcription=Transcription("甚至出现交易几乎停滞的情况"),
+> )
+> print(music.name, speech.transcription.text)
+> ```
+
+| Name        | Description                            |
+| ----------- | -------------------------------------- |
+| **RETURNS** | 事件自身承载的标注内容。~~AudioEvent~~ |
+
+## Speech {id="speech",tag="class"}
+
+从 [`AudioEvent`](#audio-event) 派生的语音事件，事件名固定为 `"speech"`。语种、
+说话人和转写都可以缺，因此只有活动区间的 VAD 结果也是一条合法语音。一段语音最多挂
+一个 [`Speaker`](#speaker)；两人同时说话时写成两段重叠的语音。
+
+> #### Example
+>
+> ```python
+> from asr_data.annotation import Sentence, Speech, Speaker, Token, Transcription
+>
+> speech = Speech(
+>     language="zh",
+>     speaker=Speaker("agent", gender="female"),
+>     transcription=Transcription(
+>         "甚至出现交易几乎停滞的情况",
+>         sentences=[
+>             Sentence(
+>                 "甚至出现交易几乎停滞的情况",
+>                 0,
+>                 3_000,
+>                 tokens=[Token("甚至出现", start_ms=0, end_ms=1_000)],
+>             )
+>         ],
+>     ),
+>     confidence=0.97,
+> )
+> print(speech.name, speech.language, speech.speaker.name)
+> ```
+
+| Name            | Description                             |
+| --------------- | --------------------------------------- |
+| `language`      | 可选 BCP-47 语种标签。~~Optional[str]~~ |
+| `speaker`       | 可选说话人。~~Optional[Speaker]~~       |
+| `transcription` | 可选转写。~~Optional[Transcription]~~   |
+| `confidence`    | 可选活动检测置信度。~~Optional[float]~~ |
+
+`Speech` 继承 [`AudioEvent`](#audio-event) 的 `id`、`name`、`start_ms`、`end_ms`、
+`source` 和 `confidence`，并额外提供 `language`、`speaker` 和 `transcription`。
+句子时间必须落在语音范围内，token 时间必须落在句子范围内。
 
 ## Token {id="token",tag="class"}
 
@@ -1044,118 +1164,100 @@ prediction source 中不得重叠。
 
 ## Transcription {id="transcription",tag="class"}
 
-完整转写 payload，包含文本、[`Token`](#token) 列表、语言和置信度。
+一段语音里的转写。全文 `text` 是最小内容，句级 [`Sentence`](#sentence) 和句内
+[`Token`](#token) 都可以空着。评测和 transcript 组合使用全文，不从句子再拼一次。
+语种不在这里，而挂在 [`Speech`](#speech) 上。
 
 > #### Example
 >
 > ```python
-> from asr_data.annotation import Token, Transcription
+> from asr_data.annotation import Sentence, Token, Transcription
 >
 > transcription = Transcription(
 >     "甚至出现交易几乎停滞的情况",
->     tokens=[Token("甚至出现"), Token("交易几乎停滞的情况")],
->     language="zh",
+>     sentences=[
+>         Sentence(
+>             "甚至出现交易几乎停滞的情况",
+>             0,
+>             3_000,
+>             tokens=[Token("甚至出现", start_ms=0, end_ms=1_000)],
+>         )
+>     ],
 >     confidence=0.93,
 > )
-> print(transcription.text, transcription.language)
+> print(transcription.text, transcription.confidence)
 > ```
 
-| Name           | Description                                      |
-| -------------- | ------------------------------------------------ |
-| `text`         | 完整转写文本。~~str~~                            |
-| _keyword-only_ |                                                  |
-| `tokens`       | Token 列表，默认为空。~~Optional[List[Token]]~~  |
-| `language`     | 可选语言标签。~~Optional[str]~~                  |
-| `confidence`   | 可选 transcription 级置信度。~~Optional[float]~~ |
+| Name           | Description                                            |
+| -------------- | ------------------------------------------------------ |
+| `text`         | 整段转写文本。~~str~~                                  |
+| _keyword-only_ |                                                        |
+| `sentences`    | Sentence 列表，默认为空。~~Optional[List[Sentence]]~~  |
+| `confidence`   | 可选 transcription 级置信度。~~Optional[float]~~       |
 
-添加到 [`Timeline`](#timeline) 时，带时间范围的 token 必须完全位于所属
-[`TimeSpan`](#time-span) 范围内。
+添加到 [`Timeline`](#timeline) 时，句子必须落在所属 [`Speech`](#speech) 范围内且互不
+重叠，带时间范围的 token 必须完全位于所属 `Sentence` 范围内。
 
-## Speaker {id="speaker",tag="class"}
+## Sentence {id="sentence",tag="class"}
 
-一次说话人发话的 payload，由名称和可选 [`Transcription`](#transcription) 组成。
+一句话转写。时间是时间轴上的绝对毫秒，必须落在所属 [`Speech`](#speech) 范围内。
 
 > #### Example
 >
 > ```python
-> from asr_data.annotation import Speaker, Transcription
+> from asr_data.annotation import Sentence, Token
 >
-> speaker = Speaker(
->     "agent",
->     confidence=0.96,
->     transcription=Transcription(
->         "甚至出现交易几乎停滞的情况",
->         language="zh",
->     ),
+> sentence = Sentence(
+>     "甚至出现交易几乎停滞的情况",
+>     0,
+>     3_000,
+>     tokens=[Token("甚至出现", start_ms=0, end_ms=1_000)],
 > )
-> print(speaker.name, speaker.transcription.text)
+> print(sentence.text, sentence.start_ms, sentence.end_ms)
 > ```
 
-| Name            | Description                                     |
-| --------------- | ----------------------------------------------- |
-| `name`          | 说话人名称或业务标识。~~str~~                   |
-| _keyword-only_  |                                                 |
-| `transcription` | 该次发话的完整转写。~~Optional[Transcription]~~ |
-| `confidence`    | 可选说话人识别置信度。~~Optional[float]~~       |
+| Name           | Description                                          |
+| -------------- | ---------------------------------------------------- |
+| `text`         | 整句文本；可以为空。~~str~~                          |
+| `start_ms`     | 起始时间。~~int~~                                    |
+| `end_ms`       | 结束时间，必须晚于 `start_ms`。~~int~~               |
+| _keyword-only_ |                                                      |
+| `tokens`       | 可选 Token 列表，默认为空。~~Optional[List[Token]]~~ |
 
-`Speaker` 属性只读。添加后如需修改内容，应整体替换返回的
-[`TimeSpan`](#time-span) 句柄的 `annotation`。
+句子之间不得重叠，token 必须落在句子范围内。
+
+## Speaker {id="speaker",tag="class"}
+
+一段语音上的说话人。一段 [`Speech`](#speech) 最多挂一个说话人。转写不在这里，而挂在
+所属 [`Speech`](#speech) 上。
+
+> #### Example
+>
+> ```python
+> from asr_data.annotation import Speaker
+>
+> speaker = Speaker("agent", gender="female")
+> print(speaker.name, speaker.gender)
+> ```
+
+| Name           | Description                                                        |
+| -------------- | ------------------------------------------------------------------ |
+| `name`         | 说话人名称或业务标识；空白字符串无效。~~str~~                      |
+| _keyword-only_ |                                                                    |
+| `gender`       | 可选性别，取 `"male"`、`"female"` 或 `"unknown"`。~~Optional[str]~~ |
+
+`Speaker` 属性只读。两人同时说话时写成两段各自的 [`Speech`](#speech)，而不是给一段
+语音挂多个说话人。
 
 ## Transcript {id="transcript",tag="class"}
 
-由 [`TimeSpan`](#time-span) 集合生成的组合转写结果。
+由 [`Timeline.reference_transcript`](#timeline-reference-transcript) 或
+[`Timeline.prediction_transcript()`](#timeline-prediction-transcript) 组合得到的转写视图。
 
 | Name       | Description                         |
 | ---------- | ----------------------------------- |
 | `text`     | 按时间顺序组合的文本。~~str~~       |
 | `language` | 首个可用语言标签。~~Optional[str]~~ |
-
-## TimeSpan {id="time-span",tag="class"}
-
-[`Timeline`](#timeline) 中的一条带时间范围记录。`annotate_span()` 返回的不是快
-照，而是关联到 timeline 的活动句柄。它不提供 `kind`；标注类型直接由
-`span.annotation` 的对象类型表达。
-
-## TimeSpan properties {id="time-span-properties",tag="properties"}
-
-| Name         | Description                                                     |
-| ------------ | --------------------------------------------------------------- |
-| `id`         | 自动生成的 annotation ID。~~str~~                               |
-| `start_ms`   | 起始时间。~~int~~                                               |
-| `end_ms`     | 结束时间。~~int~~                                               |
-| `source`     | Prediction 来源；reference 为 `None`。~~Optional[str]~~         |
-| `annotation` | 实际标注内容。~~Annotation~~                                   |
-
-## TimeSpan.annotation / as_waveform {id="time-span-annotation",tag="property"}
-
-获取或整体替换标注内容。新 annotation 必须与当前内容类型一致。替换
-AudioActivity、Transcription 或 Speaker 时会重新校验 event、token 时间范围和重叠
-规则；校验失败时原内容保持不变。`as_waveform()` 返回当前 `[start_ms, end_ms)`
-对应的波形，`display()` 直接播放该范围，传入的起止时间使用 TimeSpan 内的局部
-坐标。完整规则见
-[标注校验规范](/asr-data/annotations#validation)。
-
-> #### Example
->
-> ```python
-> from asr_data import AudioSource
-> from asr_data.annotation import Speaker
->
-> URL = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
-> audio = AudioSource.from_url(URL).load()
-> timeline = audio.timeline("mono")
-> span = timeline.annotate_span(
->     0, timeline.duration_ms, Speaker("agent"), is_reference=True
-> )
->
-> print(span.annotation.name)
-> span.annotation = Speaker("reviewed-agent")
-> print(span.annotation.name, span.as_waveform().duration_ms)
-> ```
-
-| Name        | Description                                                       |
-| ----------- | ----------------------------------------------------------------- |
-| **RETURNS** | 当前标注内容。~~Annotation~~ |
 
 ## AudioDataset {id="audio-dataset",tag="class"}
 
@@ -1405,7 +1507,7 @@ AudioDB 时抛出 `AsrDataError`。
 
 ## AudioDB.eval_activity {id="audio-db-eval-activity",tag="method"}
 
-只评测 AudioActivity，并直接返回以 prediction source 为键的
+只评测音频事件（语音与非语音），并直接返回以 prediction source 为键的
 `DatasetActivityEvaluation` 字典：
 
 ```python
@@ -1494,15 +1596,6 @@ DER 不使用 collar。重叠说话按 speaker-time 计数；每条 timeline 独
 | `set_metadata(key, value)` | 设置值。~~None~~                     |
 | `metadata_value(key)`      | 读取值。~~Optional[Any]~~            |
 | `delete_metadata(key)`     | 删除值并返回是否存在。~~bool~~       |
-
-## Annotation {id="annotation-alias",tag="type alias"}
-
-`TimeSpan.annotation` 的返回类型。Python 公开的标注类型统一位于
-`asr_data.annotation` 模块。
-
-```python
-Annotation = AudioActivity | Speaker | Token | Transcription
-```
 
 ## AsrDataError {id="asr-data-error",tag="exception"}
 

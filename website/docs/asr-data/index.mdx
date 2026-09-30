@@ -54,7 +54,7 @@ cargo add asr-data
 
 <Image
   src="/asr-data/architecture.svg"
-  alt="asr-data 从 AudioSource 到 Audio、Waveform、AudioStream、Timeline 与 TimeSpan 的数据模型关系图"
+  alt="asr-data 从 AudioSource 到 Audio、Waveform、AudioStream、Timeline 与 AudioEvent 的数据模型关系图"
   width="1200"
 />
 
@@ -71,6 +71,9 @@ cargo add asr-data
   metadata、timeline 和标注。解码后的浮点波形不会写入数据库，读取后仍可按来源加载。
 - **数据集与评测**：[`AudioDataset`](/asr-data/api#audio-dataset) 组织可选的
   train、val、test 数据库；评测 API 支持转写、声音活动和说话人分离任务。
+- **卡片渲染**：`Audio`、`Waveform` 和 `Timeline` 在终端打印 `terminal_view()`
+  卡片，Jupyter 中由 `_repr_html_` 画出波形、时间刻度、事件条和转写轨道，便于快速
+  检查标注。
 
 以下示例假设 `audio.wav` 是单声道音频，因此可以直接读取 `mono` timeline。多声道音频
 应使用 `left`、`right` 或具体声道索引，详见[音频指南](/asr-data/audio)。
@@ -116,14 +119,14 @@ cargo add asr-data
 >
 > ```python
 > from asr_data import AudioDB, AudioSource
-> from asr_data.annotation import Transcription
+> from asr_data.annotation import Speech, Transcription
 >
 > audio = AudioSource.from_path("audio.wav").load(id="sample-001")
 > timeline = audio.timeline("mono")
-> timeline.annotate_span(
+> timeline.annotate(
 >     0,
 >     timeline.duration_ms,
->     Transcription("识别结果", language="zh"),
+>     Speech(language="zh", transcription=Transcription("识别结果")),
 >     is_reference=False,
 >     source="my-asr",
 > )
@@ -135,13 +138,16 @@ cargo add asr-data
 > #### Rust Example
 >
 > ```rust
-> use asr_data::{Audio, AudioChannel, AudioDb, Transcription};
+> use asr_data::{Audio, AudioChannel, AudioDb, Speech, Transcription};
 >
 > fn main() -> Result<(), Box<dyn std::error::Error>> {
 >     let mut audio = Audio::from_path("audio.wav")?;
 >     let end = audio.info.timeline_duration_ms();
 >     let timeline = audio.timeline_mut(AudioChannel::Mono)?.unwrap();
->     timeline.annotate_span_with(0, end, Transcription::new("识别结果"), false, Some("my-asr"))?;
+>     let speech = Speech::new()
+>         .with_language("zh")
+>         .with_transcription(Transcription::new("识别结果"));
+>     timeline.annotate_with(0, end, speech, false, Some("my-asr"))?;
 >
 >     let db = AudioDb::create("dataset.db")?;
 >     db.insert(&audio)?;
