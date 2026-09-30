@@ -16,7 +16,8 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
-modelhub = { git = "https://github.com/di-osc/modelhub", branch = "main", optional = true }
+# 本地用 git 分支，发布到 crates.io 时改用下面的 registry 版本。
+modelhub = { version = "0.2.0", git = "https://github.com/di-osc/modelhub", branch = "main", optional = true }
 numpy = { version = "0.27", optional = true }
 pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
 pythonize = { version = "0.27", optional = true }
