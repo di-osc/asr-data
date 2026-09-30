@@ -220,7 +220,7 @@ impl symphonia::core::io::MediaSource for HttpMediaSource {
 
 /// 按 `chunk_size_ms` 对流式解码 `source`，返回 [`DecodedAudioChunks`] 迭代器。
 ///
-/// 支持路径、HTTP(S) URL、`file://` URL、编码字节和 base64。原始 PCM 没有
+/// 支持路径、HTTP(S) URL、`file://` URL、ModelScope 文件、编码字节和 base64。原始 PCM 没有
 /// 容器可读，调用方应改走 [`Waveform::chunk`](super::Waveform::chunk)。
 ///
 /// # Errors
@@ -305,6 +305,24 @@ pub fn stream_source(source: &AudioSource, chunk_size_ms: u64) -> Result<Decoded
             let bytes = base64::engine::general_purpose::STANDARD.decode(raw)?;
             let encoding = detect_encoding(&bytes);
             (Box::new(Cursor::new(bytes)), Hint::new(), encoding)
+        }
+        AudioSource::ModelScope {
+            repo_id,
+            file_path,
+            revision,
+        } => {
+            // 整文件先进入 modelhub 缓存，再按本地文件流式解码。
+            let path = super::source::materialize_modelscope_file(repo_id, file_path, revision)?;
+            let mut hint = Hint::new();
+            if let Some(ext) = path.extension().and_then(|value| value.to_str()) {
+                hint.with_extension(ext);
+            }
+            let encoding = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(encoding_from_extension)
+                .unwrap_or(AudioEncoding::Unknown);
+            (Box::new(File::open(path)?), hint, encoding)
         }
         AudioSource::PcmS16Le { .. } => bail!("raw PCM uses the direct chunk iterator"),
     };

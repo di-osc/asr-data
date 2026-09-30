@@ -12,7 +12,7 @@ use super::audio::{
 };
 use super::common::{
     SharedAudio, audio_channel, audio_channel_name, format_duration_ms, format_source_field,
-    poisoned, py_error, py_path, terminal_view_html, truncate,
+    poisoned, py_error, py_path, truncate,
 };
 use super::timeline::PyTimeline;
 
@@ -164,6 +164,37 @@ impl PyAudio {
     #[pyo3(signature = (url, *, id=None))]
     fn from_url(py: Python<'_>, url: String, id: Option<String>) -> PyResult<Self> {
         Self::build(py, RustAudioSource::from_url(url), id)
+    }
+
+    /// 下载 ModelScope 数据集中的单个音频文件并完整加载 Audio。
+    ///
+    /// Args:
+    ///     repo_id: ModelScope 数据集仓库 ID。
+    ///     file_path: 仓库内相对路径。
+    ///     revision: 可选仓库 revision，默认 master。
+    ///     id: 可选的文档 ID。
+    ///
+    /// Returns:
+    ///     已完整解码的 Audio。
+    ///
+    /// Raises:
+    ///     ValueError: repo_id、file_path 或 revision 为空。
+    ///     AsrDataError: 下载失败或音频无法解码。
+    ///
+    /// Examples:
+    ///     >>> audio = Audio.from_modelscope("org/name", "wav/a.wav", id="sample")
+    #[staticmethod]
+    #[pyo3(signature = (repo_id, file_path, *, revision=None, id=None))]
+    fn from_modelscope(
+        py: Python<'_>,
+        repo_id: String,
+        file_path: String,
+        revision: Option<String>,
+        id: Option<String>,
+    ) -> PyResult<Self> {
+        let source = RustAudioSource::from_modelscope(repo_id, file_path, revision.as_deref())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Self::build(py, source, id)
     }
 
     /// 从带容器或编码信息的音频字节完整加载 Audio。
@@ -512,10 +543,15 @@ impl PyAudio {
         Ok(audio.terminal_view().to_string())
     }
 
-    fn _repr_html_(&self) -> PyResult<String> {
-        let audio = self.inner.read().map_err(|_| poisoned("audio"))?;
-        let rendered = audio.terminal_view_with_color(true).to_string();
-        Ok(terminal_view_html(&rendered))
+    /// Jupyter 卡片。样本不在库里时先解码再画波形，失败时仍返回其余内容。
+    fn _repr_html_(&self, py: Python<'_>) -> PyResult<String> {
+        let inner = Arc::clone(&self.inner);
+        // 库里的文档不存样本。展示前解码一次并留在文档上，波形才能画出来。
+        py.detach(move || {
+            let mut audio = inner.write().map_err(|_| poisoned("audio"))?;
+            let _ = audio.as_waveform();
+            Ok(audio.notebook_html())
+        })
     }
 }
 

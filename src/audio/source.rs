@@ -3,8 +3,10 @@
 //! [`AudioSource`] 只保存怎么找到音频，真正的 I/O 和解码发生在
 //! [`AudioSource::probe`]、[`AudioSource::load`] 或 [`AudioSource::stream`]。
 
-use std::path::PathBuf;
+use std::future::Future;
+use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use super::{Waveform, decode, local_path_from_urlish, waveform};
@@ -145,6 +147,18 @@ pub enum AudioSource {
         sample_rate: u32,
         channels: u16,
     },
+    /// ModelScope 数据集仓库中的单个音频文件。
+    ///
+    /// 只保存仓库身份。下载发生在 [`Self::probe`]、[`Self::load`] 或
+    /// [`Self::stream`]，缓存由 modelhub 管理。
+    ModelScope {
+        /// 数据集仓库 ID，例如 `org/name`。
+        repo_id: String,
+        /// 仓库内相对路径，例如 `wav/a.wav`。
+        file_path: String,
+        /// 仓库 revision；构造时缺省为 `master`。
+        revision: String,
+    },
 }
 
 impl AudioSource {
@@ -187,6 +201,28 @@ impl AudioSource {
         }
     }
 
+    /// 从 ModelScope 数据集中的单个文件构造来源，不立即下载。
+    ///
+    /// `revision` 为 `None` 时使用 `master`。`repo_id`、`file_path` 和显式
+    /// `revision` 去掉首尾空白后不能为空。
+    ///
+    /// # Errors
+    ///
+    /// 仓库 ID、文件路径或 revision 为空时返回错误。
+    pub fn from_modelscope(
+        repo_id: impl Into<String>,
+        file_path: impl Into<String>,
+        revision: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let (repo_id, file_path, revision) =
+            normalize_modelscope_identity(repo_id, file_path, revision)?;
+        Ok(Self::ModelScope {
+            repo_id,
+            file_path,
+            revision,
+        })
+    }
+
     /// 按变体选择解码路径，得到清洗后的 [`Waveform`]。
     ///
     /// HTTP URL 若其实是本地 `file://` 或普通路径，会改走文件解码。
@@ -211,6 +247,15 @@ impl AudioSource {
                 sample_rate,
                 channels,
             } => Waveform::from_i16_pcm_bytes_with_channels(bytes, *sample_rate, *channels)?,
+            Self::ModelScope {
+                repo_id,
+                file_path,
+                revision,
+            } => {
+                // 先落到 modelhub 缓存，再按本地文件解码。
+                let path = materialize_modelscope_file(repo_id, file_path, revision)?;
+                decode::decode_path_audio(&path)?
+            }
         };
         let mut waveform = waveform;
         waveform::sanitize_samples(&mut waveform.samples);
@@ -350,12 +395,20 @@ impl AudioSource {
                     },
                 })
             }
+            Self::ModelScope {
+                repo_id,
+                file_path,
+                revision,
+            } => {
+                let path = materialize_modelscope_file(repo_id, file_path, revision)?;
+                decode::probe_path(&path)
+            }
         }
     }
 
     /// 异步探测 [`AudioInfo`]。
     ///
-    /// HTTP(S) URL 先异步下载再在阻塞线程里 probe；其它来源整段放到 worker。
+    /// HTTP(S) URL 和 ModelScope 文件先异步下载，再在阻塞线程里 probe；其它来源整段放到 worker。
     ///
     /// # Errors
     ///
@@ -365,6 +418,16 @@ impl AudioSource {
             Self::Url(url) if url.starts_with("http://") || url.starts_with("https://") => {
                 let bytes = decode::download_url_bytes(url).await?;
                 tokio::task::spawn_blocking(move || decode::probe_bytes(bytes))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("audio probe worker failed: {error}"))?
+            }
+            Self::ModelScope {
+                repo_id,
+                file_path,
+                revision,
+            } => {
+                let path = download_modelscope_file(repo_id, file_path, revision).await?;
+                tokio::task::spawn_blocking(move || decode::probe_path(&path))
                     .await
                     .map_err(|error| anyhow::anyhow!("audio probe worker failed: {error}"))?
             }
@@ -390,6 +453,147 @@ impl AudioSource {
     }
 }
 
+const DEFAULT_MODELSCOPE_REVISION: &str = "master";
+
+/// 校验并规范化 ModelScope 身份，缺省 revision 为 `master`。
+///
+/// # Errors
+///
+/// 仓库 ID、文件路径或 revision 去掉空白后为空时返回错误。
+fn normalize_modelscope_identity(
+    repo_id: impl Into<String>,
+    file_path: impl Into<String>,
+    revision: Option<&str>,
+) -> anyhow::Result<(String, String, String)> {
+    let repo_id = repo_id.into().trim().to_owned();
+    let file_path = file_path.into().trim().to_owned();
+    let revision = revision
+        .unwrap_or(DEFAULT_MODELSCOPE_REVISION)
+        .trim()
+        .to_owned();
+    ensure_modelscope_identity(&repo_id, &file_path, &revision)?;
+    Ok((repo_id, file_path, revision))
+}
+
+/// 拒绝空的仓库 ID、文件路径或 revision。
+///
+/// # Errors
+///
+/// 任一字段去掉空白后为空时返回错误。
+fn ensure_modelscope_identity(
+    repo_id: &str,
+    file_path: &str,
+    revision: &str,
+) -> anyhow::Result<()> {
+    if repo_id.trim().is_empty() {
+        anyhow::bail!("ModelScope repository id must not be empty");
+    }
+    if file_path.trim().is_empty() {
+        anyhow::bail!("ModelScope file path must not be empty");
+    }
+    if revision.trim().is_empty() {
+        anyhow::bail!("ModelScope revision must not be empty");
+    }
+    Ok(())
+}
+
+/// 同步下载 ModelScope 音频文件，返回 modelhub 缓存中的本地路径。
+///
+/// # Errors
+///
+/// 身份为空、未启用 `modelscope` feature、下载失败或仓库不是数据集时返回错误。
+pub(crate) fn materialize_modelscope_file(
+    repo_id: &str,
+    file_path: &str,
+    revision: &str,
+) -> anyhow::Result<PathBuf> {
+    block_on(download_modelscope_file(repo_id, file_path, revision))
+}
+
+/// 通过 modelhub 下载数据集中的单个文件。
+///
+/// 只请求这一个 ModelScope 数据集文件。缓存已有时直接返回，不再访问网络。
+/// 返回值是 modelhub 给出的落盘路径，不会链到 ModelScope 原生缓存。
+///
+/// # Errors
+///
+/// 身份为空、未启用 `modelscope` feature、下载失败，或仓库不是数据集时返回错误。
+pub(crate) async fn download_modelscope_file(
+    repo_id: &str,
+    file_path: &str,
+    revision: &str,
+) -> anyhow::Result<PathBuf> {
+    ensure_modelscope_identity(repo_id, file_path, revision)?;
+    download_modelscope_dataset_file(repo_id, file_path, revision, None).await
+}
+
+/// 下载单个数据集文件。`cache_dir` 为 `None` 时使用 modelhub 默认缓存根目录。
+///
+/// # Errors
+///
+/// 未启用 `modelscope` feature、下载失败、仓库不是数据集，或 modelhub 没有返回文件路径时返回错误。
+async fn download_modelscope_dataset_file(
+    repo_id: &str,
+    file_path: &str,
+    revision: &str,
+    cache_dir: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    #[cfg(not(feature = "modelscope"))]
+    {
+        let _ = (repo_id, file_path, revision, cache_dir);
+        anyhow::bail!("ModelScope audio sources require the `modelscope` feature");
+    }
+    #[cfg(feature = "modelscope")]
+    {
+        let mut options = modelhub::DownloadOptions::new(repo_id);
+        // 已知是 ModelScope 数据集，跳过对 Hugging Face 和模型仓库的探测。
+        options.kind = Some(modelhub::RepoKind::Dataset);
+        options.backend = Some(modelhub::Backend::ModelScope);
+        options.revision = Some(revision.to_owned());
+        options.file = Some(file_path.to_owned());
+        options.progress = false;
+        if let Some(cache_dir) = cache_dir {
+            options.cache_root = cache_dir.to_path_buf();
+        }
+        let downloaded = modelhub::download(&options).await.with_context(|| {
+            format!(
+                "failed to download ModelScope dataset {repo_id:?} file {file_path:?} at revision {revision:?}"
+            )
+        })?;
+        if downloaded.kind != modelhub::RepoKind::Dataset {
+            anyhow::bail!("ModelScope repository {repo_id:?} is not a dataset");
+        }
+        downloaded.file.with_context(|| {
+            format!(
+                "modelhub did not return a local path for ModelScope dataset {repo_id:?} file {file_path:?}"
+            )
+        })
+    }
+}
+
+/// 若当前已在 tokio runtime 内，则到新线程里 `block_on`，避免嵌套 runtime。
+fn block_on<F>(future: F) -> F::Output
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    tokio::runtime::Runtime::new()
+                        .expect("create tokio runtime")
+                        .block_on(future)
+                })
+                .join()
+                .expect("join download thread")
+        });
+    }
+    tokio::runtime::Runtime::new()
+        .expect("create tokio runtime")
+        .block_on(future)
+}
+
 impl From<&str> for AudioSource {
     fn from(value: &str) -> Self {
         Self::new(value)
@@ -405,5 +609,38 @@ impl From<String> for AudioSource {
 impl From<PathBuf> for AudioSource {
     fn from(value: PathBuf) -> Self {
         Self::Path(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AudioSource;
+
+    #[test]
+    fn modelscope_source_rejects_empty_identity() {
+        assert!(AudioSource::from_modelscope(" ", "wav/a.wav", None).is_err());
+        assert!(AudioSource::from_modelscope("org/name", "", None).is_err());
+        assert!(AudioSource::from_modelscope("org/name", "wav/a.wav", Some(" ")).is_err());
+    }
+
+    #[test]
+    fn modelscope_source_defaults_revision_and_roundtrips() {
+        let source =
+            AudioSource::from_modelscope(" org/name ", " wav/a.wav ", None).expect("identity");
+        match &source {
+            AudioSource::ModelScope {
+                repo_id,
+                file_path,
+                revision,
+            } => {
+                assert_eq!(repo_id, "org/name");
+                assert_eq!(file_path, "wav/a.wav");
+                assert_eq!(revision, "master");
+            }
+            _ => panic!("expected ModelScope source"),
+        }
+        let encoded = serde_json::to_string(&source).expect("encode");
+        let decoded: AudioSource = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(source, decoded);
     }
 }

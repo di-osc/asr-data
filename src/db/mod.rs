@@ -14,7 +14,7 @@ mod schema;
 
 pub use query::read_audio_db_info;
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 const APPLICATION_ID: i64 = 0x5641_5352; // "VASR"
 /// 查询默认返回条数。
 pub const DEFAULT_QUERY_LIMIT: usize = 100;
@@ -54,6 +54,22 @@ pub enum AudioDbError {
     InvalidCreatedTimeRange,
     #[error("audio query updated_from exceeds updated_until")]
     InvalidUpdatedTimeRange,
+    #[error("ModelScope repository id must not be empty")]
+    EmptyRepositoryId,
+    #[error("ModelScope file path must not be empty")]
+    EmptyFilePath,
+    #[error("ModelScope revision must not be empty")]
+    EmptyRevision,
+    #[error(
+        "failed to download ModelScope dataset {repo_id:?} file {file_path:?} at revision {revision:?}: {source}"
+    )]
+    ModelScopeDownload {
+        repo_id: String,
+        file_path: String,
+        revision: String,
+        #[source]
+        source: anyhow::Error,
+    },
 }
 
 /// SQLite 持久化的音频文档集合。

@@ -7,7 +7,7 @@ use crate::db::{AudioDb, AudioDbError, AudioQuery};
 use crate::doc::Audio;
 use crate::metrics::CerStats;
 use crate::timeline::{
-    Annotation, Timeline, TimelineEvalConfig, TimelineEvalError, TranscriptionNormalization,
+    AudioEvent, Timeline, TimelineEvalConfig, TimelineEvalError, TranscriptionNormalization,
     normalize_transcription_text,
 };
 
@@ -430,10 +430,7 @@ impl DatasetEvaluator {
         let Some(selection) = self.activity_selection.as_deref() else {
             return Ok(());
         };
-        let has_reference = timeline
-            .reference
-            .iter()
-            .any(|annotation| matches!(annotation.annotation, Annotation::Activity(_)));
+        let has_reference = !timeline.reference.is_empty();
         if !has_reference {
             self.activity_unannotated.insert(timeline_key.to_owned());
             return Ok(());
@@ -606,7 +603,7 @@ impl SpeakerDatasetEvaluator {
                 .prediction
                 .iter()
                 .filter(|span| is_speaker_annotation(span))
-                .filter_map(|span| span.source.clone())
+                .filter_map(|event| event.source().map(str::to_owned))
                 .collect::<BTreeSet<_>>();
             let sources = sources_for_timeline(&self.selection, &available);
             for source in sources {
@@ -662,9 +659,9 @@ impl SpeakerDatasetEvaluator {
     }
 }
 
-/// 是否为说话人标注。
-fn is_speaker_annotation(span: &crate::timeline::TimeSpan) -> bool {
-    matches!(span.annotation, Annotation::Speaker(_))
+/// 是否为带说话人的语音标注。
+fn is_speaker_annotation(event: &AudioEvent) -> bool {
+    event.speaker().is_some()
 }
 
 /// 用最大权匹配对齐参考/预测说话人区间，计算 DER 分量。
@@ -677,7 +674,7 @@ fn evaluate_speakers(timeline: &Timeline, source: &str) -> SpeakerStats {
     let prediction = timeline
         .prediction
         .iter()
-        .filter(|span| span.source.as_deref() == Some(source))
+        .filter(|event| event.source() == Some(source))
         .filter_map(speaker_span)
         .collect::<Vec<_>>();
     let reference_labels = reference
@@ -759,15 +756,14 @@ fn evaluate_speakers(timeline: &Timeline, source: &str) -> SpeakerStats {
     stats
 }
 
-/// 取出说话人姓名和起止毫秒。
-fn speaker_span(span: &crate::timeline::TimeSpan) -> Option<(&str, u64, u64)> {
-    let Annotation::Speaker(speaker) = &span.annotation else {
-        return None;
-    };
+/// 取出语音上的说话人姓名和起止毫秒。没有说话人的语音不参与说话人评估。
+fn speaker_span(event: &AudioEvent) -> Option<(&str, u64, u64)> {
+    let speaker = event.speaker()?;
+    let range = event.range();
     Some((
         speaker.name.as_str(),
-        span.range.start_ms as u64,
-        span.range.end_ms as u64,
+        range.start_ms as u64,
+        range.end_ms as u64,
     ))
 }
 
@@ -1119,13 +1115,9 @@ fn finish_activity(
         .collect()
 }
 
-/// 是否为转写或句子类文本标注。
-fn is_text_annotation(annotation: &crate::timeline::TimeSpan) -> bool {
-    match &annotation.annotation {
-        Annotation::Transcription(_) | Annotation::Sentence(_) => true,
-        Annotation::Speaker(speaker) => speaker.transcription.is_some(),
-        _ => false,
-    }
+/// 是否为带非空转写的语音。
+fn is_text_annotation(event: &AudioEvent) -> bool {
+    event.transcription().is_some()
 }
 
 /// numerator/denominator；分母为 0 时返回 0。

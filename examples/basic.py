@@ -1,15 +1,11 @@
-from pathlib import Path
-
 from asr_data import Audio
 
 
 def main() -> None:
-
-    example_path = Path(__file__).resolve().parents[1] / "assets" / "example.wav"
-    audio = Audio.from_path(example_path)
-
+    """加载示例音频，打印音频卡片和波形卡片。"""
     url = "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
     audio = Audio.from_url(url)
+    print(audio)
 
     waveform = audio.as_waveform()
     print(waveform)

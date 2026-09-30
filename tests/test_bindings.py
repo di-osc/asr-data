@@ -195,6 +195,9 @@ def test_audio_source_factories_and_variant_properties():
     assert path.pcm is None
     assert path.sample_rate is None
     assert path.channels is None
+    assert path.repo_id is None
+    assert path.file_path is None
+    assert path.revision is None
 
     url = source_type.from_url("https://example.com/audio.wav")
     assert url.kind == "url"
@@ -370,6 +373,32 @@ def test_audio_dataset_from_modelscope_validates_identity_before_download():
         AudioDataset.from_modelscope("")
     with pytest.raises(ValueError, match="revision"):
         AudioDataset.from_modelscope("di-osc/calls", revision="")
+
+
+def test_audio_source_from_modelscope_keeps_identity_without_downloading():
+    source = AudioSource.from_modelscope(" org/name ", " wav/a.wav ")
+    assert source.kind == "modelscope"
+    assert source.repo_id == "org/name"
+    assert source.file_path == "wav/a.wav"
+    assert source.revision == "master"
+    assert source.path is None
+    assert "org/name@master:wav/a.wav" in repr(source)
+
+    with pytest.raises(ValueError, match="repository id"):
+        AudioSource.from_modelscope(" ", "wav/a.wav")
+    with pytest.raises(ValueError, match="file path"):
+        AudioSource.from_modelscope("org/name", "")
+    with pytest.raises(ValueError, match="revision"):
+        AudioSource.from_modelscope("org/name", "wav/a.wav", revision=" ")
+
+
+def test_audio_db_from_modelscope_validates_identity_before_download():
+    with pytest.raises(ValueError, match="repository id"):
+        AudioDB.from_modelscope("", "train.db")
+    with pytest.raises(ValueError, match="file path"):
+        AudioDB.from_modelscope("di-osc/calls", " ")
+    with pytest.raises(ValueError, match="revision"):
+        AudioDB.from_modelscope("di-osc/calls", "train.db", revision="")
 
 
 def test_ensure_timeline_accepts_fractional_audio_duration():
@@ -1174,16 +1203,17 @@ def test_public_types_have_informative_repr(tmp_path):
     assert "Left" in rendered_audio
     assert "Right" in rendered_audio
     assert "Reference" in rendered_audio
-    assert "“hello" in rendered_audio
+    assert "💬  hello world" in rendered_audio
     assert "duration=3.25s" in repr(waveform)
     assert 'text="hello world"' in repr(annotation)
     assert str(annotation) == 'transcription [100..800ms]: "hello world"'
     assert 'duration="3.25s"' in repr(audio.timeline("left"))
     rendered_timeline = str(audio.timeline("left"))
     assert " Timeline · " in rendered_timeline
-    assert "3.250 s  ·  1 reference  ·  0 prediction" in rendered_timeline
-    assert "audio · call-1" in rendered_timeline
-    assert "Reference · Transcription" in rendered_timeline
+    assert "⏱  3.250 s  ·  ◆ 1 reference  ·  ◇ 0 prediction" in rendered_timeline
+    assert "🎵  audio · call-1" in rendered_timeline
+    assert "🎙 Speech" in rendered_timeline
+    assert "💬  hello world" in rendered_timeline
     assert repr(db).endswith('mode="read-write", audios=1, duration="3.25s")')
 
 

@@ -20,7 +20,8 @@ use super::evaluation::{
 
 /// 持久化 Audio 的 SQLite 数据库。
 ///
-/// 使用 AudioDB.create 创建新数据库，使用 AudioDB.open 打开已有数据库。
+/// 使用 AudioDB.create 创建新数据库，使用 AudioDB.open 打开已有数据库，
+/// 使用 AudioDB.from_modelscope 下载并只读打开 ModelScope 上的数据库文件。
 #[pyclass(name = "AudioDB")]
 #[derive(Clone)]
 struct PyAudioDb {
@@ -339,6 +340,51 @@ impl PyAudioDb {
         })
     }
 
+    /// 下载 ModelScope 数据集中的一个数据库文件，并以只读方式打开。
+    ///
+    /// Args:
+    ///     repo_id: ModelScope 数据集仓库 ID。
+    ///     file_path: 仓库内数据库路径，例如 ``train.db``。
+    ///     revision: 可选仓库 revision，默认 master。
+    ///     cache_dir: 可选 modelhub 缓存根目录。
+    ///
+    /// Returns:
+    ///     只读打开的 AudioDB。``path`` 是下载后的本地文件。
+    ///
+    /// Raises:
+    ///     ValueError: repo_id、file_path 或 revision 为空。
+    ///     AsrDataError: 下载失败，或文件不是受支持的 AudioDB。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioDB
+    ///     >>> db = AudioDB.from_modelscope("di-osc/aishell-1", "train.db")
+    #[staticmethod]
+    #[pyo3(signature = (repo_id, file_path, *, revision=None, cache_dir=None))]
+    fn from_modelscope(
+        py: Python<'_>,
+        repo_id: String,
+        file_path: String,
+        revision: Option<String>,
+        cache_dir: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let cache_dir = py_path_opt(cache_dir)?;
+        let (path, db) = py
+            .detach(move || {
+                crate::dataset::open_modelscope_database(
+                    &repo_id,
+                    &file_path,
+                    revision.as_deref(),
+                    cache_dir.as_deref(),
+                )
+            })
+            .map_err(py_db_error)?;
+        Ok(Self {
+            inner: Arc::new(Mutex::new(db)),
+            path: path.display().to_string(),
+            read_only: true,
+        })
+    }
+
     /// 插入一条新 Audio。
     ///
     /// Args:
@@ -578,7 +624,7 @@ impl PyAudioDb {
             .collect())
     }
 
-    /// 评测数据库中的 AudioActivity 结果。
+    /// 评测数据库中的音频事件。语音和其他事件都算活动。
     ///
     /// Args:
     ///     source: Activity 来源或来源列表；省略时自动发现。

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use thiserror::Error;
 
-use super::{Annotation, TimeSpan, Timeline};
+use super::{AudioEvent, Timeline};
 use crate::metrics::{
     CerStats, ChineseTextNormalizationOptions, TextNormalizationError, compute_cer,
     normalize_for_cer, normalize_zh_with_options, normalize_zh_without_tn,
@@ -342,10 +342,8 @@ impl Timeline {
 
         let mut activity = BTreeMap::new();
         if let Some(selection) = activity_selection {
-            let has_reference = self
-                .reference
-                .iter()
-                .any(|annotation| matches!(annotation.annotation, Annotation::Activity(_)));
+            // 每个 span 都是一个音频事件，语音的事件名固定为 speech。
+            let has_reference = !self.reference.is_empty();
             if has_reference {
                 for source in selected_sources(selection, self.activity_sources()) {
                     let evaluation = self.evaluate_activity(&source)?;
@@ -370,16 +368,17 @@ impl Timeline {
         self.prediction
             .iter()
             .filter(|annotation| is_final_text_annotation(annotation))
-            .filter_map(|annotation| annotation.source.clone())
+            .filter_map(|event| event.source().map(str::to_owned))
             .collect()
     }
 
     /// 这条时间轴上出现过的活动预测 source。
+    ///
+    /// 语音和其他音频事件都算活动。
     pub fn activity_sources(&self) -> BTreeSet<String> {
         self.prediction
             .iter()
-            .filter(|annotation| matches!(annotation.annotation, Annotation::Activity(_)))
-            .filter_map(|annotation| annotation.source.clone())
+            .filter_map(|event| event.source().map(str::to_owned))
             .collect()
     }
 
@@ -439,29 +438,17 @@ impl Timeline {
             });
         }
         let overall = interval_counts(&reference, &prediction, self.duration as u64);
-        let reference_events = activity_events(self.reference.iter());
-        let prediction_events = activity_events(self.predictions_by_source(source));
-        let unknown_reference = merged_unknown_activity_ranges(self.reference.iter());
-        let event_names = if reference_events.is_empty() {
-            BTreeSet::new()
-        } else {
-            reference_events
-                .union(&prediction_events)
-                .cloned()
-                .collect()
-        };
+        let event_names = activity_events(self.reference.iter())
+            .union(&activity_events(self.predictions_by_source(source)))
+            .cloned()
+            .collect::<BTreeSet<_>>();
         let events = event_names
             .into_iter()
             .map(|event| {
                 let reference = merged_activity_ranges(self.reference.iter(), Some(&event));
                 let prediction =
                     merged_activity_ranges(self.predictions_by_source(source), Some(&event));
-                let counts = masked_interval_counts(
-                    &reference,
-                    &prediction,
-                    &unknown_reference,
-                    self.duration as u64,
-                );
+                let counts = interval_counts(&reference, &prediction, self.duration as u64);
                 (
                     event.clone(),
                     ActivityEventEvaluation {
@@ -572,29 +559,20 @@ fn selected_sources(selection: &[String], available: BTreeSet<String>) -> BTreeS
     }
 }
 
-/// 转写或句子标注才参与整段 CER。
-fn is_final_text_annotation(annotation: &TimeSpan) -> bool {
-    match &annotation.annotation {
-        Annotation::Transcription(_) | Annotation::Sentence(_) => true,
-        Annotation::Speaker(speaker) => speaker.transcription.is_some(),
-        _ => false,
-    }
+/// 带转写的语音才参与整段 CER。
+fn is_final_text_annotation(event: &AudioEvent) -> bool {
+    // 只要挂了转写就算文本事件。空全文表示假设文本被整段删掉。
+    event.transcription().is_some()
 }
 
-/// 合并指定 source 的活动区间。
+/// 合并活动区间。`event` 为空时合并全部 span，否则只合并同名事件。
 fn merged_activity_ranges<'a>(
-    annotations: impl Iterator<Item = &'a TimeSpan>,
-    event: Option<&str>,
+    annotations: impl Iterator<Item = &'a AudioEvent>,
+    event_name: Option<&str>,
 ) -> Vec<TimeRange> {
     let mut ranges = annotations
-        .filter_map(|annotation| match &annotation.annotation {
-            Annotation::Activity(activity)
-                if event.is_none() || activity.event.as_deref() == event =>
-            {
-                Some(annotation.range)
-            }
-            _ => None,
-        })
+        .filter(|event| event_name.is_none_or(|name| event.name() == name))
+        .map(|event| event.range())
         .filter(|range| range.end_ms > range.start_ms)
         .collect::<Vec<_>>();
     ranges.sort_by_key(|range| (range.start_ms, range.end_ms));
@@ -611,53 +589,9 @@ fn merged_activity_ranges<'a>(
     merged
 }
 
-/// 合并未命名事件的参考活动，用作评估掩码。
-fn merged_unknown_activity_ranges<'a>(
-    annotations: impl Iterator<Item = &'a TimeSpan>,
-) -> Vec<TimeRange> {
-    let annotations = annotations.collect::<Vec<_>>();
-    let mut unknown = annotations
-        .iter()
-        .filter_map(|annotation| match &annotation.annotation {
-            Annotation::Activity(activity) if activity.event.is_none() => Some(annotation.range),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let mut labeled = annotations
-        .iter()
-        .filter_map(|annotation| match &annotation.annotation {
-            Annotation::Activity(activity) if activity.event.is_some() => Some(annotation.range),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    subtract_ranges(&merge_ranges(&mut unknown), &merge_ranges(&mut labeled))
-}
-
-/// 收集活动事件名集合。
-fn activity_events<'a>(annotations: impl Iterator<Item = &'a TimeSpan>) -> BTreeSet<String> {
-    annotations
-        .filter_map(|annotation| match &annotation.annotation {
-            Annotation::Activity(activity) => activity.event.clone(),
-            _ => None,
-        })
-        .collect()
-}
-
-/// 把相交或相邻的区间合并。
-fn merge_ranges(ranges: &mut Vec<TimeRange>) -> Vec<TimeRange> {
-    ranges.retain(|range| range.end_ms > range.start_ms);
-    ranges.sort_by_key(|range| (range.start_ms, range.end_ms));
-    let mut merged: Vec<TimeRange> = Vec::new();
-    for range in ranges.drain(..) {
-        if let Some(previous) = merged.last_mut()
-            && range.start_ms <= previous.end_ms
-        {
-            previous.end_ms = previous.end_ms.max(range.end_ms);
-        } else {
-            merged.push(range);
-        }
-    }
-    merged
+/// 收集活动事件名。语音固定记为 `speech`。
+fn activity_events<'a>(annotations: impl Iterator<Item = &'a AudioEvent>) -> BTreeSet<String> {
+    annotations.map(|event| event.name().to_owned()).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -692,57 +626,6 @@ fn interval_counts(
         false_positive_ms,
         false_negative_ms,
     }
-}
-
-/// 先去掉掩码区间再统计。
-fn masked_interval_counts(
-    reference: &[TimeRange],
-    prediction: &[TimeRange],
-    mask: &[TimeRange],
-    duration_ms: u64,
-) -> IntervalCounts {
-    let reference = subtract_ranges(reference, mask);
-    let prediction = subtract_ranges(prediction, mask);
-    interval_counts(
-        &reference,
-        &prediction,
-        duration_ms.saturating_sub(ranges_duration(mask)),
-    )
-}
-
-/// 从区间中减去掩码覆盖的部分。
-fn subtract_ranges(ranges: &[TimeRange], masks: &[TimeRange]) -> Vec<TimeRange> {
-    let mut result = Vec::new();
-    for range in ranges {
-        let mut fragments = vec![*range];
-        for mask in masks {
-            let mut next = Vec::new();
-            for fragment in fragments {
-                if !fragment.overlaps(mask) {
-                    next.push(fragment);
-                    continue;
-                }
-                if fragment.start_ms < mask.start_ms {
-                    next.push(TimeRange::new(
-                        fragment.start_ms,
-                        fragment.end_ms.min(mask.start_ms),
-                    ));
-                }
-                if mask.end_ms < fragment.end_ms {
-                    next.push(TimeRange::new(
-                        fragment.start_ms.max(mask.end_ms),
-                        fragment.end_ms,
-                    ));
-                }
-            }
-            fragments = next;
-            if fragments.is_empty() {
-                break;
-            }
-        }
-        result.extend(fragments);
-    }
-    result
 }
 
 /// 区间总时长（毫秒）。

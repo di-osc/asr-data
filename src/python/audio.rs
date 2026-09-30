@@ -14,7 +14,7 @@ use pyo3::types::{PyAny, PyBytes, PyDict};
 use super::AsrDataError;
 use super::common::{
     SharedAudio, audio_channel, encoding_name, format_duration_ms, poisoned, py_error, py_path,
-    summarize_url, terminal_view_html, truncate,
+    summarize_url, truncate,
 };
 use super::doc::PyAudio;
 use super::timeline::PyTimeline;
@@ -299,6 +299,39 @@ impl PyWaveform {
     #[staticmethod]
     fn from_url(py: Python<'_>, url: String) -> PyResult<Self> {
         py.detach(move || RustWaveform::from_url(url))
+            .map(Self::from_rust)
+            .map_err(py_error)
+    }
+
+    /// 下载 ModelScope 数据集中的单个音频文件并解码。
+    ///
+    /// Args:
+    ///     repo_id: ModelScope 数据集仓库 ID。
+    ///     file_path: 仓库内相对路径。
+    ///     revision: 可选仓库 revision，默认 master。
+    ///
+    /// Returns:
+    ///     解码后的完整 Waveform。
+    ///
+    /// Raises:
+    ///     ValueError: repo_id、file_path 或 revision 为空。
+    ///     AsrDataError: 下载失败或音频无法解码。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import Waveform
+    ///     >>> audio = Waveform.from_modelscope("org/name", "wav/a.wav")
+    #[staticmethod]
+    #[pyo3(signature = (repo_id, file_path, *, revision=None))]
+    fn from_modelscope(
+        py: Python<'_>,
+        repo_id: String,
+        file_path: String,
+        revision: Option<String>,
+    ) -> PyResult<Self> {
+        // 先校验身份，避免把参数错误当成下载失败。
+        RustAudioSource::from_modelscope(&repo_id, &file_path, revision.as_deref())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        py.detach(move || RustWaveform::from_modelscope(repo_id, file_path, revision.as_deref()))
             .map(Self::from_rust)
             .map_err(py_error)
     }
@@ -655,11 +688,7 @@ impl PyWaveform {
     }
 
     fn _repr_html_(&self, py: Python<'_>) -> PyResult<String> {
-        let rendered = self
-            .materialize(py)?
-            .terminal_view_with_color(true)
-            .to_string();
-        Ok(terminal_view_html(&rendered))
+        Ok(self.materialize(py)?.notebook_html())
     }
 }
 
@@ -1242,6 +1271,52 @@ impl PyAudioStream {
         )
     }
 
+    /// 下载 ModelScope 数据集中的单个音频文件并创建 AudioStream。
+    ///
+    /// Args:
+    ///     repo_id: ModelScope 数据集仓库 ID。
+    ///     file_path: 仓库内相对路径。
+    ///     revision: 可选仓库 revision，默认 master。
+    ///     chunk_size_ms: 每个 chunk 的目标时长。
+    ///     id: 可选的文档 ID。
+    ///     sample_rate: 输出采样率；缺省保持源采样率。
+    ///     mono: 为 True 时把多声道平均成单声道。
+    ///
+    /// Returns:
+    ///     尚未开始迭代的 AudioStream。
+    ///
+    /// Raises:
+    ///     ValueError: repo_id、file_path、revision 为空，或 chunk_size_ms 为零。
+    ///     AsrDataError: 文件无法下载或探测。
+    ///
+    /// Examples:
+    ///     >>> stream = AudioStream.from_modelscope("org/name", "wav/a.wav", chunk_size_ms=100)
+    #[staticmethod]
+    #[pyo3(signature = (
+        repo_id,
+        file_path,
+        chunk_size_ms=100,
+        *,
+        revision=None,
+        id=None,
+        sample_rate=None,
+        mono=None
+    ))]
+    fn from_modelscope(
+        py: Python<'_>,
+        repo_id: String,
+        file_path: String,
+        chunk_size_ms: u64,
+        revision: Option<String>,
+        id: Option<String>,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> PyResult<Self> {
+        let source = RustAudioSource::from_modelscope(&repo_id, &file_path, revision.as_deref())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        create_audio_stream(py, source, id, chunk_size_ms, sample_rate, mono)
+    }
+
     /// 从带容器或编码信息的音频字节创建 AudioStream。
     ///
     /// Args:
@@ -1722,7 +1797,7 @@ fn load_source(
 
 /// 尚未解码的音频来源描述。
 ///
-/// AudioSource 保留路径、URL、编码字节、base64 或 PCM 参数；真正的 I/O
+/// AudioSource 保留路径、URL、ModelScope 文件、编码字节、base64 或 PCM 参数；真正的 I/O
 /// 和解码发生在 probe、load 或 stream。
 ///
 /// Examples:
@@ -1839,7 +1914,36 @@ impl PyAudioSource {
         }
     }
 
-    /// 来源类型：path、url、bytes、base64 或 pcm。
+    /// 从 ModelScope 数据集中的单个音频文件创建来源，不立即下载。
+    ///
+    /// Args:
+    ///     repo_id: ModelScope 数据集仓库 ID。
+    ///     file_path: 仓库内相对路径。
+    ///     revision: 可选仓库 revision，默认 master。
+    ///
+    /// Returns:
+    ///     尚未下载的 AudioSource。
+    ///
+    /// Raises:
+    ///     ValueError: repo_id、file_path 或 revision 为空。
+    ///
+    /// Examples:
+    ///     >>> from asr_data import AudioSource
+    ///     >>> AudioSource.from_modelscope("org/name", "wav/a.wav").kind
+    ///     'modelscope'
+    #[staticmethod]
+    #[pyo3(signature = (repo_id, file_path, *, revision=None))]
+    fn from_modelscope(
+        repo_id: String,
+        file_path: String,
+        revision: Option<String>,
+    ) -> PyResult<Self> {
+        RustAudioSource::from_modelscope(repo_id, file_path, revision.as_deref())
+            .map(|inner| Self { inner })
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// 来源类型：path、url、bytes、base64、pcm 或 modelscope。
     #[getter]
     fn kind(&self) -> &'static str {
         match &self.inner {
@@ -1848,6 +1952,7 @@ impl PyAudioSource {
             RustAudioSource::EncodedBytes(_) => "bytes",
             RustAudioSource::Base64(_) => "base64",
             RustAudioSource::PcmS16Le { .. } => "pcm",
+            RustAudioSource::ModelScope { .. } => "modelscope",
         }
     }
 
@@ -1910,6 +2015,33 @@ impl PyAudioSource {
     fn channels(&self) -> Option<u16> {
         match &self.inner {
             RustAudioSource::PcmS16Le { channels, .. } => Some(*channels),
+            _ => None,
+        }
+    }
+
+    /// ModelScope 来源的仓库 ID，否则为 None。
+    #[getter]
+    fn repo_id(&self) -> Option<String> {
+        match &self.inner {
+            RustAudioSource::ModelScope { repo_id, .. } => Some(repo_id.clone()),
+            _ => None,
+        }
+    }
+
+    /// ModelScope 来源的仓库内文件路径，否则为 None。
+    #[getter]
+    fn file_path(&self) -> Option<String> {
+        match &self.inner {
+            RustAudioSource::ModelScope { file_path, .. } => Some(file_path.clone()),
+            _ => None,
+        }
+    }
+
+    /// ModelScope 来源的 revision，否则为 None。
+    #[getter]
+    fn revision(&self) -> Option<String> {
+        match &self.inner {
+            RustAudioSource::ModelScope { revision, .. } => Some(revision.clone()),
             _ => None,
         }
     }
@@ -2024,6 +2156,14 @@ impl PyAudioSource {
                 bytes.len(),
                 sample_rate,
                 channels
+            ),
+            RustAudioSource::ModelScope {
+                repo_id,
+                file_path,
+                revision,
+            } => format!(
+                "AudioSource(modelscope={:?})",
+                truncate(&format!("{repo_id}@{revision}:{file_path}"), 72)
             ),
         }
     }

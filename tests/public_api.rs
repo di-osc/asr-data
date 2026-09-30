@@ -2,14 +2,15 @@ use std::path::Path;
 
 use asr_data::audio::{self, decode};
 use asr_data::{
-    ActivityEvaluation, ActivityEventEvaluation, Annotation, Audio, AudioActivity, AudioChannel,
-    AudioChunk, AudioDataset, AudioDatasetError, AudioDb, AudioDbError, AudioDbInfo, AudioDbMode,
-    AudioEncoding, AudioError, AudioFormat, AudioInfo, AudioQuery, AudioSource, AudioStream,
-    CerStats, ChineseTextNormalizationOptions, DEFAULT_QUERY_LIMIT, DatasetActivityEvaluation,
+    ActivityEvaluation, ActivityEventEvaluation, Audio, AudioChannel, AudioChunk, AudioDataset,
+    AudioDatasetError, AudioDb, AudioDbError, AudioDbInfo, AudioDbMode, AudioEncoding, AudioError,
+    AudioEvent, AudioFormat, AudioInfo, AudioQuery, AudioSource, AudioStream, CerStats,
+    ChineseTextNormalizationOptions, DEFAULT_QUERY_LIMIT, DatasetActivityEvaluation,
     DatasetActivityEventEvaluation, DatasetEvalError, DatasetEvaluation, DatasetEvaluator,
-    DatasetSpeakerEvaluation, DatasetTranscriptionEvaluation, MAX_QUERY_LIMIT, Sentence, Speaker,
-    StreamingResampler, TextNormalizationError, TimeRange, TimeSpan, Timeline, TimelineEvalConfig,
-    TimelineEvalError, TimelineEvaluation, Token, Transcript, Transcription,
+    DatasetSpeakerEvaluation, DatasetTranscriptionEvaluation, EventConflictKind, EventId,
+    EventOverlap, Gender, MAX_QUERY_LIMIT, SPEECH_EVENT_NAME, Sentence, Speaker, Speech,
+    StreamingResampler, TextNormalizationError, TimeRange, Timeline, TimelineEvalConfig,
+    TimelineEvalError, TimelineEvaluation, TimelineEventError, Token, Transcript, Transcription,
     TranscriptionEvaluation, TranscriptionNormalization, Waveform, compute_cer, evaluate_dataset,
     normalize_for_cer, normalize_zh, normalize_zh_with_options, read_audio_db_info,
 };
@@ -25,8 +26,13 @@ fn stable_public_paths_compile() {
     let _: Option<Audio> = None;
     let _: Option<AudioStream> = None;
     let _: Option<StreamingResampler> = None;
-    let _: Option<TimeSpan> = None;
-    let _: Option<Annotation> = None;
+    let _: Option<AudioEvent> = None;
+    let _: Option<EventId> = None;
+    let _: Option<EventConflictKind> = None;
+    let _: Option<EventOverlap> = None;
+    let _: Option<TimelineEventError> = None;
+    let _: Option<Gender> = None;
+    let _: &'static str = SPEECH_EVENT_NAME;
     let _: Option<AudioChannel> = None;
     let _: Option<AudioDbError> = None;
     let _: Option<AudioDbInfo> = None;
@@ -37,6 +43,9 @@ fn stable_public_paths_compile() {
     let _: Option<AudioInfo> = None;
     let _: Option<AudioQuery> = None;
     let _: Option<AudioSource> = None;
+    let _ = AudioSource::from_modelscope("org/name", "wav/a.wav", None);
+    let _: fn(&str, &str, Option<&str>, Option<&Path>) -> Result<AudioDb, AudioDbError> =
+        AudioDb::from_modelscope;
     let _: Option<CerStats> = None;
     let _: Option<Speaker> = None;
     let _: Option<Sentence> = None;
@@ -49,7 +58,7 @@ fn stable_public_paths_compile() {
     let _: Option<TimelineEvalError> = None;
     let _: Option<TimelineEvaluation> = None;
     let _: Option<TranscriptionEvaluation> = None;
-    let _: Option<AudioActivity> = None;
+    let _: Option<Speech> = None;
     let _: Option<ActivityEvaluation> = None;
     let _: Option<ActivityEventEvaluation> = None;
     let _: Option<TranscriptionNormalization> = None;
@@ -138,10 +147,18 @@ fn audio_and_stream_convenience_factories_are_public() {
 fn timeline_uses_one_annotation_write_method() {
     let mut timeline = Timeline::new("audio", 1_000);
     timeline
-        .annotate_span(0, 1_000, AudioActivity::new().with_event("speech"))
+        .annotate(0, 1_000, Speech::new())
         .expect("reference annotation");
     timeline
-        .annotate_span_with(0, 1_000, Transcription::new("hello"), false, Some("asr"))
+        .annotate_with(
+            0,
+            1_000,
+            Speech::new().with_transcription(
+                Transcription::new("hello").with_sentences(vec![Sentence::new("hello", 0, 1_000)]),
+            ),
+            false,
+            Some("asr"),
+        )
         .expect("prediction annotation");
 
     assert_eq!(timeline.reference.len(), 1);

@@ -446,17 +446,19 @@ ModelScope 仓库通过 Rust [`modelhub`](https://crates.io/crates/modelhub) cra
 同一 revision 下可选 `README.md` 的 YAML front matter `license` 字段；文件或
 字段不存在时返回空字符串。数据库 metadata 不参与这些字段的计算。
 
-`revision` 默认为 `master`。`cache_dir` 省略时使用 modelhub 的 ModelScope 默认
-缓存目录，优先级为进程内覆盖、`MODELSCOPE_CACHE`、然后
-`$HOME/.cache/modelscope`；也可以显式传入缓存根目录。缓存布局为：
+`revision` 默认为 `master`。`cache_dir` 省略时使用 modelhub 缓存根目录，优先级为
+`MODELHUB_CACHE`，然后 `$HOME/.cache/modelhub`；也可以显式传入该缓存根目录。缓存布局为：
 
 ```text
-<cache>/datasets/<namespace--dataset>/snapshots/<revision>/
+<cache>/datasets/<namespace--dataset>/modelscope/snapshots/<revision>/
 ├── README.md
 ├── train.db
 ├── val.db
 └── test.db
 ```
+
+只打开其中一个数据库时使用 `AudioDB.from_modelscope(repo_id, file_path)`。它只下载
+该文件，并以只读方式打开，例如 `AudioDB.from_modelscope("di-osc/aishell-1", "train.db")`。
 
 快照中的其他仓库文件也会下载；文件已存在时由 modelhub 直接复用。远端切分允许
 读取、查询和评测；Python 还可以直接迭代 `AudioDB`，Rust 需要通过 `AudioQuery`

@@ -594,16 +594,13 @@ impl PyDatasetEvaluation {
 ///
 /// Examples:
 ///     >>> from asr_data import Audio, AudioSource, evaluate_dataset
-///     >>> from asr_data.annotation import Transcription
+///     >>> from asr_data.annotation import Speech, Transcription
 ///     >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
 ///     >>> timeline = doc.timeline("mono")
-///     >>> _ = timeline.annotate_span(
-///     ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
-///     ... )
-///     >>> _ = timeline.annotate_span(
-///     ...     0, timeline.duration_ms, Transcription("你好"),
-///     ...     is_reference=False, source="asr"
-///     ... )
+///     >>> end = timeline.duration_ms
+///     >>> speech = Speech(transcription=Transcription("你好"))
+///     >>> _ = timeline.annotate(0, end, speech)
+///     >>> _ = timeline.annotate(0, end, speech, is_reference=False, source="asr")
 ///     >>> evaluate_dataset([doc], transcription="asr").transcription["asr"].cer
 ///     0.0
 #[pyfunction(name = "evaluate_dataset")]

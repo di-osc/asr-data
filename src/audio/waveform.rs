@@ -62,7 +62,7 @@ impl fmt::Debug for Waveform {
     }
 }
 
-/// 终端打印时使用 [`Self::terminal_view`] 的卡片与波形布局。
+/// 终端打印时使用 [`Self::terminal_view`] 的卡片与波形。摘要行带图标。
 impl fmt::Display for Waveform {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.terminal_view().fmt(formatter)
@@ -239,6 +239,21 @@ impl Waveform {
     /// base64 非法或解码失败时返回错误。
     pub fn from_base64(data: impl Into<String>) -> anyhow::Result<Self> {
         AudioSource::from_base64(data).decode_waveform()
+    }
+
+    /// 下载 ModelScope 数据集中的单个音频文件并解码为波形。
+    ///
+    /// `revision` 为 `None` 时使用 `master`。
+    ///
+    /// # Errors
+    ///
+    /// 身份为空、下载失败或解码失败时返回错误。
+    pub fn from_modelscope(
+        repo_id: impl Into<String>,
+        file_path: impl Into<String>,
+        revision: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        AudioSource::from_modelscope(repo_id, file_path, revision)?.decode_waveform()
     }
 
     /// 从 PCM S16LE 字节构造波形。

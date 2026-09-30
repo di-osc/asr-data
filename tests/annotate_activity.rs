@@ -1,4 +1,12 @@
-use asr_data::{AudioActivity, AudioChannel, AudioSource, TimeRange};
+use asr_data::{AudioChannel, AudioEvent, AudioSource, Speech, TimeRange};
+
+/// 构造一条已经带上区间和来源的语音检测结果。
+fn speech_prediction(start: usize, end: usize, source: &str, confidence: f32) -> AudioEvent {
+    let mut speech = Speech::new().with_confidence(confidence);
+    speech.range = TimeRange::new(start, end);
+    speech.source = Some(source.to_owned());
+    speech.into()
+}
 
 #[test]
 fn annotate_activity_writes_per_channel_predictions() {
@@ -10,15 +18,12 @@ fn annotate_activity_writes_per_channel_predictions() {
         .annotate_activity(|channel, waveform| {
             assert_eq!(waveform.channels, 1);
             assert_eq!(waveform.sample_rate, 16_000);
-            Ok(vec![
-                AudioActivity::new()
-                    .with_event("speech")
-                    .with_confidence(0.9)
-                    .into_span(
-                        TimeRange::new(0, 100),
-                        format!("test-vad-{}", channel.name()),
-                    ),
-            ])
+            Ok(vec![speech_prediction(
+                0,
+                100,
+                &format!("test-vad-{}", channel.name()),
+                0.9,
+            )])
         })
         .expect("annotate each channel");
 
@@ -27,17 +32,14 @@ fn annotate_activity_writes_per_channel_predictions() {
         .expect("left channel")
         .expect("left timeline");
     assert_eq!(left.prediction.len(), 1);
-    assert_eq!(left.prediction[0].source.as_deref(), Some("test-vad-left"));
+    assert_eq!(left.prediction[0].source(), Some("test-vad-left"));
 
     let right = audio
         .timeline(asr_data::AudioChannel::Right)
         .expect("right channel")
         .expect("right timeline");
     assert_eq!(right.prediction.len(), 1);
-    assert_eq!(
-        right.prediction[0].source.as_deref(),
-        Some("test-vad-right")
-    );
+    assert_eq!(right.prediction[0].source(), Some("test-vad-right"));
 }
 
 #[test]
@@ -80,15 +82,12 @@ fn stream_annotate_activity_writes_per_chunk_predictions() {
             assert_eq!(waveform.sample_rate, 16_000);
             calls.push((channel, waveform.frame_count(), is_final));
             if is_final {
-                Ok(vec![
-                    AudioActivity::new()
-                        .with_event("speech")
-                        .with_confidence(0.8)
-                        .into_span(
-                            TimeRange::new(0, 100),
-                            format!("stream-vad-{}", channel.name()),
-                        ),
-                ])
+                Ok(vec![speech_prediction(
+                    0,
+                    100,
+                    &format!("stream-vad-{}", channel.name()),
+                    0.8,
+                )])
             } else {
                 Ok(Vec::new())
             }
@@ -111,10 +110,7 @@ fn stream_annotate_activity_writes_per_chunk_predictions() {
         .expect("left channel")
         .expect("left timeline");
     assert_eq!(left.prediction.len(), 1);
-    assert_eq!(
-        left.prediction[0].source.as_deref(),
-        Some("stream-vad-left")
-    );
+    assert_eq!(left.prediction[0].source(), Some("stream-vad-left"));
 }
 
 #[test]
@@ -131,12 +127,7 @@ fn stream_annotate_activity_chunk_keeps_intermediate_predictions() {
         let end = (chunk.end_ms() as usize).max(start.saturating_add(1));
         stream
             .annotate_activity_chunk(&chunk, |_channel, _waveform, _is_final| {
-                Ok(vec![
-                    AudioActivity::new()
-                        .with_event("speech")
-                        .with_confidence(0.7)
-                        .into_span(TimeRange::new(start, end), "chunk-vad"),
-                ])
+                Ok(vec![speech_prediction(start, end, "chunk-vad", 0.7)])
             })
             .expect("annotate one chunk");
         let timeline = stream

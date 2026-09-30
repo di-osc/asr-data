@@ -1,7 +1,17 @@
 use asr_data::{
-    AudioActivity, AudioDb, AudioFormat, AudioInfo, AudioQuery, AudioSource, DatasetEvaluator,
-    Speaker, TimelineEvalConfig, Transcription, TranscriptionNormalization, evaluate_dataset,
+    AudioDb, AudioEvent, AudioFormat, AudioInfo, AudioQuery, AudioSource, DatasetEvaluator,
+    Sentence, Speaker, Speech, TimelineEvalConfig, Transcription, TranscriptionNormalization,
+    evaluate_dataset,
 };
+
+/// 构造覆盖给定区间的单句语音。
+fn speech_text(text: &str, start: usize, end: usize) -> AudioEvent {
+    Speech::new()
+        .with_transcription(
+            Transcription::new(text).with_sentences(vec![Sentence::new(text, start, end)]),
+        )
+        .into()
+}
 
 fn doc(id: &str) -> asr_data::Audio {
     let source = AudioSource::PcmS16Le {
@@ -18,43 +28,36 @@ fn doc(id: &str) -> asr_data::Audio {
     asr_data::Audio::with_id_from_info(id, source, &info)
 }
 
-fn activity(event: Option<&str>) -> AudioActivity {
-    match event {
-        Some(event) => AudioActivity::new().with_event(event),
-        None => AudioActivity::new(),
-    }
-}
-
 #[test]
 fn aggregates_corpus_metrics_and_source_coverage() {
     let mut first = doc("first");
     let timeline = first.mono_timeline_mut().unwrap();
     timeline
-        .annotate_span(0, 1_000, Transcription::new("aaaa"))
+        .annotate(0, 1_000, speech_text("aaaa", 0, 1_000))
         .unwrap();
     timeline
-        .annotate_span_with(0, 1_000, Transcription::new("aaab"), false, Some("qwen"))
+        .annotate_with(0, 1_000, speech_text("aaab", 0, 1_000), false, Some("qwen"))
         .unwrap();
     timeline
-        .annotate_span_with(0, 1_000, Transcription::new("aaaa"), false, Some("whisper"))
+        .annotate_with(
+            0,
+            1_000,
+            speech_text("aaaa", 0, 1_000),
+            false,
+            Some("whisper"),
+        )
         .unwrap();
     timeline
-        .annotate_span(100, 500, activity(Some("speech")))
-        .unwrap();
-    timeline
-        .annotate_span_with(200, 600, activity(Some("speech")), false, Some("vad"))
+        .annotate_with(200, 600, Speech::new(), false, Some("vad"))
         .unwrap();
 
     let mut second = doc("second");
     let timeline = second.mono_timeline_mut().unwrap();
     timeline
-        .annotate_span(0, 1_000, Transcription::new("a"))
+        .annotate(0, 1_000, speech_text("a", 0, 1_000))
         .unwrap();
     timeline
-        .annotate_span_with(0, 1_000, Transcription::new(""), false, Some("qwen"))
-        .unwrap();
-    timeline
-        .annotate_span(100, 500, activity(Some("speech")))
+        .annotate_with(0, 1_000, speech_text("", 0, 1_000), false, Some("qwen"))
         .unwrap();
 
     let third = doc("third");
@@ -83,12 +86,12 @@ fn aggregates_corpus_metrics_and_source_coverage() {
     let vad = &result.activity["vad"];
     assert_eq!(vad.evaluated_timelines, 1);
     assert_eq!(vad.missing_predictions, 1);
-    assert_eq!(vad.true_positive_ms, 300);
-    assert_eq!(vad.false_positive_ms, 100);
-    assert_eq!(vad.false_negative_ms, 100);
-    assert_eq!(vad.true_negative_ms, 500);
+    assert_eq!(vad.true_positive_ms, 400);
+    assert_eq!(vad.false_positive_ms, 0);
+    assert_eq!(vad.false_negative_ms, 600);
+    assert_eq!(vad.true_negative_ms, 0);
     assert_eq!(vad.coverage(), 0.5);
-    assert_eq!(vad.events["speech"].true_positive_ms, 300);
+    assert_eq!(vad.events["speech"].true_positive_ms, 400);
 }
 
 #[test]
@@ -102,10 +105,10 @@ fn audio_db_evaluation_pages_through_every_matching_document() {
         let mut audio = doc(&format!("audio-{index:03}"));
         let timeline = audio.mono_timeline_mut().unwrap();
         timeline
-            .annotate_span(0, 1_000, Transcription::new("a"))
+            .annotate(0, 1_000, speech_text("a", 0, 1_000))
             .unwrap();
         timeline
-            .annotate_span_with(0, 1_000, Transcription::new("a"), false, Some("asr"))
+            .annotate_with(0, 1_000, speech_text("a", 0, 1_000), false, Some("asr"))
             .unwrap();
         db.insert(&audio).unwrap();
     }
@@ -139,19 +142,25 @@ fn audio_db_speaker_evaluation_is_label_invariant() {
     let mut audio = doc("speakers");
     let timeline = audio.mono_timeline_mut().unwrap();
     timeline
-        .annotate_span(0, 500, Speaker::new("alice"))
+        .annotate(0, 500, Speech::new().with_speaker(Speaker::new("alice")))
         .unwrap();
     timeline
-        .annotate_span(500, 1_000, Speaker::new("bob"))
+        .annotate(500, 1_000, Speech::new().with_speaker(Speaker::new("bob")))
         .unwrap();
     timeline
-        .annotate_span_with(0, 500, Speaker::new("speaker_1"), false, Some("diarizer"))
+        .annotate_with(
+            0,
+            500,
+            Speech::new().with_speaker(Speaker::new("speaker_1")),
+            false,
+            Some("diarizer"),
+        )
         .unwrap();
     timeline
-        .annotate_span_with(
+        .annotate_with(
             500,
             1_000,
-            Speaker::new("speaker_0"),
+            Speech::new().with_speaker(Speaker::new("speaker_0")),
             false,
             Some("diarizer"),
         )
@@ -176,10 +185,10 @@ fn streaming_evaluator_matches_the_convenience_function() {
     let mut audio = doc("one");
     let timeline = audio.mono_timeline_mut().unwrap();
     timeline
-        .annotate_span(0, 1_000, Transcription::new("a"))
+        .annotate(0, 1_000, speech_text("a", 0, 1_000))
         .unwrap();
     timeline
-        .annotate_span_with(0, 1_000, Transcription::new("a"), false, Some("asr"))
+        .annotate_with(0, 1_000, speech_text("a", 0, 1_000), false, Some("asr"))
         .unwrap();
     let config = TimelineEvalConfig::new()
         .with_transcription("asr")
@@ -196,22 +205,22 @@ fn combined_sources_match_separate_source_evaluations_with_normalization() {
     let mut audio = doc("normalized");
     let timeline = audio.mono_timeline_mut().unwrap();
     timeline
-        .annotate_span(0, 1_000, Transcription::new("今天是2024年1月2日"))
+        .annotate(0, 1_000, speech_text("今天是2024年1月2日", 0, 1_000))
         .unwrap();
     timeline
-        .annotate_span_with(
+        .annotate_with(
             0,
             1_000,
-            Transcription::new("今天是二零二四年一月二日"),
+            speech_text("今天是二零二四年一月二日", 0, 1_000),
             false,
             Some("qwen"),
         )
         .unwrap();
     timeline
-        .annotate_span_with(
+        .annotate_with(
             0,
             1_000,
-            Transcription::new("今天是2024年1月3日"),
+            speech_text("今天是2024年1月3日", 0, 1_000),
             false,
             Some("whisper"),
         )

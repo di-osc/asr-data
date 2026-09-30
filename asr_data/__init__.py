@@ -1,6 +1,14 @@
 import asyncio as _asyncio
 
-from .annotation import Annotation, AudioActivity, Speaker, Token, Transcription
+from .annotation import (
+    Annotation,
+    AudioEvent,
+    Sentence,
+    Speaker,
+    Speech,
+    Token,
+    Transcription,
+)
 from ._native import (
     ActivityEvaluation,
     ActivityEventEvaluation,
@@ -18,10 +26,7 @@ from ._native import (
     DatasetEvaluation,
     DatasetSpeakerEvaluation,
     DatasetTranscriptionEvaluation,
-    PredictionSpans,
-    ReferenceSpans,
     StreamingResampler,
-    TimeSpan,
     Timeline,
     TimelineEvaluation,
     Transcript,
@@ -91,7 +96,7 @@ __all__ = [
     "Annotation",
     "AsrDataError",
     "Audio",
-    "AudioActivity",
+    "AudioEvent",
     "AudioChunk",
     "AudioDB",
     "AudioDataset",
@@ -104,11 +109,10 @@ __all__ = [
     "DatasetEvaluation",
     "DatasetSpeakerEvaluation",
     "DatasetTranscriptionEvaluation",
-    "PredictionSpans",
-    "ReferenceSpans",
+    "Sentence",
     "Speaker",
+    "Speech",
     "StreamingResampler",
-    "TimeSpan",
     "Timeline",
     "TimelineEvaluation",
     "Token",

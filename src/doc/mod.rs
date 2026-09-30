@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::audio::{
     AudioChannel, AudioChunk, AudioEncoding, AudioFormat, AudioInfo, AudioSource, Waveform,
 };
-use crate::timeline::{TimeSpan, Timeline, TimelineSpanError};
+use crate::timeline::{AudioEvent, Timeline, TimelineEventError};
 
 /// An audio source together with all annotations and per-audio metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -77,6 +77,21 @@ impl Audio {
     /// 解码失败时返回错误。
     pub fn from_base64(data: impl Into<String>) -> anyhow::Result<Self> {
         AudioSource::from_base64(data).load()
+    }
+
+    /// 下载 ModelScope 数据集中的单个音频文件并加载完整文档。
+    ///
+    /// `revision` 为 `None` 时使用 `master`。
+    ///
+    /// # Errors
+    ///
+    /// 身份为空、下载失败或解码失败时返回错误。
+    pub fn from_modelscope(
+        repo_id: impl Into<String>,
+        file_path: impl Into<String>,
+        revision: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        AudioSource::from_modelscope(repo_id, file_path, revision)?.load()
     }
 
     /// 从 PCM S16LE 字节加载完整文档。
@@ -266,7 +281,7 @@ impl Audio {
     /// 解码失败、缺少 timeline，或写入 span 违反 source / 重叠约束时返回错误。
     pub fn annotate_activity<F>(&mut self, mut detect: F) -> anyhow::Result<()>
     where
-        F: FnMut(AudioChannel, &Waveform) -> anyhow::Result<Vec<TimeSpan>>,
+        F: FnMut(AudioChannel, &Waveform) -> anyhow::Result<Vec<AudioEvent>>,
     {
         let channels = self.timelines.keys().copied().collect::<Vec<_>>();
         for channel in channels {
@@ -447,32 +462,28 @@ impl Audio {
                     found: timeline.duration,
                 });
             }
-            for annotation in &timeline.reference {
-                if annotation.source.is_some() {
+            for event in &timeline.reference {
+                if event.source().is_some() {
                     return Err(AudioValidationError::ReferenceAnnotationHasSource {
                         channel: *channel,
-                        annotation_id: annotation.id.clone(),
+                        annotation_id: event.id().to_owned(),
                     });
                 }
             }
-            for annotation in &timeline.prediction {
-                if annotation
-                    .source
-                    .as_deref()
-                    .is_none_or(|source| source.trim().is_empty())
-                {
+            for event in &timeline.prediction {
+                if event.source().is_none_or(|source| source.trim().is_empty()) {
                     return Err(AudioValidationError::PredictionAnnotationMissingSource {
                         channel: *channel,
-                        annotation_id: annotation.id.clone(),
+                        annotation_id: event.id().to_owned(),
                     });
                 }
             }
-            for annotation in timeline.all_spans() {
-                if annotation.range.end_ms > timeline.duration {
+            for event in timeline.all_spans() {
+                if event.range().end_ms > timeline.duration {
                     return Err(AudioValidationError::AnnotationOutOfBounds {
                         channel: *channel,
-                        annotation_id: annotation.id.clone(),
-                        end: annotation.range.end_ms,
+                        annotation_id: event.id().to_owned(),
+                        end: event.range().end_ms,
                         duration: timeline.duration,
                     });
                 }
@@ -596,6 +607,42 @@ impl AudioStream {
         AudioSource::from_base64(data).stream(chunk_size_ms)
     }
 
+    /// 下载 ModelScope 数据集中的单个音频文件并创建流。
+    ///
+    /// `revision` 为 `None` 时使用 `master`。
+    ///
+    /// # Errors
+    ///
+    /// 身份为空、下载、探测失败或 `chunk_size_ms` 为 0 时返回错误。
+    pub fn from_modelscope(
+        repo_id: impl Into<String>,
+        file_path: impl Into<String>,
+        revision: Option<&str>,
+        chunk_size_ms: u64,
+    ) -> anyhow::Result<Self> {
+        AudioSource::from_modelscope(repo_id, file_path, revision)?.stream(chunk_size_ms)
+    }
+
+    /// 下载 ModelScope 音频并创建流，可指定输出采样率或转单声道。
+    ///
+    /// # Errors
+    ///
+    /// 身份为空、下载、探测失败、目标采样率为 0，或 `chunk_size_ms` 为 0 时返回错误。
+    pub fn from_modelscope_with(
+        repo_id: impl Into<String>,
+        file_path: impl Into<String>,
+        revision: Option<&str>,
+        chunk_size_ms: u64,
+        sample_rate: Option<u32>,
+        mono: Option<bool>,
+    ) -> anyhow::Result<Self> {
+        AudioSource::from_modelscope(repo_id, file_path, revision)?.stream_with(
+            chunk_size_ms,
+            sample_rate,
+            mono,
+        )
+    }
+
     /// 从 PCM S16LE 字节创建流。
     ///
     /// # Errors
@@ -717,7 +764,7 @@ impl AudioStream {
     /// 解码、声道抽取或写入 span 失败时返回错误。
     pub fn annotate_activity<F>(&mut self, mut detect: F) -> anyhow::Result<()>
     where
-        F: FnMut(AudioChannel, &Waveform, bool) -> anyhow::Result<Vec<TimeSpan>>,
+        F: FnMut(AudioChannel, &Waveform, bool) -> anyhow::Result<Vec<AudioEvent>>,
     {
         while let Some(chunk) = self.next() {
             self.annotate_activity_chunk(&chunk?, &mut detect)?;
@@ -738,9 +785,9 @@ impl AudioStream {
         &mut self,
         chunk: &AudioChunk,
         mut detect: F,
-    ) -> anyhow::Result<Vec<TimeSpan>>
+    ) -> anyhow::Result<Vec<AudioEvent>>
     where
-        F: FnMut(AudioChannel, &Waveform, bool) -> anyhow::Result<Vec<TimeSpan>>,
+        F: FnMut(AudioChannel, &Waveform, bool) -> anyhow::Result<Vec<AudioEvent>>,
     {
         let channels = self.timelines.keys().copied().collect::<Vec<_>>();
         let mut written = Vec::new();
@@ -902,7 +949,7 @@ pub enum AudioValidationError {
     #[error("invalid annotations on {channel:?}: {error}")]
     InvalidAnnotations {
         channel: AudioChannel,
-        error: TimelineSpanError,
+        error: TimelineEventError,
     },
 }
 
@@ -937,13 +984,14 @@ fn validate_channel(channel: AudioChannel) -> Result<(), AudioChannelError> {
 /// # Errors
 ///
 /// source 约束不满足或与已有 span 非法重叠时返回错误。
-fn write_prediction_spans(timeline: &mut Timeline, spans: Vec<TimeSpan>) -> anyhow::Result<()> {
-    for span in spans {
-        let source = span.source.clone();
-        timeline.annotate_span_with(
-            span.range.start_ms,
-            span.range.end_ms,
-            span.annotation,
+fn write_prediction_spans(timeline: &mut Timeline, events: Vec<AudioEvent>) -> anyhow::Result<()> {
+    for event in events {
+        let source = event.source().map(str::to_owned);
+        let range = event.range();
+        timeline.annotate_with(
+            range.start_ms,
+            range.end_ms,
+            event,
             false,
             source.as_deref(),
         )?;

@@ -2,10 +2,8 @@ use std::fmt;
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::Context;
-use serde::Deserialize;
 use thiserror::Error;
 
 use crate::db::{AudioDb, AudioDbError, AudioDbMode};
@@ -15,9 +13,6 @@ const TRAIN_DB_FILE: &str = "train.db";
 const VAL_DB_FILE: &str = "val.db";
 const TEST_DB_FILE: &str = "test.db";
 const DEFAULT_MODELSCOPE_REVISION: &str = "master";
-const MODELSCOPE_DATASET_FILES_URL: &str = "https://modelscope.cn/api/v1/datasets/<repo_id>/repo/tree?Recursive=True&Revision=<revision>&PageNumber=<page>&PageSize=<page_size>";
-const MODELSCOPE_DATASET_PAGE_SIZE: usize = 200;
-const MODELSCOPE_USER_AGENT: &str = "Mozilla/5.0 (compatible; asr-data/modelhub)";
 
 type OptionalDatabase = Option<(PathBuf, AudioDb)>;
 
@@ -94,9 +89,10 @@ impl AudioDataset {
     /// open any `train.db`, `val.db`, and `test.db` files that exist.
     ///
     /// Missing split databases are represented as [`None`]. Existing split
-    /// databases are opened read-only. `cache_dir` defaults to
-    /// [`modelhub::modelscope::cache_dir`], and `revision` defaults to
-    /// `master`.
+    /// databases are opened read-only. `cache_dir` is the modelhub cache root
+    /// and defaults to `MODELHUB_CACHE` or `~/.cache/modelhub`. `revision`
+    /// defaults to `master`. The snapshot lives at
+    /// `{cache}/datasets/{repo--id}/modelscope/snapshots/{revision}`.
     pub fn from_modelscope(
         repo_id: &str,
         revision: Option<&str>,
@@ -174,9 +170,10 @@ impl AudioDataset {
         if revision.trim().is_empty() {
             return Err(AudioDatasetError::EmptyRevision);
         }
-        let cache_dir = cache_dir
-            .map(Path::to_path_buf)
-            .unwrap_or_else(modelhub::modelscope::cache_dir);
+        let cache_dir = cache_dir.map(Path::to_path_buf).unwrap_or_else(|| {
+            // modelhub 0.2 的缓存根目录没有单独的公开函数，构造选项时会填入默认值。
+            modelhub::DownloadOptions::new("").cache_root
+        });
 
         let snapshot_path = downloader
             .download_dataset(repo_id, revision, &cache_dir)
@@ -334,7 +331,7 @@ trait ModelScopeDownloader {
     ) -> anyhow::Result<PathBuf>;
 }
 
-/// 默认 downloader：先走 modelhub API，失败再按文件树拉取。
+/// 默认 downloader：用 modelhub 下载完整数据集仓库。
 struct ModelHubDownloader;
 
 impl ModelScopeDownloader for ModelHubDownloader {
@@ -344,25 +341,66 @@ impl ModelScopeDownloader for ModelHubDownloader {
         revision: &str,
         cache_dir: &Path,
     ) -> anyhow::Result<PathBuf> {
-        block_on(async {
-            if let Err(error) =
-                modelhub::modelscope::download_dataset_revision(repo_id, revision, cache_dir).await
-            {
-                let error_chain = format!("{error:#}");
-                if !error_chain.contains("missing field `Success`") {
-                    return Err(error);
-                }
-                download_modelscope_snapshot_with_modelhub(repo_id, revision, cache_dir)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "modelhub whole-repository API was incompatible with the ModelScope response ({error_chain})"
-                        )
-                    })?;
-            }
-            Ok(modelscope_snapshot_path(cache_dir, repo_id, revision))
-        })
+        block_on(download_modelscope_snapshot(repo_id, revision, cache_dir))
     }
+}
+
+impl AudioDb {
+    /// 下载 ModelScope 数据集中的一个数据库文件，并以只读方式打开。
+    ///
+    /// `file_path` 是仓库内相对路径，例如 `train.db`。`revision` 缺省为
+    /// `master`。`cache_dir` 是 modelhub 缓存根目录，缺省为 `MODELHUB_CACHE`
+    /// 或 `~/.cache/modelhub`。缓存中的发布库保持只读。
+    ///
+    /// # Errors
+    ///
+    /// 身份为空、下载失败、仓库不是数据集，或文件不是受支持的 AudioDB 时返回错误。
+    pub fn from_modelscope(
+        repo_id: &str,
+        file_path: &str,
+        revision: Option<&str>,
+        cache_dir: Option<&Path>,
+    ) -> Result<Self, AudioDbError> {
+        Ok(open_modelscope_database(repo_id, file_path, revision, cache_dir)?.1)
+    }
+}
+
+/// 下载单个数据库文件并只读打开，同时返回落盘路径。
+///
+/// Python 绑定需要路径来填充 `AudioDB.path`。
+///
+/// # Errors
+///
+/// 身份为空、下载失败、仓库不是数据集，或文件不是受支持的 AudioDB 时返回错误。
+pub(crate) fn open_modelscope_database(
+    repo_id: &str,
+    file_path: &str,
+    revision: Option<&str>,
+    cache_dir: Option<&Path>,
+) -> Result<(PathBuf, AudioDb), AudioDbError> {
+    let repo_id = repo_id.trim();
+    let file_path = file_path.trim();
+    let revision = revision.unwrap_or(DEFAULT_MODELSCOPE_REVISION).trim();
+    if repo_id.is_empty() {
+        return Err(AudioDbError::EmptyRepositoryId);
+    }
+    if file_path.is_empty() {
+        return Err(AudioDbError::EmptyFilePath);
+    }
+    if revision.is_empty() {
+        return Err(AudioDbError::EmptyRevision);
+    }
+    let path = block_on(download_modelscope_database_file(
+        repo_id, file_path, revision, cache_dir,
+    ))
+    .map_err(|source| AudioDbError::ModelScopeDownload {
+        repo_id: repo_id.to_owned(),
+        file_path: file_path.to_owned(),
+        revision: revision.to_owned(),
+        source,
+    })?;
+    let database = AudioDb::open(&path, AudioDbMode::ReadOnly)?;
+    Ok((path, database))
 }
 
 /// 若当前已在 tokio runtime 内，则到新线程里 `block_on`，避免嵌套 runtime。
@@ -388,103 +426,73 @@ where
         .block_on(future)
 }
 
-/// modelhub 约定的数据集快照目录：`cache/datasets/<repo--id>/snapshots/<rev>`。
-fn modelscope_snapshot_path(cache_dir: &Path, repo_id: &str, revision: &str) -> PathBuf {
-    cache_dir
-        .join("datasets")
-        .join(repo_id.replace('/', "--"))
-        .join("snapshots")
-        .join(revision)
-}
-
-/// ModelScope 仓库文件树 API 的响应。
-#[derive(Deserialize)]
-struct ModelScopeRepoTreeResponse {
-    #[serde(rename = "Code")]
-    code: i64,
-    #[serde(rename = "Success")]
-    success: Option<bool>,
-    #[serde(rename = "Message", default)]
-    message: String,
-    #[serde(rename = "Data")]
-    data: Option<ModelScopeRepoTreeData>,
-}
-
-/// 文件树分页数据。
-#[derive(Deserialize)]
-struct ModelScopeRepoTreeData {
-    #[serde(rename = "Files")]
-    files: Vec<ModelScopeRepoFile>,
-}
-
-/// 仓库中的一个文件或目录项。
-#[derive(Deserialize)]
-struct ModelScopeRepoFile {
-    #[serde(rename = "Path")]
-    path: String,
-    #[serde(rename = "Type", default)]
-    file_type: String,
-}
-
-/// 当 modelhub 整仓 API 不兼容时，按文件树逐个下载快照。
-async fn download_modelscope_snapshot_with_modelhub(
+/// 用 modelhub 下载完整数据集，返回 ModelScope 快照目录。
+///
+/// 快照目录是 `{cache}/datasets/{repo--id}/modelscope/snapshots/{revision}`。
+///
+/// # Errors
+///
+/// 下载失败、仓库不是数据集，或没有 ModelScope 快照时返回错误。
+async fn download_modelscope_snapshot(
     repo_id: &str,
     revision: &str,
     cache_dir: &Path,
-) -> anyhow::Result<()> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .build()?;
-    let mut file_paths = Vec::new();
-
-    for page in 1usize.. {
-        let url = MODELSCOPE_DATASET_FILES_URL
-            .replace("<repo_id>", repo_id)
-            .replace("<revision>", &urlencoding::encode(revision))
-            .replace("<page>", &page.to_string())
-            .replace("<page_size>", &MODELSCOPE_DATASET_PAGE_SIZE.to_string());
-        let response = client
-            .get(url)
-            .header("User-Agent", MODELSCOPE_USER_AGENT)
-            .send()
-            .await?;
-        let status = response.status();
-        if !status.is_success() {
-            anyhow::bail!(
-                "failed to list ModelScope dataset files for {repo_id}@{revision}: HTTP {status}"
-            );
-        }
-        let response = serde_json::from_str::<ModelScopeRepoTreeResponse>(&response.text().await?)?;
-        if !response.success.unwrap_or(response.code == 200) {
-            anyhow::bail!(
-                "failed to list ModelScope dataset files for {repo_id}@{revision}: {}",
-                response.message
-            );
-        }
-        let files = response
-            .data
-            .context("ModelScope response did not include dataset file data")?
-            .files;
-        let count = files.len();
-        file_paths.extend(
-            files
-                .into_iter()
-                .filter(|file| file.file_type != "tree")
-                .map(|file| file.path),
-        );
-        if count < MODELSCOPE_DATASET_PAGE_SIZE {
-            break;
-        }
-    }
-
-    for file_path in file_paths {
-        modelhub::modelscope::download_dataset_file_revision(
-            repo_id, &file_path, revision, cache_dir,
-        )
+) -> anyhow::Result<PathBuf> {
+    let mut options = modelhub::DownloadOptions::new(repo_id);
+    // 已知是 ModelScope 数据集，跳过对 Hugging Face 和模型仓库的探测。
+    options.kind = Some(modelhub::RepoKind::Dataset);
+    options.backend = Some(modelhub::Backend::ModelScope);
+    options.revision = Some(revision.to_owned());
+    options.cache_root = cache_dir.to_path_buf();
+    options.progress = false;
+    let downloaded = modelhub::download(&options)
         .await
-        .with_context(|| format!("failed to download repository file {file_path:?}"))?;
+        .with_context(|| format!("failed to download ModelScope dataset {repo_id}@{revision}"))?;
+    if downloaded.kind != modelhub::RepoKind::Dataset {
+        anyhow::bail!("ModelScope repository {repo_id:?} is not a dataset");
     }
-    Ok(())
+    let root = downloaded.modelscope_root.with_context(|| {
+        format!("ModelScope dataset {repo_id}@{revision} did not produce a snapshot")
+    })?;
+    Ok(root.join("snapshots").join(revision))
+}
+
+/// 用 modelhub 下载数据集中的单个文件，返回落盘路径。
+///
+/// `cache_dir` 为 `None` 时使用 modelhub 默认缓存根目录。
+///
+/// # Errors
+///
+/// 下载失败、仓库不是数据集，或 modelhub 没有返回文件路径时返回错误。
+async fn download_modelscope_database_file(
+    repo_id: &str,
+    file_path: &str,
+    revision: &str,
+    cache_dir: Option<&Path>,
+) -> anyhow::Result<PathBuf> {
+    let mut options = modelhub::DownloadOptions::new(repo_id);
+    // 已知是 ModelScope 数据集，只请求这一个文件。
+    options.kind = Some(modelhub::RepoKind::Dataset);
+    options.backend = Some(modelhub::Backend::ModelScope);
+    options.revision = Some(revision.to_owned());
+    options.file = Some(file_path.to_owned());
+    options.progress = false;
+    if let Some(cache_dir) = cache_dir {
+        options.cache_root = cache_dir.to_path_buf();
+    }
+    let downloaded = modelhub::download(&options).await.with_context(|| {
+        format!(
+            "failed to download ModelScope dataset {repo_id:?} file {file_path:?} at revision {revision:?}"
+        )
+    })?;
+    if downloaded.kind != modelhub::RepoKind::Dataset {
+        anyhow::bail!("ModelScope repository {repo_id:?} is not a dataset");
+    }
+    downloaded.file.with_context(|| {
+        format!(
+            "modelhub did not return a local path for ModelScope dataset {repo_id:?} file {file_path:?}"
+        )
+    })
 }
 
 #[cfg(test)]
@@ -663,6 +671,22 @@ mod tests {
         assert!(error.to_string().contains("val"));
 
         fs::remove_dir_all(snapshot_path).expect("remove snapshot");
+    }
+
+    #[test]
+    fn audio_db_from_modelscope_rejects_empty_identity() {
+        assert!(matches!(
+            AudioDb::from_modelscope(" ", "train.db", None, None),
+            Err(AudioDbError::EmptyRepositoryId)
+        ));
+        assert!(matches!(
+            AudioDb::from_modelscope("di-osc/calls", "  ", None, None),
+            Err(AudioDbError::EmptyFilePath)
+        ));
+        assert!(matches!(
+            AudioDb::from_modelscope("di-osc/calls", "train.db", Some(""), None),
+            Err(AudioDbError::EmptyRevision)
+        ));
     }
 
     #[test]

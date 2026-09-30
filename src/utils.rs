@@ -33,4 +33,11 @@ impl TimeRange {
     pub fn contains(&self, point_ms: usize) -> bool {
         self.start_ms <= point_ms && point_ms < self.end_ms
     }
+
+    /// 当前区间是否完整包含另一个区间。
+    ///
+    /// 两端都按闭区间比较：子区间的起点和终点都可以贴住父区间边界。
+    pub fn contains_range(&self, other: &TimeRange) -> bool {
+        self.start_ms <= other.start_ms && other.end_ms <= self.end_ms
+    }
 }

@@ -41,6 +41,7 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 | ------------------------------------------- | --------------------- |
 | `Path(PathBuf)`                             | 本地音频文件。        |
 | `Url(String)`                               | HTTP 或 HTTPS 地址。  |
+| `ModelScope { repo_id, file_path, revision }` | ModelScope 数据集中的单个文件。 |
 | `EncodedBytes(Vec<u8>)`                     | WAV、MP3 等编码字节。 |
 | `Base64(String)`                            | base64 编码的音频。   |
 | `PcmS16Le { bytes, sample_rate, channels }` | PCM S16LE 音频。      |
@@ -77,6 +78,7 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 | Method                                         | Description                |
 | ---------------------------------------------- | -------------------------- |
 | `from_path(path)`                              | 从本地路径创建来源。       |
+| `from_modelscope(repo_id, file_path, revision)` | 从 ModelScope 数据集文件创建来源。 |
 | `from_encoded_bytes(bytes)`                    | 从编码字节创建来源。       |
 | `from_base64(data)`                            | 从 base64 字符串创建来源。 |
 | `from_pcm_s16le(bytes, sample_rate, channels)` | 从 PCM S16LE 创建来源。    |
@@ -185,6 +187,7 @@ kind。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解�
 | `new(samples, sample_rate)`                             | 构造单声道音频。            |
 | `try_new_with_channels(samples, sample_rate, channels)` | 校验并构造多声道音频。      |
 | `from_path(path)`                                       | 解码本地文件。              |
+| `from_modelscope(repo_id, file_path, revision)`         | 下载并解码 ModelScope 文件。 |
 | `from_encoded_bytes(bytes)`                             | 解码编码字节。              |
 | `from_base64(data)`                                     | 解码 base64 音频。          |
 | `from_pcm_s16le(bytes, sample_rate, channels)`          | 解码 PCM S16LE。            |
@@ -338,6 +341,7 @@ timeline 字段通过方法访问，以维持声道、duration 和 audio ID 约�
 | --- | --- |
 | `from_path(path)` | 从本地文件加载。 |
 | `from_url(url)` | 从 URL 加载。 |
+| `from_modelscope(repo_id, file_path, revision)` | 下载并加载 ModelScope 数据集文件。 |
 | `from_encoded_bytes(bytes)` | 从带容器或编码信息的音频字节加载。 |
 | `from_base64(data)` | 从 base64 编码音频加载。 |
 | `from_pcm_s16le(bytes, sample_rate, channels)` | 从 PCM S16LE 原始字节加载。 |
@@ -382,8 +386,8 @@ timeline 字段通过方法访问，以维持声道、duration 和 audio ID 约�
 timeline，但波形与 timeline 只覆盖已经迭代出的范围。
 
 也可以直接使用 `AudioStream::from_path(...)`、`from_url(...)`、
-`from_encoded_bytes(...)`、`from_base64(...)` 或
-`from_pcm_s16le(...)` 创建；最后一个参数均为 `chunk_size_ms`。
+`from_modelscope(...)`、`from_encoded_bytes(...)`、`from_base64(...)` 或
+`from_pcm_s16le(...)` 创建；`chunk_size_ms` 是流的分块时长。
 
 每次 `next()` 返回 chunk 之前，chunk 样本已经追加到累计波形，各 timeline 也已经
 扩展到该 chunk 的结束位置。因此处理当前 chunk 时，可以读取累计波形并修改任意
@@ -1026,8 +1030,9 @@ version 使用 revision，license 读取可选 README front matter。
 > }
 > ```
 
-`revision` 为 `None` 时使用 `master`，`cache_dir` 为 `None` 时调用 modelhub
-默认缓存；显式目录可传 `Some(path.as_path())`。
+`revision` 为 `None` 时使用 `master`，`cache_dir` 为 `None` 时使用 modelhub
+缓存根目录（`MODELHUB_CACHE`，否则 `~/.cache/modelhub`）。快照目录为
+`{cache}/datasets/{repo--id}/modelscope/snapshots/{revision}`。
 
 | Name        | Description                                                                  |
 | ----------- | ---------------------------------------------------------------------------- |
@@ -1072,6 +1077,7 @@ SQLite 数据库句柄。写操作借用句柄；仅 `update_many()` 因事务�
 | ------------------ | --------------------------------------------------- |
 | `create(path)`     | 创建新数据库。~~Result&lt;AudioDb, AudioDbError&gt;~~ |
 | `open(path, mode)` | 打开已有数据库。~~Result&lt;AudioDb, AudioDbError&gt;~~ |
+| `from_modelscope(repo_id, file_path, revision, cache_dir)` | 下载数据集中的一个数据库文件并只读打开。 |
 
 ## AudioDb CRUD {id="audio-db-crud",tag="methods"}
 

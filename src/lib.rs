@@ -41,8 +41,8 @@ pub use timeline::{
     TimelineEvaluation, TranscriptionEvaluation, TranscriptionNormalization,
 };
 pub use timeline::{
-    Annotation, AudioActivity, AudioId, LanguageTag, Sentence, Speaker, SpeakerId, TimeSpan,
-    TimeSpanConflictKind, TimeSpanId, TimeSpanOverlap, Timeline, TimelineId, TimelineSpanError,
-    Token, Transcript, Transcription,
+    AudioEvent, AudioId, EventConflictKind, EventId, EventOverlap, Gender, LanguageTag,
+    SPEECH_EVENT_NAME, Sentence, Speaker, SpeakerId, Speech, Timeline, TimelineEventError,
+    TimelineId, Token, Transcript, Transcription,
 };
 pub use utils::TimeRange;

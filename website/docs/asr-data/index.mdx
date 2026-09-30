@@ -59,7 +59,7 @@ cargo add asr-data
 />
 
 - **音频来源**：[`AudioSource`](/asr-data/api#audio-source) 统一表达 Path、URL、
-  Bytes、Base64 和 PCM。`probe()` 只读取格式信息，`load()` 完整加载音频，
+  ModelScope、Bytes、Base64 和 PCM。`probe()` 只读取格式信息，`load()` 完整加载音频，
   `stream()` 则按块读取。
 - **音频与波形**：[`Audio`](/asr-data/api#audio) 保存来源、格式、ID、metadata 和
   各声道 timeline；[`Waveform`](/asr-data/api#waveform) 提供重采样、声道转换和

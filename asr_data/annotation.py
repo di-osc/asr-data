@@ -1,13 +1,15 @@
 from typing import TypeAlias
 
-from ._native import AudioActivity, Speaker, Token, Transcription
+from ._native import AudioEvent, Sentence, Speaker, Speech, Token, Transcription
 
-Annotation: TypeAlias = AudioActivity | Speaker | Token | Transcription
+Annotation: TypeAlias = AudioEvent
 
 __all__ = [
     "Annotation",
-    "AudioActivity",
+    "AudioEvent",
+    "Sentence",
     "Speaker",
+    "Speech",
     "Token",
     "Transcription",
 ]

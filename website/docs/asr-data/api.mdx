@@ -34,16 +34,18 @@ menu:
 
 ## AudioSource {id="audio-source",tag="class"}
 
-描述尚未解码的音频来源。来源可以是文件路径、URL、编码字节、base64 字符串或 PCM
-S16LE 字节。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐块解码的
-[`AudioStream`](#audio-stream)。
+描述尚未解码的音频来源。来源可以是文件路径、URL、ModelScope 数据集文件、编码字节、
+base64 字符串或 PCM S16LE 字节。`load()` 解码为完整 [`Audio`](#audio)，`stream()`
+创建逐块解码的 [`AudioStream`](#audio-stream)。
 
 ## AudioSource.from\_\* {id="audio-source-from",tag="class methods"}
 
-从路径、URL、编码字节、base64 或 PCM 创建尚未解码的音频来源。构造时通常不会读取
-文件、发起网络请求或解码样本；真正的 I/O 发生在 `probe()`、`load()` 或
-`stream()` 时。`from_pcm()` 没有文件头，因此必须显式提供 `sample_rate` 和
-`channels`。
+从路径、URL、ModelScope 文件、编码字节、base64 或 PCM 创建尚未解码的音频来源。构造时
+通常不会读取文件、发起网络请求或解码样本；真正的 I/O 发生在 `probe()`、`load()` 或
+`stream()` 时。`from_modelscope()` 只保存仓库 ID、文件路径和 revision。探测或加载时
+由 modelhub 只下载这一个 ModelScope 数据集文件；缓存里已有该文件时不再访问网络。
+`from_pcm()` 没有文件头，因此必须显式提供 `sample_rate`
+和 `channels`。
 
 > #### Example
 >
@@ -83,6 +85,7 @@ S16LE 字节。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐
 | --- | --- |
 | `from_path(path)` | 本地音频文件路径。~~str~~ |
 | `from_url(url)` | HTTP 或 HTTPS 音频地址。~~str~~ |
+| `from_modelscope(repo_id, file_path, *, revision=None)` | ModelScope 数据集中的单个音频文件。~~str, str, Optional[str]~~ |
 | `from_bytes(data)` | WAV、MP3 等编码音频字节。~~bytes~~ |
 | `from_base64(data)` | base64 编码的音频内容。~~str~~ |
 | `from_pcm(data, sample_rate, channels=1)` | PCM S16LE 字节。~~bytes, int, int~~ |
@@ -171,8 +174,11 @@ S16LE 字节。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐
 
 | Name          | Description                                                    |
 | ------------- | -------------------------------------------------------------- |
-| `kind`        | 来源类型。~~Literal["path", "url", "bytes", "base64", "pcm"]~~ |
+| `kind`        | 来源类型。~~Literal["path", "url", "bytes", "base64", "pcm", "modelscope"]~~ |
 | `path`        | Path 来源的路径，否则为 `None`。~~Optional[str]~~              |
+| `repo_id`     | ModelScope 仓库 ID，否则为 `None`。~~Optional[str]~~           |
+| `file_path`   | ModelScope 仓库内路径，否则为 `None`。~~Optional[str]~~        |
+| `revision`    | ModelScope revision，否则为 `None`。~~Optional[str]~~          |
 | `url`         | URL 来源的地址，否则为 `None`。~~Optional[str]~~               |
 | `bytes`       | 编码字节，否则为 `None`。~~Optional[bytes]~~                   |
 | `base64`      | base64 内容，否则为 `None`。~~Optional[str]~~                  |
@@ -220,8 +226,8 @@ S16LE 字节。`load()` 解码为完整 [`Audio`](#audio)，`stream()` 创建逐
 
 ## Waveform.from\_\* {id="waveform-factories",tag="class methods"}
 
-直接创建并解码 `Waveform`。支持 `from_path()`、`from_url()`、`from_bytes()`、
-`from_base64()`、`from_pcm()` 和 `from_source()`；参数与对应的
+直接创建并解码 `Waveform`。支持 `from_path()`、`from_url()`、`from_modelscope()`、
+`from_bytes()`、`from_base64()`、`from_pcm()` 和 `from_source()`；参数与对应的
 `AudioSource.from_*()` 一致。
 
 > #### Example
@@ -335,6 +341,7 @@ chunk 时，可以读取包括当前块在内的累计波形，并给任意已�
 | --- | --- |
 | `from_path(path, ...)` | 本地文件路径 |
 | `from_url(url, ...)` | HTTP、HTTPS 或 file URL |
+| `from_modelscope(repo_id, file_path, ...)` | ModelScope 数据集中的单个音频文件 |
 | `from_bytes(data, ...)` | WAV、MP3 等编码音频字节 |
 | `from_base64(data, ...)` | 编码音频的 base64 字符串 |
 | `from_pcm(data, sample_rate, channels=1, ...)` | PCM S16LE 原始字节 |
@@ -443,6 +450,7 @@ timeline。通常优先使用 [`AudioSource.load()`](#audio-source-load)。
 | --- | --- |
 | `from_path(path, *, id=None)` | 本地文件路径 |
 | `from_url(url, *, id=None)` | HTTP、HTTPS 或 file URL |
+| `from_modelscope(repo_id, file_path, *, revision=None, id=None)` | ModelScope 数据集中的单个音频文件 |
 | `from_bytes(data, *, id=None)` | WAV、MP3 等编码音频字节 |
 | `from_base64(data, *, id=None)` | 编码音频的 base64 字符串 |
 | `from_pcm(data, sample_rate, channels=1, *, id=None)` | PCM S16LE 原始字节 |
@@ -1279,6 +1287,42 @@ AudioActivity、Transcription 或 Speaker 时会重新校验 event、token 时�
 | `path`      | 已有数据库文件路径。~~str~~            |
 | `read_only` | 是否只读打开，默认为 `False`。~~bool~~ |
 | **RETURNS** | 数据库连接。~~AudioDB~~                |
+
+## AudioDB.from_modelscope {id="audio-db-from-modelscope",tag="class method"}
+
+下载 ModelScope 数据集仓库中的一个数据库文件，并以只读方式打开。只请求这一个文件；
+缓存里已有该文件时直接打开，不再访问网络。`file_path` 是仓库内相对路径，例如
+`train.db`。`revision` 省略时为 `master`。`cache_dir` 是 modelhub 缓存根目录，省略时
+使用 `MODELHUB_CACHE` 或 `~/.cache/modelhub`。
+
+> #### Python Example
+>
+> ```python
+> from asr_data import AudioDB
+>
+> db = AudioDB.from_modelscope("di-osc/aishell-1", "train.db")
+> print(db.path, db.read_only)
+> ```
+>
+> #### Rust Example
+>
+> ```rust
+> use asr_data::AudioDb;
+>
+> let db = AudioDb::from_modelscope("di-osc/aishell-1", "train.db", None, None)?;
+> ```
+
+| Name            | Description                                         |
+| --------------- | --------------------------------------------------- |
+| `repo_id`       | ModelScope 数据集仓库 ID。~~str~~                   |
+| `file_path`     | 仓库内数据库路径。~~str~~                           |
+| _keyword-only_  |                                                     |
+| `revision`      | 仓库 revision；省略时为 `master`。~~Optional[str]~~ |
+| `cache_dir`     | 可选 modelhub 缓存根目录。~~Optional[str]~~         |
+| **RETURNS**     | 只读 AudioDB。~~AudioDB~~                           |
+
+空的 `repo_id`、`file_path` 或 `revision` 抛出 `ValueError`。下载失败或文件不是受支持的
+AudioDB 时抛出 `AsrDataError`。
 
 不支持 `AudioDB(path)` 直接构造，调用方必须明确选择 `create()` 或 `open()`。
 

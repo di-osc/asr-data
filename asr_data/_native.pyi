@@ -147,8 +147,32 @@ class AudioSource:
             >>> AudioSource.from_pcm(b"\0\0" * 10, 16000).channels
             1
         """
+    @staticmethod
+    def from_modelscope(
+        repo_id: str, file_path: str, *, revision: str | None = None
+    ) -> AudioSource:
+        """从 ModelScope 数据集中的单个音频文件创建来源，不立即下载。
+
+        Args:
+            repo_id: ModelScope 数据集仓库 ID。
+            file_path: 仓库内相对路径。
+            revision: 可选仓库 revision，默认 master。
+
+        Returns:
+            尚未下载的 AudioSource。
+
+        Raises:
+            ValueError: repo_id、file_path 或 revision 为空。
+
+        Examples:
+            >>> from asr_data import AudioSource
+            >>> AudioSource.from_modelscope("org/name", "wav/a.wav").kind
+            'modelscope'
+        """
     @property
-    def kind(self) -> Literal["path", "url", "bytes", "base64", "pcm"]: ...
+    def kind(
+        self,
+    ) -> Literal["path", "url", "bytes", "base64", "pcm", "modelscope"]: ...
     @property
     def path(self) -> str | None: ...
     @property
@@ -163,6 +187,12 @@ class AudioSource:
     def sample_rate(self) -> int | None: ...
     @property
     def channels(self) -> int | None: ...
+    @property
+    def repo_id(self) -> str | None: ...
+    @property
+    def file_path(self) -> str | None: ...
+    @property
+    def revision(self) -> str | None: ...
     def load(self, *, id: str | None = None) -> Audio:
         """创建并完整解码 Audio。
 
@@ -291,6 +321,28 @@ class Waveform:
             >>> audio = Waveform.from_url(
             ...     "https://deepasset.oss-cn-beijing.aliyuncs.com/example.wav"
             ... )
+        """
+    @staticmethod
+    def from_modelscope(
+        repo_id: str, file_path: str, *, revision: str | None = None
+    ) -> Waveform:
+        """下载 ModelScope 数据集中的单个音频文件并解码。
+
+        Args:
+            repo_id: ModelScope 数据集仓库 ID。
+            file_path: 仓库内相对路径。
+            revision: 可选仓库 revision，默认 master。
+
+        Returns:
+            解码后的完整 Waveform。
+
+        Raises:
+            ValueError: repo_id、file_path 或 revision 为空。
+            AsrDataError: 下载失败或音频无法解码。
+
+        Examples:
+            >>> from asr_data import Waveform
+            >>> audio = Waveform.from_modelscope("org/name", "wav/a.wav")
         """
     @staticmethod
     def from_bytes(data: bytes) -> Waveform:
@@ -676,6 +728,34 @@ class AudioStream:
             >>> stream = AudioStream.from_url("https://example.com/audio.wav")
         """
     @staticmethod
+    def from_modelscope(
+        repo_id: str,
+        file_path: str,
+        chunk_size_ms: int = 100,
+        *,
+        revision: str | None = None,
+        id: str | None = None,
+    ) -> AudioStream:
+        """下载 ModelScope 数据集中的单个音频文件并创建流。
+
+        Args:
+            repo_id: ModelScope 数据集仓库 ID。
+            file_path: 仓库内相对路径。
+            chunk_size_ms: chunk 目标时长。
+            revision: 可选仓库 revision，默认 master。
+            id: 可选的文档 ID。
+
+        Returns:
+            新的 AudioStream。
+
+        Raises:
+            ValueError: repo_id、file_path、revision 为空，或 chunk_size_ms 为零。
+            AsrDataError: 文件无法下载或探测。
+
+        Examples:
+            >>> stream = AudioStream.from_modelscope("org/name", "wav/a.wav")
+        """
+    @staticmethod
     def from_bytes(
         data: bytes, chunk_size_ms: int = 100, *, id: str | None = None
     ) -> AudioStream:
@@ -820,32 +900,6 @@ class AudioStream:
     def __enter__(self) -> AudioStream: ...
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None: ...
 
-class AudioActivity:
-    """音频中的一个活动事件 payload。
-
-    Args:
-        event: 可选事件名称；省略时只表示存在活动。
-        confidence: 可选活动检测置信度。
-
-    Raises:
-        ValueError: event 仅包含空白字符。
-
-    Examples:
-        >>> from asr_data.annotation import AudioActivity
-        >>> AudioActivity(event="speech", confidence=0.98).event
-        'speech'
-    """
-    def __init__(
-        self,
-        *,
-        event: str | None = None,
-        confidence: float | None = None,
-    ) -> None: ...
-    @property
-    def event(self) -> str | None: ...
-    @property
-    def confidence(self) -> float | None: ...
-
 class Token:
     """转写中的细粒度文本单元。
 
@@ -880,68 +934,112 @@ class Token:
     @property
     def confidence(self) -> float | None: ...
 
-class Transcription:
-    """完整转写文本及其 token、语言和置信度。
+class Sentence:
+    """一句转写。时间是时间轴上的绝对毫秒。
 
     Args:
-        text: 完整转写文本。
+        text: 整句文本。可以为空，表示这段假设被整段删除。
+        start_ms: 起始时间，单位为毫秒。
+        end_ms: 结束时间，单位为毫秒。
         tokens: 可选 Token 列表。
-        language: 可选语言标签。
-        confidence: 可选转写级置信度。
+
+    Raises:
+        ValueError: 结束时间不晚于起始时间。
 
     Examples:
-        >>> from asr_data.annotation import Transcription
-        >>> Transcription("你好", language="zh").language
-        'zh'
+        >>> from asr_data.annotation import Sentence
+        >>> Sentence("你好", 0, 300).text
+        '你好'
+    """
+    def __init__(
+        self,
+        text: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        tokens: list[Token] | None = None,
+    ) -> None: ...
+    @property
+    def text(self) -> str: ...
+    @property
+    def start_ms(self) -> int: ...
+    @property
+    def end_ms(self) -> int: ...
+    @property
+    def tokens(self) -> list[Token]: ...
+
+class Transcription:
+    """一段语音里的转写。至少要有全文，句子和 token 都可以空着。
+
+    Args:
+        text: 整段转写文本。
+        sentences: 可选句子列表。省略或空列表都合法。
+        confidence: 可选整段置信度。
+
+    Examples:
+        >>> from asr_data.annotation import Sentence, Transcription
+        >>> Transcription("你好").text
+        '你好'
+        >>> Transcription("你好", sentences=[Sentence("你好", 0, 300)]).sentences[0].tokens
+        []
     """
     def __init__(
         self,
         text: str,
         *,
-        tokens: list[Token] | None = None,
-        language: str | None = None,
+        sentences: list[Sentence] | None = None,
         confidence: float | None = None,
     ) -> None: ...
     @property
     def text(self) -> str: ...
     @property
-    def tokens(self) -> list[Token]: ...
-    @property
-    def language(self) -> str | None: ...
+    def sentences(self) -> list[Sentence]: ...
     @property
     def confidence(self) -> float | None: ...
 
 class Speaker:
-    """一次说话人发话的 payload。
+    """一段语音上的说话人。一段语音最多一个说话人。
 
     Args:
         name: 说话人名称或业务标识。
-        transcription: 该次发话携带的可选完整转写。
-        confidence: 可选说话人识别置信度。
+        gender: 可选性别，取 ``male``、``female`` 或 ``unknown``。省略表示还没标。
+
+    Raises:
+        ValueError: 名字是空白，或性别不是这三个值。
 
     Examples:
-        >>> from asr_data.annotation import Speaker, Transcription
-        >>> Speaker("agent", transcription=Transcription("你好")).name
-        'agent'
+        >>> from asr_data.annotation import Speaker
+        >>> Speaker("agent", gender="female").gender
+        'female'
     """
-    def __init__(
-        self,
-        name: str,
-        *,
-        transcription: Transcription | None = None,
-        confidence: float | None = None,
-    ) -> None: ...
+    def __init__(self, name: str, *, gender: str | None = None) -> None: ...
     @property
     def name(self) -> str: ...
     @property
-    def transcription(self) -> Transcription | None: ...
-    @property
-    def confidence(self) -> float | None: ...
+    def gender(self) -> str | None: ...
 
-class TimeSpan:
-    """Timeline 上一条带时间范围的标注记录。"""
+class AudioEvent:
+    """音频事件基类。音乐、噪声、静音以及其他非语音事件都用它。
+
+    ``Speech`` 从本类派生。直接构造时事件名不能是 ``speech``。
+
+    Args:
+        name: 事件名，例如 ``music``、``noise``、``silence``。
+        confidence: 可选检测置信度。
+
+    Raises:
+        ValueError: 事件名为空白，或者是 ``speech``。
+
+    Examples:
+        >>> from asr_data.annotation import AudioEvent
+        >>> AudioEvent("music").name
+        'music'
+    """
+    def __init__(self, name: str, *, confidence: float | None = None) -> None: ...
     @property
     def id(self) -> str: ...
+    @property
+    def name(self) -> str: ...
     @property
     def start_ms(self) -> int: ...
     @property
@@ -949,45 +1047,36 @@ class TimeSpan:
     @property
     def source(self) -> str | None: ...
     @property
-    def annotation(
+    def confidence(self) -> float | None: ...
+
+class Speech(AudioEvent):
+    """从 AudioEvent 派生的语音事件。语种、说话人和转写都可以缺。
+
+    Args:
+        language: 可选 BCP-47 语种标签。
+        speaker: 可选说话人。一段语音只有一个。
+        transcription: 可选转写。
+        confidence: 可选活动检测置信度。
+
+    Examples:
+        >>> from asr_data.annotation import Speech
+        >>> isinstance(Speech(), AudioEvent)
+        True
+    """
+    def __init__(
         self,
-    ) -> AudioActivity | Token | Transcription | Speaker | dict[str, Any]: ...
-    @annotation.setter
-    def annotation(
-        self, value: AudioActivity | Token | Transcription | Speaker
+        *,
+        language: str | None = None,
+        speaker: Speaker | None = None,
+        transcription: Transcription | None = None,
+        confidence: float | None = None,
     ) -> None: ...
-    def as_waveform(self) -> Waveform:
-        """返回当前时间范围对应的波形。
-
-        Returns:
-            从父 Audio 截取出的 Waveform。
-
-        Examples:
-            >>> waveform = span.as_waveform()
-        """
-    def display(
-        self,
-        start_ms: int | None = None,
-        end_ms: int | None = None,
-        autoplay: bool = False,
-    ) -> None:
-        """在 Jupyter 中显示当前时间范围。
-
-        Args:
-            start_ms: TimeSpan 内可选播放起始时间。
-            end_ms: TimeSpan 内可选播放结束时间。
-            autoplay: 是否自动播放。
-
-        Returns:
-            None；播放器直接发送到当前 Jupyter 输出。
-
-        Raises:
-            ValueError: 结束时间早于起始时间。
-            AsrDataError: IPython 不可用。
-
-        Examples:
-            >>> span.display()
-        """
+    @property
+    def language(self) -> str | None: ...
+    @property
+    def speaker(self) -> Speaker | None: ...
+    @property
+    def transcription(self) -> Transcription | None: ...
 
 class Transcript:
     """按时间顺序组合得到的转写视图。"""
@@ -1092,105 +1181,6 @@ class TimelineEvaluation:
     @property
     def activity(self) -> dict[str, ActivityEvaluation]: ...
 
-class ReferenceSpans:
-    """Timeline 的参考真值标注集合。"""
-    @property
-    def spans(self) -> list[TimeSpan]: ...
-    def transcript(self) -> Transcript:
-        """按时间顺序组合全部 reference 文本。
-
-        Returns:
-            组合后的 Transcript。
-
-        Examples:
-            >>> from asr_data import Audio, AudioSource
-            >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
-            >>> doc.timeline("mono").reference.transcript().text
-            ''
-        """
-    def __len__(self) -> int: ...
-
-class PredictionSpans:
-    """Timeline 的模型 prediction 标注集合。"""
-    @property
-    def spans(self) -> list[TimeSpan]: ...
-    @property
-    def sources(self) -> dict[str, list[str]]: ...
-    def by_source(self, source: str) -> list[TimeSpan]:
-        """返回指定 source 的全部 prediction annotation。
-
-        Args:
-            source: 要查询的来源。
-
-        Returns:
-            保持存储顺序的 TimeSpan 列表。
-
-        Examples:
-            >>> from asr_data import Audio, AudioSource
-            >>> timeline = Audio(
-            ...     AudioSource.from_pcm(b"\0\0" * 10, 16000)
-            ... ).timeline("mono")
-            >>> timeline.prediction.by_source("asr")
-            []
-        """
-    def transcript(self, source: str) -> Transcript:
-        """按时间顺序组合指定 source 的预测文本。
-
-        Args:
-            source: 要组合的来源。
-
-        Returns:
-            组合后的 Transcript。
-
-        Examples:
-            >>> from asr_data import Audio, AudioSource
-            >>> timeline = Audio(
-            ...     AudioSource.from_pcm(b"\0\0" * 10, 16000)
-            ... ).timeline("mono")
-            >>> timeline.prediction.transcript("asr").text
-            ''
-        """
-    def remove_by_source(self, source: str) -> int:
-        """删除指定 source 的全部 prediction。
-
-        Args:
-            source: 要删除的来源。
-
-        Returns:
-            删除的 annotation 数量。
-
-        Examples:
-            >>> from asr_data import Audio, AudioSource
-            >>> timeline = Audio(
-            ...     AudioSource.from_pcm(b"\0\0" * 10, 16000)
-            ... ).timeline("mono")
-            >>> timeline.prediction.remove_by_source("asr")
-            0
-        """
-    def relabel_source(self, from_source: str, to_source: str) -> int:
-        """原子重命名 prediction source。
-
-        Args:
-            from_source: 原来源。
-            to_source: 新来源。
-
-        Returns:
-            修改的 annotation 数量。
-
-        Raises:
-            ValueError: 新来源为空。
-            AsrDataError: 重命名后会产生重叠冲突。
-
-        Examples:
-            >>> from asr_data import Audio, AudioSource
-            >>> timeline = Audio(
-            ...     AudioSource.from_pcm(b"\0\0" * 10, 16000)
-            ... ).timeline("mono")
-            >>> timeline.prediction.relabel_source("asr", "asr-v2")
-            0
-        """
-    def __len__(self) -> int: ...
-
 class Timeline:
     """一个声道上的参考真值和模型预测时间轴。"""
     @property
@@ -1202,47 +1192,112 @@ class Timeline:
     @property
     def duration_ms(self) -> int: ...
     @property
-    def reference(self) -> ReferenceSpans: ...
+    def reference(self) -> list[AudioEvent]:
+        """参考事件。语音是 Speech，其余是 AudioEvent。"""
     @property
-    def prediction(self) -> PredictionSpans: ...
+    def prediction(self) -> list[AudioEvent]:
+        """预测事件。每条都带非空 source。"""
     @property
-    def transcriptions(self) -> list[Transcription]:
-        """全部顶层 Transcription payload，包括 reference 和 prediction。"""
-    @property
-    def activities(self) -> list[AudioActivity]:
-        """全部顶层 AudioActivity payload，包括 reference 和 prediction。"""
-    @property
-    def speakers(self) -> list[Speaker]:
-        """全部顶层 Speaker payload，包括 reference 和 prediction。"""
-    def annotate_span(
+    def reference_transcript(self) -> Transcript:
+        """从参考语音事件拼出的转写。"""
+    def annotate(
         self,
         start_ms: int,
         end_ms: int,
-        annotation: AudioActivity | Token | Transcription | Speaker,
+        event: AudioEvent,
         *,
         is_reference: bool = True,
         source: str | None = None,
-    ) -> TimeSpan:
-        """添加 reference 或 prediction 标注。
+    ) -> AudioEvent:
+        """写入一条 AudioEvent 或派生的 Speech。
 
         Args:
-            start_ms: 全局起始时间。
-            end_ms: 全局结束时间。
-            annotation: AudioActivity、Token、Transcription 或 Speaker。
-            is_reference: 是否为参考答案，默认为 True。
-            source: prediction 来源；reference 必须省略。
+            start_ms: 起始时间，单位为毫秒。
+            end_ms: 结束时间，单位为毫秒。
+            event: 基类事件或 Speech。
+            is_reference: ``True`` 表示参考，``False`` 表示预测。默认为 ``True``。
+            source: 预测来源；reference 必须省略。
 
         Returns:
-            新建或去重后已有的 TimeSpan。
+            写入后的事件。语音返回 Speech，其他事件返回 AudioEvent。
 
         Raises:
-            ValueError: 时间范围、is_reference 与 source 组合无效。
-            AsrDataError: 标注与已有内容冲突。
+            ValueError: 时间范围无效、reference 携带 source，或 prediction 缺少 source。
+            AsrDataError: 事件与已有内容冲突。
 
         Examples:
-            >>> span = timeline.annotate_span(
-            ...     0, timeline.duration_ms, transcription
-            ... )
+            >>> from asr_data import AudioSource
+            >>> from asr_data.annotation import Speech
+            >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).load().timeline("mono")
+            >>> timeline.annotate(0, timeline.duration_ms, Speech()).name
+            'speech'
+        """
+    def remove(self, event_id: str) -> bool:
+        """按 ID 删除一条事件。
+
+        Args:
+            event_id: 要删除的事件 ID。
+
+        Returns:
+            找到并删除时为 ``True``。
+
+        Examples:
+            >>> from asr_data import AudioSource
+            >>> from asr_data.annotation import Speech
+            >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).load().timeline("mono")
+            >>> event = timeline.annotate(0, timeline.duration_ms, Speech())
+            >>> timeline.remove(event.id)
+            True
+        """
+    def prediction_transcript(self, source: str) -> Transcript:
+        """某个预测来源的转写。
+
+        Args:
+            source: 预测来源。
+
+        Returns:
+            按句子时间拼出的 Transcript。没有文本时文本为空。
+
+        Examples:
+            >>> from asr_data import AudioSource
+            >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).load().timeline("mono")
+            >>> timeline.prediction_transcript("asr").text
+            ''
+        """
+    def remove_predictions(self, source: str) -> int:
+        """删除某个预测来源的全部事件。
+
+        Args:
+            source: 预测来源。
+
+        Returns:
+            删除的事件条数。
+
+        Examples:
+            >>> from asr_data import AudioSource
+            >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).load().timeline("mono")
+            >>> timeline.remove_predictions("asr")
+            0
+        """
+    def relabel_prediction_source(self, from_source: str, to_source: str) -> int:
+        """把预测来源从 ``from_source`` 改成 ``to_source``。
+
+        Args:
+            from_source: 原来源。
+            to_source: 新来源。
+
+        Returns:
+            修改的事件条数。
+
+        Raises:
+            ValueError: 来源为空。
+            AsrDataError: 改名后同一来源里的事件会重叠。
+
+        Examples:
+            >>> from asr_data import AudioSource
+            >>> timeline = AudioSource.from_pcm(b"\0\0" * 10, 1000).load().timeline("mono")
+            >>> timeline.relabel_prediction_source("asr", "asr-v2")
+            0
         """
     def as_waveform(self) -> Waveform:
         """返回当前声道的完整波形。
@@ -1310,18 +1365,16 @@ class Timeline:
 
         Examples:
             >>> from asr_data import Audio, AudioSource
-            >>> from asr_data.annotation import Transcription
+            >>> from asr_data.annotation import Speech, Transcription
             >>> timeline = Audio(
             ...     AudioSource.from_pcm(b"\0\0" * 10, 16000)
             ... ).timeline("mono")
-            >>> _ = timeline.annotate_span(
-            ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
-            ... )
-            >>> _ = timeline.annotate_span(
-            ...     0, timeline.duration_ms, Transcription("你好"),
-            ...     is_reference=False, source="asr"
-            ... )
-            >>> timeline.eval().transcription["asr"].cer
+            >>> end = timeline.duration_ms
+            >>> speech = Speech(transcription=Transcription("你好"))
+            >>> _ = timeline.annotate(0, end, speech)
+            >>> _ = timeline.annotate(0, end, speech, is_reference=False, source="qwen-asr")
+            >>> result = timeline.eval(transcription="qwen-asr")
+            >>> result.transcription["qwen-asr"].cer
             0.0
         """
 
@@ -1522,16 +1575,13 @@ def evaluate_dataset(
 
     Examples:
         >>> from asr_data import Audio, AudioSource, evaluate_dataset
-        >>> from asr_data.annotation import Transcription
+        >>> from asr_data.annotation import Speech, Transcription
         >>> doc = Audio(AudioSource.from_pcm(b"\0\0" * 10, 16000))
         >>> timeline = doc.timeline("mono")
-        >>> _ = timeline.annotate_span(
-        ...     0, timeline.duration_ms, Transcription("你好"), is_reference=True
-        ... )
-        >>> _ = timeline.annotate_span(
-        ...     0, timeline.duration_ms, Transcription("你好"),
-        ...     is_reference=False, source="asr"
-        ... )
+        >>> end = timeline.duration_ms
+        >>> speech = Speech(transcription=Transcription("你好"))
+        >>> _ = timeline.annotate(0, end, speech)
+        >>> _ = timeline.annotate(0, end, speech, is_reference=False, source="asr")
         >>> evaluate_dataset([doc]).transcription["asr"].cer
         0.0
     """
@@ -1586,6 +1636,32 @@ class Audio:
 
         Examples:
             >>> audio = Audio.from_url("https://example.com/audio.wav")
+        """
+    @staticmethod
+    def from_modelscope(
+        repo_id: str,
+        file_path: str,
+        *,
+        revision: str | None = None,
+        id: str | None = None,
+    ) -> Audio:
+        """下载 ModelScope 数据集中的单个音频文件并完整加载。
+
+        Args:
+            repo_id: ModelScope 数据集仓库 ID。
+            file_path: 仓库内相对路径。
+            revision: 可选仓库 revision，默认 master。
+            id: 可选的文档 ID。
+
+        Returns:
+            完整 Audio。
+
+        Raises:
+            ValueError: repo_id、file_path 或 revision 为空。
+            AsrDataError: 下载失败或音频无法解码。
+
+        Examples:
+            >>> audio = Audio.from_modelscope("org/name", "wav/a.wav", id="sample")
         """
     @staticmethod
     def from_bytes(data: bytes, *, id: str | None = None) -> Audio:
@@ -1846,6 +1922,33 @@ class AudioDB:
             ...     _ = AudioDB.create(path)
             ...     db = AudioDB.open(path)
         """
+    @staticmethod
+    def from_modelscope(
+        repo_id: str,
+        file_path: str,
+        *,
+        revision: str | None = None,
+        cache_dir: str | None = None,
+    ) -> AudioDB:
+        """下载 ModelScope 数据集中的一个数据库文件，并以只读方式打开。
+
+        Args:
+            repo_id: ModelScope 数据集仓库 ID。
+            file_path: 仓库内数据库路径，例如 ``train.db``。
+            revision: 可选仓库 revision，默认 master。
+            cache_dir: 可选 modelhub 缓存根目录。
+
+        Returns:
+            只读打开的 AudioDB。``path`` 是下载后的本地文件。
+
+        Raises:
+            ValueError: repo_id、file_path 或 revision 为空。
+            AsrDataError: 下载失败，或文件不是受支持的 AudioDB。
+
+        Examples:
+            >>> from asr_data import AudioDB
+            >>> db = AudioDB.from_modelscope("di-osc/aishell-1", "train.db")
+        """
     def insert(self, audio: Audio) -> None:
         """插入一条新 Audio。
 
@@ -1961,7 +2064,7 @@ class AudioDB:
         updated_until: datetime | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, DatasetActivityEvaluation]:
-        """评测 AudioActivity，并按 prediction source 返回结果。
+        """评测语音和其他音频事件，并按 prediction source 返回结果。
 
         Args:
             source: Activity prediction 来源或来源列表；省略时自动发现。

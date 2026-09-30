@@ -7,10 +7,10 @@ mod evaluation;
 mod segment;
 
 pub use annotation::{
-    Annotation, AudioActivity, AudioId, LanguageTag, Speaker, SpeakerId, TimeSpan, TimeSpanId,
-    TimelineId, Token, Transcription,
+    AudioEvent, AudioId, EventId, Gender, LanguageTag, SPEECH_EVENT_NAME, Speaker, SpeakerId,
+    Speech, TimelineId, Token, Transcription,
 };
-pub use data::{TimeSpanConflictKind, TimeSpanOverlap, Timeline, TimelineSpanError};
+pub use data::{EventConflictKind, EventOverlap, Timeline, TimelineEventError};
 #[cfg(all(feature = "db", feature = "metrics"))]
 pub(crate) use evaluation::normalize_transcription_text;
 #[cfg(feature = "metrics")]
